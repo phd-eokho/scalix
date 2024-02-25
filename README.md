@@ -1,5 +1,5 @@
 # resizer-opengl
-An OpenGL image resizer
+An OpenGL image resizer (linear, bicubic)
 
 ### How to use
 ```sh
