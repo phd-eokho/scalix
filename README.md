@@ -128,6 +128,7 @@ scalix_engine_destroy(engine);
 ### Prerequisites
 * **Rust Toolchain:** `rustc` & `cargo` (1.70+ recommended)
 * **C/C++ Toolchain:** `g++` or `clang++` supporting C++20
+* **System Libraries:** `libjpeg-dev` / `libjpeg-turbo8-dev` (for JPEG I/O examples)
 
 ### 1. Build Rust Core & C ABI Library
 To build the static/shared library (`libscalix.so` / `libscalix.a`):
@@ -146,18 +147,22 @@ cargo test
 ```
 
 ### 3. Build & Run C++ Examples
-Link your C++ application against `include/` and `libscalix.so`:
+Examples are managed via [`examples/Makefile`](examples/Makefile). You can build and run them directly from the workspace root:
+
 ```bash
-# Build release library first
-cargo build --release
+# Build all examples (automatically builds Cargo workspace if needed)
+make -C examples
 
-# Compile and run C++20 example
-g++ -std=c++20 -O2 -Iinclude examples/cpp_basic.cpp \
-  -Ltarget/release -lscalix -Wl,-rpath,$(pwd)/target/release \
-  -o cpp_basic
+# Run all examples (including sample.jpg JPEG processing with libjpeg-turbo)
+make -C examples run
 
-./cpp_basic
+# Clean example build artifacts
+make -C examples clean
 ```
+
+#### Individual Examples:
+* **`cpp_basic`**: Demonstrates synchronous and asynchronous callback execution on in-memory buffers.
+* **`cpp_jpeg`**: Loads [`assets/sample.jpg`](assets/sample.jpg) using `libjpeg-turbo`, executes the Scalix pipeline, and writes the output JPEG (`/tmp/output_sample.jpg`).
 
 ---
 
