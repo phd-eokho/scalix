@@ -151,9 +151,13 @@ scalix_engine_destroy(engine);
 * **Rust Toolchain:** `rustc` & `cargo` (1.70+ recommended)
 * **C/C++ Toolchain:** `g++` or `clang++` supporting C++20
 * **Image Codec Libraries:** `libjpeg-dev` / `libjpeg-turbo8-dev` (for JPEG I/O examples)
+* **Benchmark & Comparison Libraries:** `libopencv-dev` (required for benchmarks comparing Scalix execution latency against OpenCV CPU/GPU operations)
 * **GPU Backend Libraries:**
   * **Vulkan (P0):** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
   * **OpenGL / GLES (P1):** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
+
+> [!NOTE]
+> `libopencv-dev` is required for benchmarking workloads (`cpp_benchmark`) to provide side-by-side execution time comparisons between Scalix hardware pipelines and standard OpenCV image processing operations (`cv::resize`, `cv::warpAffine`).
 
 ### 1. Build Rust Core & C ABI Library
 To build the static/shared library (`libscalix.so` / `libscalix.a`):
