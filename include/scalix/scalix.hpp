@@ -64,6 +64,174 @@ struct ImageDesc {
     }
 };
 
+/**
+ * @brief RAII wrapper for a hardware-backed zero-copy DMA buffer.
+ */
+class DmaBuffer {
+public:
+    /**
+     * @brief Allocates a new DMA buffer.
+     * 
+     * @param width Width in pixels.
+     * @param height Height in pixels.
+     * @param format Pixel format.
+     */
+    DmaBuffer(uint32_t width, uint32_t height, PixelFormat format = PixelFormat::Rgba8888) {
+        handle_ = scalix_dma_buffer_allocate(
+            width,
+            height,
+            static_cast<ScalixPixelFormat>(format)
+        );
+        if (!handle_) {
+            throw std::runtime_error("Failed to allocate DMA buffer (DMA-Heap/DRM unavailable)");
+        }
+    }
+
+    ~DmaBuffer() {
+        if (handle_) {
+            scalix_dma_buffer_free(handle_);
+            handle_ = nullptr;
+        }
+    }
+
+    DmaBuffer(const DmaBuffer&) = delete;
+    DmaBuffer& operator=(const DmaBuffer&) = delete;
+
+    DmaBuffer(DmaBuffer&& other) noexcept : handle_(other.handle_) {
+        other.handle_ = nullptr;
+    }
+
+    DmaBuffer& operator=(DmaBuffer&& other) noexcept {
+        if (this != &other) {
+            if (handle_) {
+                scalix_dma_buffer_free(handle_);
+            }
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+
+    int fd() const {
+        return handle_ ? scalix_dma_buffer_get_fd(handle_) : -1;
+    }
+
+    uint8_t* host_ptr() const {
+        return handle_ ? scalix_dma_buffer_get_host_ptr(handle_) : nullptr;
+    }
+
+    size_t size() const {
+        return handle_ ? scalix_dma_buffer_get_size(handle_) : 0;
+    }
+
+    size_t stride() const {
+        return handle_ ? scalix_dma_buffer_get_stride(handle_) : 0;
+    }
+
+    void sync_start(bool is_write = true) {
+        if (handle_) {
+            int ret = scalix_dma_buffer_sync_start(handle_, is_write);
+            if (ret != SCALIX_SUCCESS) {
+                throw std::runtime_error("scalix_dma_buffer_sync_start failed: " + std::to_string(ret));
+            }
+        }
+    }
+
+    void sync_end(bool is_write = true) {
+        if (handle_) {
+            int ret = scalix_dma_buffer_sync_end(handle_, is_write);
+            if (ret != SCALIX_SUCCESS) {
+                throw std::runtime_error("scalix_dma_buffer_sync_end failed: " + std::to_string(ret));
+            }
+        }
+    }
+
+    /**
+     * @brief Executes a callable (e.g. lambda) with automatic CPU write synchronization.
+     * 
+     * Automatically calls `sync_start(true)` before invocation and guarantees `sync_end(true)`
+     * on scope exit via RAII (even if an exception occurs).
+     * 
+     * @tparam Func Callable accepting `(uint8_t* host_ptr, size_t size, Args...)` or `(uint8_t* host_ptr)`
+     */
+    template <typename Func, typename... Args>
+    auto with_write(Func&& fn, Args&&... args) -> decltype(fn(host_ptr(), size(), std::forward<Args>(args)...)) {
+        sync_start(/*is_write=*/true);
+        struct ScopedGuard {
+            DmaBuffer* buf;
+            ~ScopedGuard() { if (buf) { try { buf->sync_end(true); } catch (...) {} } }
+        } guard{this};
+        return fn(host_ptr(), size(), std::forward<Args>(args)...);
+    }
+
+    /**
+     * @brief Executes a callable (e.g. lambda) with automatic CPU read synchronization.
+     * 
+     * Automatically calls `sync_start(false)` before invocation and guarantees `sync_end(false)`
+     * on scope exit via RAII.
+     * 
+     * @tparam Func Callable accepting `(const uint8_t* host_ptr, size_t size, Args...)`
+     */
+    template <typename Func, typename... Args>
+    auto with_read(Func&& fn, Args&&... args) const -> decltype(fn(static_cast<const uint8_t*>(host_ptr()), size(), std::forward<Args>(args)...)) {
+        const_cast<DmaBuffer*>(this)->sync_start(/*is_write=*/false);
+        struct ScopedGuard {
+            const DmaBuffer* buf;
+            ~ScopedGuard() { if (buf) { try { const_cast<DmaBuffer*>(buf)->sync_end(false); } catch (...) {} } }
+        } guard{this};
+        return fn(static_cast<const uint8_t*>(host_ptr()), size(), std::forward<Args>(args)...);
+    }
+
+    ImageDesc as_image_desc() const {
+        ScalixImageDesc c_desc{};
+        if (handle_) {
+            scalix_dma_buffer_get_desc(handle_, &c_desc);
+        }
+        return ImageDesc{
+            .width = c_desc.width,
+            .height = c_desc.height,
+            .stride_bytes = c_desc.stride_bytes,
+            .format = static_cast<PixelFormat>(c_desc.format),
+            .host_ptr = c_desc.host_ptr,
+            .data_len = c_desc.data_len,
+            .dma_buf_fd = c_desc.dma_buf_fd,
+        };
+    }
+
+private:
+    ScalixDmaBuffer* handle_{nullptr};
+};
+
+/**
+ * @brief RAII scoped guard for manual DMA buffer CPU cache synchronization.
+ */
+class ScopedDmaSync {
+public:
+    explicit ScopedDmaSync(DmaBuffer& buf, bool is_write = true) : buf_(&buf), is_write_(is_write) {
+        buf_->sync_start(is_write_);
+    }
+
+    ~ScopedDmaSync() {
+        if (buf_) {
+            try {
+                buf_->sync_end(is_write_);
+            } catch (...) {}
+        }
+    }
+
+    ScopedDmaSync(const ScopedDmaSync&) = delete;
+    ScopedDmaSync& operator=(const ScopedDmaSync&) = delete;
+
+    ScopedDmaSync(ScopedDmaSync&& other) noexcept : buf_(other.buf_), is_write_(other.is_write_) {
+        other.buf_ = nullptr;
+    }
+
+private:
+    DmaBuffer* buf_{nullptr};
+    bool is_write_{true};
+};
+
+
 class Engine {
 public:
     /**

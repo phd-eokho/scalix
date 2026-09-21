@@ -128,7 +128,10 @@ scalix_engine_destroy(engine);
 ### Prerequisites
 * **Rust Toolchain:** `rustc` & `cargo` (1.70+ recommended)
 * **C/C++ Toolchain:** `g++` or `clang++` supporting C++20
-* **System Libraries:** `libjpeg-dev` / `libjpeg-turbo8-dev` (for JPEG I/O examples)
+* **Image Codec Libraries:** `libjpeg-dev` / `libjpeg-turbo8-dev` (for JPEG I/O examples)
+* **GPU Backend Libraries:**
+  * **Vulkan (P0):** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
+  * **OpenGL / GLES (P1):** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
 
 ### 1. Build Rust Core & C ABI Library
 To build the static/shared library (`libscalix.so` / `libscalix.a`):
@@ -161,8 +164,29 @@ make -C examples clean
 ```
 
 #### Individual Examples:
-* **`cpp_basic`**: Demonstrates synchronous and asynchronous callback execution on in-memory buffers.
-* **`cpp_jpeg`**: Loads [`assets/sample.jpg`](assets/sample.jpg) using `libjpeg-turbo`, executes the Scalix pipeline, and writes the output JPEG (`/tmp/output_sample.jpg`).
+* **`cpp_basic`**: Demonstrates synchronous, asynchronous callback, and zero-copy DMA buffer pre-allocation.
+* **`cpp_jpeg`**: Loads [`assets/sample.jpg`](assets/sample.jpg) using `libjpeg-turbo`, decodes directly into memory-mapped DMA buffers, executes the Scalix pipeline, and writes the output JPEG (`/tmp/output_sample.jpg`).
+
+---
+
+## Zero-Copy DMA Subsystem by Platform
+
+Scalix provides unified zero-copy DMA buffer allocation across supported target environments:
+
+### 1. Bare-Metal Linux (x86_64 / aarch64, Kernel 5.6+)
+* **Allocators:** Uses **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) with fallback to **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128` via GEM PRIME).
+* **Permissions:** Ensure the executing user is added to `render` and `video` groups:
+  ```bash
+  sudo usermod -aG render,video $USER
+  ```
+
+### 2. WSL2 (Windows Subsystem for Linux 2)
+* **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12.
+* **DMA Allocation Behavior:** Stock WSL2 kernels do not enable `/dev/dma_heap` by default. Scalix's runtime probing safely detects this and automatically falls back to contiguous host memory, ensuring seamless execution on WSL2 dev environments.
+
+### 3. Android (API Level 26+, `aarch64` only)
+* **Allocator:** Native **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`).
+* **Platform Gating:** Exclusively compiled for `aarch64-linux-android` (`-landroid`). Android symbols are never linked or exposed on Linux builds.
 
 ---
 

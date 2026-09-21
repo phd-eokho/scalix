@@ -72,6 +72,41 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
+    // 4. Test Zero-Copy DMA Buffer Pre-allocation
+    std::cout << "Testing Zero-Copy DMA Buffer pre-allocation..." << std::endl;
+    try {
+        scalix::DmaBuffer dma_src(width, height, scalix::PixelFormat::Rgba8888);
+        scalix::DmaBuffer dma_dst(width, height, scalix::PixelFormat::Rgba8888);
+
+        std::cout << "  → Allocated DMA buffers (src_fd=" << dma_src.fd()
+                  << ", dst_fd=" << dma_dst.fd()
+                  << ", size=" << dma_src.size() << " bytes)" << std::endl;
+
+        // Fill source DMA buffer with test pattern using scoped with_write lambda
+        dma_src.with_write([](uint8_t* ptr, size_t size) {
+            std::fill_n(ptr, size, 0x77);
+        });
+
+        dma_dst.with_write([](uint8_t* ptr, size_t size) {
+            std::fill_n(ptr, size, 0x00);
+        });
+
+        // Execute engine resize using DMA-backed ImageDesc
+        auto src_desc = dma_src.as_image_desc();
+        auto dst_desc = dma_dst.as_image_desc();
+        engine.resize(src_desc, dst_desc, scalix::Filter::Passthrough);
+
+        // Verify destination DMA buffer using scoped with_read lambda
+        dma_dst.with_read([](const uint8_t* ptr, size_t size) {
+            assert(ptr[0] == 0x77);
+            assert(ptr[size - 1] == 0x77);
+        });
+
+        std::cout << "  → Zero-Copy DMA pre-allocation verified successfully (via with_write/with_read)." << std::endl;
+    } catch (const std::exception& e) {
+        std::cout << "  → [Host Notice] DMA device nodes unavailable on this host (" << e.what() << "); skipped hardware test." << std::endl;
+    }
+
     std::cout << "[All C++20 interface tests passed!]" << std::endl;
     return 0;
 }

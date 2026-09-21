@@ -173,3 +173,33 @@ fn test_c_api_with_custom_prefix() {
     }
 }
 
+#[test]
+fn test_c_api_dma_buffer() {
+    unsafe {
+        let dma_buf = scalix_dma_buffer_allocate(32, 32, ScalixPixelFormat::Rgba8888);
+        if !dma_buf.is_null() {
+            let host_ptr = scalix_dma_buffer_get_host_ptr(dma_buf);
+            assert!(!host_ptr.is_null());
+            assert!(scalix_dma_buffer_get_size(dma_buf) >= 32 * 32 * 4);
+            assert_eq!(scalix_dma_buffer_sync_start(dma_buf, true), SCALIX_SUCCESS);
+            assert_eq!(scalix_dma_buffer_sync_end(dma_buf, true), SCALIX_SUCCESS);
+
+            let mut desc = ScalixImageDesc {
+                width: 0,
+                height: 0,
+                stride_bytes: 0,
+                format: ScalixPixelFormat::Rgba8888,
+                host_ptr: std::ptr::null_mut(),
+                data_len: 0,
+                dma_buf_fd: -1,
+            };
+            assert_eq!(scalix_dma_buffer_get_desc(dma_buf, &mut desc), SCALIX_SUCCESS);
+            assert_eq!(desc.width, 32);
+            assert_eq!(desc.height, 32);
+
+            scalix_dma_buffer_free(dma_buf);
+        }
+    }
+}
+
+

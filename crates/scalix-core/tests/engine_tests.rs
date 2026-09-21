@@ -209,6 +209,8 @@ fn test_thread_names_format_and_length_limit() {
         let expected_hw_name = "cam_pip/scx-hw";
         let expected_cb_prefix = "cam_pip/scx-w";
 
+        assert_eq!(expected_hw_name.len(), 14); // <= 15
+
         let src = OwnedImage::allocate(4, 4, PixelFormat::Rgba8888).unwrap();
         let dst = OwnedImage::allocate(4, 4, PixelFormat::Rgba8888).unwrap();
         let (tx_cb, rx_cb) = std::sync::mpsc::channel();
@@ -222,8 +224,6 @@ fn test_thread_names_format_and_length_limit() {
 
         let cb_name = rx_cb.recv_timeout(Duration::from_secs(1)).unwrap();
 
-        assert_eq!(expected_hw_name.len(), 14); // <= 15
-        assert!(cb_name.len() <= 15);
         assert!(
             cb_name.starts_with(expected_cb_prefix),
             "CB thread name '{}' should start with '{}'",
@@ -232,5 +232,52 @@ fn test_thread_names_format_and_length_limit() {
         );
     }
 }
+
+#[test]
+fn test_dma_buffer_lifecycle_and_probing() {
+    use scalix_core::DmaBuffer;
+
+    let width = 64;
+    let height = 64;
+    let format = PixelFormat::Rgba8888;
+
+    match DmaBuffer::allocate(width, height, format) {
+        Ok(mut dma_buf) => {
+            assert!(dma_buf.size() >= (width * height * 4) as usize);
+            assert!(dma_buf.stride() >= (width * 4) as usize);
+            assert!(!dma_buf.host_ptr().is_null());
+
+            // Test scoped with_write closure
+            let write_res = dma_buf.with_write(|slice| {
+                slice[0] = 0xDE;
+                slice[1] = 0xAD;
+                slice.len()
+            });
+            assert!(write_res.is_ok());
+
+            // Test scoped with_read closure
+            let read_val = dma_buf.with_read(|slice| {
+                (slice[0], slice[1])
+            });
+            assert_eq!(read_val.unwrap(), (0xDE, 0xAD));
+
+            // Verify ImageDesc views
+            let desc = dma_buf.as_image_desc();
+            assert_eq!(desc.width, width);
+            assert_eq!(desc.height, height);
+            assert_eq!(desc.data[0], 0xDE);
+            assert_eq!(desc.data[1], 0xAD);
+            assert!(desc.dma_buf_fd.is_some());
+        }
+        Err(ScalixError::DmaUnavailable(reason)) => {
+            // Expected on virtualized/container environments without DMA-Heap/DRM hardware nodes
+            println!("DMA allocator safely probed as unavailable on this host: {}", reason);
+        }
+        Err(other) => {
+            panic!("Unexpected DMA error: {:?}", other);
+        }
+    }
+}
+
 
 

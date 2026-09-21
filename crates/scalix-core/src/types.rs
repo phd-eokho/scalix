@@ -127,6 +127,18 @@ pub enum ScalixError {
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
 
+    #[error("DMA allocator unavailable: {0}")]
+    DmaUnavailable(String),
+
+    #[error("DMA buffer allocation failed: {0}")]
+    DmaAllocationFailed(String),
+
+    #[error("DMA buffer memory map failed: {0}")]
+    DmaMapFailed(String),
+
+    #[error("DMA buffer sync failed: {0}")]
+    DmaSyncFailed(String),
+
     #[error("Task timed out")]
     Timeout,
 

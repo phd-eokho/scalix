@@ -18,11 +18,16 @@ extern "C" {
 #define SCALIX_ERR_UNSUPPORTED_FORMAT  -5
 #define SCALIX_ERR_BACKEND_UNAVAILABLE -6
 #define SCALIX_ERR_TIMEOUT             -7
+#define SCALIX_ERR_DMA_UNAVAILABLE     -8
+#define SCALIX_ERR_DMA_ALLOCATION_FAILED -9
+#define SCALIX_ERR_DMA_MAP_FAILED      -10
+#define SCALIX_ERR_DMA_SYNC_FAILED     -11
 #define SCALIX_ERR_FAILED             -99
 
 /* Opaque Handle Types */
 typedef struct ScalixEngine ScalixEngine;
 typedef struct ScalixTask ScalixTask;
+typedef struct ScalixDmaBuffer ScalixDmaBuffer;
 
 /* Backend Provider Types */
 typedef enum ScalixBackendType {
@@ -141,6 +146,72 @@ int scalix_resize_submit(
     ScalixCompletionCallback callback,
     void* user_data
 );
+
+/* 4. Zero-Copy DMA Buffer Lifecycle & Synchronization */
+/**
+ * @brief Allocates a hardware-backed DMA buffer (Linux DMA-Heap/DRM, Android AHardwareBuffer).
+ * 
+ * @param width Image buffer width in pixels.
+ * @param height Image buffer height in pixels.
+ * @param format Pixel format of the buffer.
+ * @return ScalixDmaBuffer* Pointer to created DMA buffer handle, or NULL on failure.
+ */
+ScalixDmaBuffer* scalix_dma_buffer_allocate(
+    uint32_t width,
+    uint32_t height,
+    ScalixPixelFormat format
+);
+
+/**
+ * @brief Releases a DMA buffer and unmaps its virtual memory.
+ * 
+ * @param buffer Pointer to DMA buffer handle to release.
+ */
+void scalix_dma_buffer_free(ScalixDmaBuffer* buffer);
+
+/**
+ * @brief Returns the underlying Linux DMA-BUF file descriptor (or -1 if not applicable).
+ */
+int scalix_dma_buffer_get_fd(const ScalixDmaBuffer* buffer);
+
+/**
+ * @brief Returns the memory-mapped CPU virtual address pointer.
+ */
+uint8_t* scalix_dma_buffer_get_host_ptr(const ScalixDmaBuffer* buffer);
+
+/**
+ * @brief Returns the total allocated byte size of the DMA buffer.
+ */
+size_t scalix_dma_buffer_get_size(const ScalixDmaBuffer* buffer);
+
+/**
+ * @brief Returns the row pitch/stride in bytes.
+ */
+size_t scalix_dma_buffer_get_stride(const ScalixDmaBuffer* buffer);
+
+/**
+ * @brief Populates a ScalixImageDesc referencing this DMA buffer.
+ */
+int scalix_dma_buffer_get_desc(
+    const ScalixDmaBuffer* buffer,
+    ScalixImageDesc* out_desc
+);
+
+/**
+ * @brief Prepares DMA buffer for CPU read/write access (cache invalidation/clean).
+ * 
+ * @param buffer DMA buffer handle.
+ * @param is_write True if CPU will write to buffer, False for read-only.
+ */
+int scalix_dma_buffer_sync_start(const ScalixDmaBuffer* buffer, bool is_write);
+
+/**
+ * @brief Concludes CPU read/write access to flush caches for hardware accelerators.
+ * 
+ * @param buffer DMA buffer handle.
+ * @param is_write True if CPU wrote to buffer, False for read-only.
+ */
+int scalix_dma_buffer_sync_end(const ScalixDmaBuffer* buffer, bool is_write);
 
 #ifdef __cplusplus
 }

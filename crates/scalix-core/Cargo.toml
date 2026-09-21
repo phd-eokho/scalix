@@ -10,6 +10,8 @@ description = "Core engine, types, and dispatcher for Scalix"
 thiserror.workspace = true
 crossbeam-channel.workspace = true
 log.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true
+

@@ -15,6 +15,10 @@ pub const SCALIX_ERR_BUFFER_TOO_SMALL: i32 = -4;
 pub const SCALIX_ERR_UNSUPPORTED_FORMAT: i32 = -5;
 pub const SCALIX_ERR_BACKEND_UNAVAILABLE: i32 = -6;
 pub const SCALIX_ERR_TIMEOUT: i32 = -7;
+pub const SCALIX_ERR_DMA_UNAVAILABLE: i32 = -8;
+pub const SCALIX_ERR_DMA_ALLOCATION_FAILED: i32 = -9;
+pub const SCALIX_ERR_DMA_MAP_FAILED: i32 = -10;
+pub const SCALIX_ERR_DMA_SYNC_FAILED: i32 = -11;
 pub const SCALIX_ERR_FAILED: i32 = -99;
 
 fn map_error_to_code(err: ScalixError) -> i32 {
@@ -26,6 +30,10 @@ fn map_error_to_code(err: ScalixError) -> i32 {
         ScalixError::UnsupportedFormat(_) => SCALIX_ERR_UNSUPPORTED_FORMAT,
         ScalixError::BackendUnavailable(_) => SCALIX_ERR_BACKEND_UNAVAILABLE,
         ScalixError::Timeout => SCALIX_ERR_TIMEOUT,
+        ScalixError::DmaUnavailable(_) => SCALIX_ERR_DMA_UNAVAILABLE,
+        ScalixError::DmaAllocationFailed(_) => SCALIX_ERR_DMA_ALLOCATION_FAILED,
+        ScalixError::DmaMapFailed(_) => SCALIX_ERR_DMA_MAP_FAILED,
+        ScalixError::DmaSyncFailed(_) => SCALIX_ERR_DMA_SYNC_FAILED,
         _ => SCALIX_ERR_FAILED,
     }
 }
@@ -369,3 +377,133 @@ pub unsafe extern "C" fn scalix_resize_submit(
         Err(e) => map_error_to_code(e),
     }
 }
+
+pub struct ScalixDmaBuffer {
+    inner: scalix_core::DmaBuffer,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_allocate(
+    width: u32,
+    height: u32,
+    format: ScalixPixelFormat,
+) -> *mut ScalixDmaBuffer {
+    match scalix_core::DmaBuffer::allocate(width, height, format.into()) {
+        Ok(buf) => Box::into_raw(Box::new(ScalixDmaBuffer { inner: buf })),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_free(buffer: *mut ScalixDmaBuffer) {
+    if !buffer.is_null() {
+        drop(Box::from_raw(buffer));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_get_fd(buffer: *const ScalixDmaBuffer) -> i32 {
+    if buffer.is_null() {
+        return -1;
+    }
+    (*buffer).inner.fd()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_get_host_ptr(buffer: *const ScalixDmaBuffer) -> *mut u8 {
+    if buffer.is_null() {
+        return std::ptr::null_mut();
+    }
+    (*buffer).inner.host_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_get_size(buffer: *const ScalixDmaBuffer) -> usize {
+    if buffer.is_null() {
+        return 0;
+    }
+    (*buffer).inner.size()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_get_stride(buffer: *const ScalixDmaBuffer) -> usize {
+    if buffer.is_null() {
+        return 0;
+    }
+    (*buffer).inner.stride()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_get_desc(
+    buffer: *const ScalixDmaBuffer,
+    out_desc: *mut ScalixImageDesc,
+) -> i32 {
+    if buffer.is_null() || out_desc.is_null() {
+        return SCALIX_ERR_NULL_PTR;
+    }
+
+    let b = &(*buffer).inner;
+    let format = match b.format() {
+        PixelFormat::Rgba8888 => ScalixPixelFormat::Rgba8888,
+        PixelFormat::Bgra8888 => ScalixPixelFormat::Bgra8888,
+        PixelFormat::Rgb888 => ScalixPixelFormat::Rgb888,
+        PixelFormat::Bgr888 => ScalixPixelFormat::Bgr888,
+        PixelFormat::R8 => ScalixPixelFormat::R8,
+        PixelFormat::Rg88 => ScalixPixelFormat::Rg88,
+        PixelFormat::Nv12 => ScalixPixelFormat::Nv12,
+        PixelFormat::Yuv420p => ScalixPixelFormat::Yuv420p,
+        PixelFormat::Rgba16f => ScalixPixelFormat::Rgba16f,
+        PixelFormat::Rgba32f => ScalixPixelFormat::Rgba32f,
+    };
+
+    *out_desc = ScalixImageDesc {
+        width: b.width(),
+        height: b.height(),
+        stride_bytes: b.stride(),
+        format,
+        host_ptr: b.host_ptr(),
+        data_len: b.size(),
+        dma_buf_fd: b.fd(),
+    };
+
+    SCALIX_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_sync_start(
+    buffer: *const ScalixDmaBuffer,
+    is_write: bool,
+) -> i32 {
+    if buffer.is_null() {
+        return SCALIX_ERR_NULL_PTR;
+    }
+    let flag = if is_write {
+        scalix_core::DmaSyncFlags::Write
+    } else {
+        scalix_core::DmaSyncFlags::Read
+    };
+    match (*buffer).inner.sync_start(flag) {
+        Ok(()) => SCALIX_SUCCESS,
+        Err(e) => map_error_to_code(e),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_dma_buffer_sync_end(
+    buffer: *const ScalixDmaBuffer,
+    is_write: bool,
+) -> i32 {
+    if buffer.is_null() {
+        return SCALIX_ERR_NULL_PTR;
+    }
+    let flag = if is_write {
+        scalix_core::DmaSyncFlags::Write
+    } else {
+        scalix_core::DmaSyncFlags::Read
+    };
+    match (*buffer).inner.sync_end(flag) {
+        Ok(()) => SCALIX_SUCCESS,
+        Err(e) => map_error_to_code(e),
+    }
+}
+
