@@ -1,5 +1,7 @@
 # Scalix
 
+[English](README.md) | [한국어](README.ko.md)
+
 **Scalix**는 최신 **Linux (x86_64)** 및 **Android (aarch64)** 플랫폼을 위해 설계된 고성능 하드웨어 가속 이미지 스케일링 및 리샘플링 엔진입니다.
 
 **Headless 및 Offscreen 전용** 아키텍처로 설계되어 디스플레이 서버 없이도 **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, **2D HW Engines (V4L2 M2M / DRM)** 전반에 걸쳐 통합된 인터페이스를 제공합니다. CPU Fallback 및 Host SIMD 연산은 OpenCV 등 서드파티 이미지 처리 라이브러리로 위임됩니다.
