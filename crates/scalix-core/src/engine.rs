@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::backend::{Backend, PassthroughBackend};
 use crate::buffer::OwnedImage;
+use crate::profiler::{ActiveProfiler, ProfileMetrics, Profiler};
 use crate::types::{BackendType, FilterMode, ImageDesc, ImageDescMut, Result, ScalixError};
 use crate::worker::{TaskHandle, WorkerPool};
 
@@ -14,6 +15,7 @@ use crate::worker::{TaskHandle, WorkerPool};
 /// - `callback_pool`: Multi-threaded worker pool executing callbacks and user post-processing in parallel.
 pub struct Engine {
     backend: Arc<dyn Backend>,
+    profiler: Arc<dyn Profiler>,
     hw_executor: Arc<WorkerPool>,
     callback_pool: Arc<WorkerPool>,
 }
@@ -56,10 +58,31 @@ impl Engine {
 
     /// Initializes a new Scalix Engine with the requested backend and optional custom thread prefix.
     pub fn with_prefix(backend_type: BackendType, prefix: Option<&str>) -> Result<Self> {
+        let profiler: Arc<dyn Profiler> = Arc::new(ActiveProfiler::new());
+        Self::with_profiler(backend_type, prefix, profiler)
+    }
+
+    /// Initializes a new Scalix Engine with explicit profiler.
+    pub fn with_profiler(
+        backend_type: BackendType,
+        prefix: Option<&str>,
+        profiler: Arc<dyn Profiler>,
+    ) -> Result<Self> {
         let backend: Arc<dyn Backend> = match backend_type {
-            BackendType::Auto | BackendType::Passthrough | BackendType::Cpu => {
-                Arc::new(PassthroughBackend::new())
+            BackendType::Auto => match crate::backend::VulkanBackend::with_profiler(Arc::clone(&profiler)) {
+                Ok(vk_backend) => Arc::new(vk_backend),
+                Err(e) => {
+                    log::info!(
+                        "Vulkan auto-initialization skipped ({:?}); falling back to passthrough",
+                        e
+                    );
+                    Arc::new(PassthroughBackend::new())
+                }
+            },
+            BackendType::Vulkan => {
+                Arc::new(crate::backend::VulkanBackend::with_profiler(Arc::clone(&profiler))?)
             }
+            BackendType::Passthrough | BackendType::Cpu => Arc::new(PassthroughBackend::new()),
             other => return Err(ScalixError::BackendUnavailable(other)),
         };
 
@@ -77,9 +100,25 @@ impl Engine {
 
         Ok(Self {
             backend,
+            profiler,
             hw_executor,
             callback_pool,
         })
+    }
+
+    /// Enables or disables profiling dynamically.
+    pub fn set_profiling(&self, enabled: bool) {
+        self.profiler.set_enabled(enabled);
+    }
+
+    /// Retrieves the most recent profile metrics if profiling is active.
+    pub fn last_profile(&self) -> Option<ProfileMetrics> {
+        self.profiler.last_metrics()
+    }
+
+    /// Returns a reference to the active profiler handle.
+    pub fn profiler(&self) -> &Arc<dyn Profiler> {
+        &self.profiler
     }
 
     /// Initializes an Engine with custom backend, configurable thread concurrency, and optional prefix.
@@ -89,12 +128,14 @@ impl Engine {
         num_callback_workers: usize,
         prefix: Option<&str>,
     ) -> Self {
+        let profiler: Arc<dyn Profiler> = Arc::new(ActiveProfiler::new());
         let p = sanitize_thread_prefix(prefix);
         let hw_prefix = format!("{}/scx-hw", p);
         let cb_prefix = format!("{}/scx-w", p);
 
         Self {
             backend,
+            profiler,
             hw_executor: Arc::new(WorkerPool::with_prefix(
                 &hw_prefix,
                 num_hw_threads.max(1),

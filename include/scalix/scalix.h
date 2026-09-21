@@ -113,6 +113,38 @@ ScalixEngine* scalix_engine_create_with_prefix(
  */
 void scalix_engine_destroy(ScalixEngine* engine);
 
+/* Profiling Metrics */
+typedef struct ScalixProfileMetrics {
+    double host_unpack_ms;
+    double gpu_upload_ms;
+    double gpu_pure_blit_ms;
+    double gpu_download_ms;
+    double host_repack_ms;
+    double driver_sync_ms;
+    double total_wall_ms;
+} ScalixProfileMetrics;
+
+/**
+ * @brief Enables or disables zero-overhead profiling in the engine.
+ * 
+ * @param engine Pointer to engine handle.
+ * @param enabled True to enable latency breakdowns and GPU hardware timestamps.
+ * @return SCALIX_SUCCESS on success, error code otherwise.
+ */
+int scalix_engine_set_profiling(ScalixEngine* engine, bool enabled);
+
+/**
+ * @brief Retrieves the most recent profile metrics if profiling was enabled.
+ * 
+ * @param engine Pointer to engine handle.
+ * @param out_metrics Pointer to metrics structure to populate.
+ * @return SCALIX_SUCCESS on success, error code otherwise.
+ */
+int scalix_engine_get_last_profile(
+    const ScalixEngine* engine,
+    ScalixProfileMetrics* out_metrics
+);
+
 /* 1. Synchronous Execution */
 int scalix_resize_sync(
     ScalixEngine* engine,

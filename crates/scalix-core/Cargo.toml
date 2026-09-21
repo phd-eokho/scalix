@@ -11,7 +11,9 @@ thiserror.workspace = true
 crossbeam-channel.workspace = true
 log.workspace = true
 libc.workspace = true
+ash.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true
+
 

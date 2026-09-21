@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use scalix_core::{
-    BackendType, Engine, FilterMode, ImageDesc, ImageDescMut, OwnedImage, PixelFormat, ScalixError,
+    Backend, BackendType, Engine, FilterMode, ImageDesc, ImageDescMut, OwnedImage, PixelFormat,
+    ScalixError,
 };
 
 #[test]
@@ -278,6 +279,86 @@ fn test_dma_buffer_lifecycle_and_probing() {
         }
     }
 }
+
+#[test]
+fn test_vulkan_backend_blit_resize() {
+    use scalix_core::{VulkanBackend, VulkanStrategy};
+
+    // 1. Instantiate Vulkan backend with Option A (Hardware Blitter)
+    let vk_backend = match VulkanBackend::with_strategy(VulkanStrategy::Blit) {
+        Ok(backend) => backend,
+        Err(e) => {
+            println!("Vulkan backend not available on this environment ({:?}); skipping test.", e);
+            return;
+        }
+    };
+
+    assert_eq!(vk_backend.strategy(), VulkanStrategy::Blit);
+
+    // 2. Perform 64x64 -> 32x32 downscale
+    let src_w = 64;
+    let src_h = 64;
+    let dst_w = 32;
+    let dst_h = 32;
+    let format = PixelFormat::Rgba8888;
+
+    let src_stride = format.min_stride(src_w).unwrap();
+    let dst_stride = format.min_stride(dst_w).unwrap();
+
+    let src_data = vec![0xAAu8; src_stride * (src_h as usize)];
+    let mut dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
+
+    let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
+    let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+
+    let process_res = vk_backend.process(&src_desc, &mut dst_desc, FilterMode::Bilinear);
+    assert!(process_res.is_ok(), "Vulkan blit process failed: {:?}", process_res.err());
+
+    // Verify destination pixels were populated by Vulkan GPU blit
+    assert_eq!(dst_data[0], 0xAA);
+    assert_eq!(dst_data[dst_data.len() - 1], 0xAA);
+}
+
+#[test]
+fn test_pluggable_profiler_and_gpu_metrics() {
+    let engine = match Engine::new(BackendType::Vulkan) {
+        Ok(e) => e,
+        Err(e) => {
+            println!("Vulkan backend unavailable ({:?}); skipping test.", e);
+            return;
+        }
+    };
+
+    // 1. Profiler disabled by default -> last_profile should be None
+    assert_eq!(engine.last_profile(), None);
+
+    let src_w = 64;
+    let src_h = 64;
+    let dst_w = 32;
+    let dst_h = 32;
+    let format = PixelFormat::Rgb888;
+
+    let src_stride = format.min_stride(src_w).unwrap();
+    let dst_stride = format.min_stride(dst_w).unwrap();
+
+    let src_data = vec![128u8; src_stride * (src_h as usize)];
+    let mut dst_data = vec![0u8; dst_stride * (dst_h as usize)];
+
+    let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
+    let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+
+    engine.resize_sync(&src_desc, &mut dst_desc, FilterMode::Bilinear).unwrap();
+    assert_eq!(engine.last_profile(), None);
+
+    // 2. Enable profiling
+    engine.set_profiling(true);
+    engine.resize_sync(&src_desc, &mut dst_desc, FilterMode::Bilinear).unwrap();
+
+    let profile = engine.last_profile().expect("Expected profile metrics when enabled");
+    assert!(profile.total_wall_ms > 0.0);
+    assert!(profile.gpu_pure_blit_ms >= 0.0);
+}
+
 
 
 

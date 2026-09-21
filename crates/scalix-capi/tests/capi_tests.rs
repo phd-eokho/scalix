@@ -202,4 +202,20 @@ fn test_c_api_dma_buffer() {
     }
 }
 
+#[test]
+fn test_c_api_profiling() {
+    unsafe {
+        let engine = scalix_engine_create(ScalixBackendType::Auto);
+        assert!(!engine.is_null());
+
+        let mut metrics = ScalixProfileMetrics::default();
+        let res = scalix_engine_get_last_profile(engine, &mut metrics);
+        assert_ne!(res, SCALIX_SUCCESS); // Inactive -> error / None
+
+        assert_eq!(scalix_engine_set_profiling(engine, true), SCALIX_SUCCESS);
+
+        scalix_engine_destroy(engine);
+    }
+}
+
 

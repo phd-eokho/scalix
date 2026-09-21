@@ -164,10 +164,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "  Image Dimensions: " << header.width << "x" << header.height
-              << " (" << header.channels << " channels -> RGBA8888)" << std::endl;
+    std::cout << "  Source Dimensions: " << header.width << "x" << header.height
+              << " (" << header.channels << " channels → RGBA8888)" << std::endl;
 
-    // 1. Initialize Scalix Engine
+    uint32_t dst_width = header.width / 8;
+    uint32_t dst_height = header.height / 8;
+
+    std::cout << "  Target Dimensions (1/8 Downscale): " << dst_width << "x" << dst_height
+              << " (Filter: Bilinear)" << std::endl;
+
+    // 1. Initialize Scalix Engine (Auto selects Vulkan hardware backend)
     scalix::Engine engine(scalix::Backend::Auto, "jpeg");
 
     // 2. Attempt Zero-Copy DMA buffer allocation
@@ -182,14 +188,15 @@ int main(int argc, char** argv) {
             scalix::PixelFormat::Rgba8888
         );
         dst_dma = std::make_unique<scalix::DmaBuffer>(
-            header.width,
-            header.height,
+            dst_width,
+            dst_height,
             scalix::PixelFormat::Rgba8888
         );
         dma_mode = true;
         std::cout << "  [DMA Allocator Active] Allocated hardware DMA buffers (src_fd="
-                  << src_dma->fd() << ", dst_fd=" << dst_dma->fd() << ", stride="
-                  << src_dma->stride() << " bytes)" << std::endl;
+                  << src_dma->fd() << ", dst_fd=" << dst_dma->fd() << ", src_stride="
+                  << src_dma->stride() << " bytes, dst_stride=" << dst_dma->stride()
+                  << " bytes)" << std::endl;
     } catch (const std::exception& e) {
         std::cout << "  [Host Notice] Hardware DMA device nodes (/dev/dma_heap, /dev/dri) not accessible on this environment." << std::endl;
         std::cout << "                Falling back to standard host memory buffers (" << e.what() << ")." << std::endl;
@@ -208,15 +215,15 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        std::cout << "Executing Scalix engine processing on DMA buffers..." << std::endl;
+        std::cout << "Executing Scalix engine 1/8 hardware resize on DMA buffers..." << std::endl;
         auto src_desc = src_dma->as_image_desc();
         auto dst_desc = dst_dma->as_image_desc();
-        engine.resize(src_desc, dst_desc, scalix::Filter::Passthrough);
-        std::cout << "  Processing completed." << std::endl;
+        engine.resize(src_desc, dst_desc, scalix::Filter::Bilinear);
+        std::cout << "  1/8 resize completed." << std::endl;
 
-        std::cout << "Saving output image directly from DMA memory to: " << output_path << " (via with_read lambda)..." << std::endl;
+        std::cout << "Saving output 1/8 image directly from DMA memory to: " << output_path << " (via with_read lambda)..." << std::endl;
         bool write_ok = dst_dma->with_read([&](const uint8_t* host_ptr, size_t /*size*/) {
-            return write_jpeg_direct(output_path, header.width, header.height, host_ptr, dst_dma->stride(), 90);
+            return write_jpeg_direct(output_path, dst_width, dst_height, host_ptr, dst_dma->stride(), 90);
         });
 
         if (!write_ok) {
@@ -225,13 +232,16 @@ int main(int argc, char** argv) {
         }
     } else {
         // --- STANDARD HOST MEMORY PATH ---
-        size_t stride = static_cast<size_t>(header.width) * 4;
-        size_t data_len = stride * static_cast<size_t>(header.height);
-        std::vector<uint8_t> src_buffer(data_len, 0);
-        std::vector<uint8_t> dst_buffer(data_len, 0);
+        size_t src_stride = static_cast<size_t>(header.width) * 4;
+        size_t src_data_len = src_stride * static_cast<size_t>(header.height);
+        std::vector<uint8_t> src_buffer(src_data_len, 0);
+
+        size_t dst_stride = static_cast<size_t>(dst_width) * 4;
+        size_t dst_data_len = dst_stride * static_cast<size_t>(dst_height);
+        std::vector<uint8_t> dst_buffer(dst_data_len, 0);
 
         std::cout << "Decoding JPEG into standard host buffer..." << std::endl;
-        if (!read_jpeg_direct(input_path, src_buffer.data(), header.width, header.height, stride)) {
+        if (!read_jpeg_direct(input_path, src_buffer.data(), header.width, header.height, src_stride)) {
             std::cerr << "Failed to decode JPEG into buffer." << std::endl;
             return 1;
         }
@@ -239,34 +249,35 @@ int main(int argc, char** argv) {
         scalix::ImageDesc src{
             .width = header.width,
             .height = header.height,
-            .stride_bytes = stride,
+            .stride_bytes = src_stride,
             .format = scalix::PixelFormat::Rgba8888,
             .host_ptr = src_buffer.data(),
-            .data_len = data_len,
+            .data_len = src_data_len,
             .dma_buf_fd = -1,
         };
 
         scalix::ImageDesc dst{
-            .width = header.width,
-            .height = header.height,
-            .stride_bytes = stride,
+            .width = dst_width,
+            .height = dst_height,
+            .stride_bytes = dst_stride,
             .format = scalix::PixelFormat::Rgba8888,
             .host_ptr = dst_buffer.data(),
-            .data_len = data_len,
+            .data_len = dst_data_len,
             .dma_buf_fd = -1,
         };
 
-        std::cout << "Executing Scalix engine processing..." << std::endl;
-        engine.resize(src, dst, scalix::Filter::Passthrough);
-        std::cout << "  Processing completed." << std::endl;
+        std::cout << "Executing Scalix engine 1/8 hardware resize (" << header.width << "x" << header.height
+                  << " → " << dst_width << "x" << dst_height << ")..." << std::endl;
+        engine.resize(src, dst, scalix::Filter::Bilinear);
+        std::cout << "  1/8 resize completed." << std::endl;
 
-        std::cout << "Saving output JPEG to: " << output_path << std::endl;
-        if (!write_jpeg_direct(output_path, header.width, header.height, dst_buffer.data(), stride, 90)) {
+        std::cout << "Saving 1/8 resized output JPEG to: " << output_path << std::endl;
+        if (!write_jpeg_direct(output_path, dst_width, dst_height, dst_buffer.data(), dst_stride, 90)) {
             std::cerr << "Failed to write output JPEG image." << std::endl;
             return 1;
         }
     }
 
-    std::cout << "Successfully saved: " << output_path << std::endl;
+    std::cout << "Successfully saved: " << output_path << " (" << dst_width << "x" << dst_height << ")" << std::endl;
     return 0;
 }

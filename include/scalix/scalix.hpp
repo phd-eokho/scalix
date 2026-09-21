@@ -5,10 +5,13 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
 namespace scalix {
+
+using ProfileMetrics = ScalixProfileMetrics;
 
 enum class Backend : int {
     Auto        = SCALIX_BACKEND_AUTO,
@@ -232,6 +235,59 @@ private:
 };
 
 
+/**
+ * @brief RAII handle for asynchronous tasks returned by Engine::resize_async.
+ */
+class Task {
+public:
+    explicit Task(ScalixTask* task) : task_(task) {}
+    ~Task() {
+        if (task_) {
+            scalix_task_release(task_);
+            task_ = nullptr;
+        }
+    }
+
+    Task(const Task&) = delete;
+    Task& operator=(const Task&) = delete;
+
+    Task(Task&& other) noexcept : task_(other.task_) {
+        other.task_ = nullptr;
+    }
+
+    Task& operator=(Task&& other) noexcept {
+        if (this != &other) {
+            if (task_) {
+                scalix_task_release(task_);
+            }
+            task_ = other.task_;
+            other.task_ = nullptr;
+        }
+        return *this;
+    }
+
+    /// Checks whether the asynchronous task has finished processing.
+    bool is_ready() const {
+        return task_ ? scalix_task_is_ready(task_) : false;
+    }
+
+    /// Waits for the asynchronous task to complete (timeout_ms=0 for infinite wait).
+    void wait(uint32_t timeout_ms = 0, uint8_t* out_dst_ptr = nullptr, size_t out_dst_len = 0) {
+        if (!task_) {
+            throw std::runtime_error("Task handle is null or already consumed");
+        }
+        ScalixTask* t = task_;
+        task_ = nullptr; // scalix_task_wait consumes the task
+        int status = scalix_task_wait(t, timeout_ms, out_dst_ptr, out_dst_len);
+        if (status != SCALIX_SUCCESS) {
+            throw std::runtime_error("Scalix task wait failed with status code: " + std::to_string(status));
+        }
+    }
+
+private:
+    ScalixTask* task_{nullptr};
+};
+
 class Engine {
 public:
     /**
@@ -280,6 +336,24 @@ public:
         return *this;
     }
 
+    /// Enables or disables zero-overhead profiling in the engine.
+    void set_profiling(bool enabled) {
+        if (engine_) {
+            scalix_engine_set_profiling(engine_, enabled);
+        }
+    }
+
+    /// Retrieves the most recent execution profile if profiling was enabled.
+    std::optional<ProfileMetrics> last_profile() const {
+        if (!engine_) return std::nullopt;
+        ProfileMetrics metrics{};
+        int status = scalix_engine_get_last_profile(engine_, &metrics);
+        if (status == SCALIX_SUCCESS) {
+            return metrics;
+        }
+        return std::nullopt;
+    }
+
     /// Synchronous execution
     void resize(const ImageDesc& src, ImageDesc& dst, Filter filter = Filter::Passthrough) {
         auto c_src = src.to_c();
@@ -293,6 +367,22 @@ public:
         if (status != SCALIX_SUCCESS) {
             throw std::runtime_error("Scalix resize_sync failed with status code: " + std::to_string(status));
         }
+    }
+
+    /// Asynchronous execution returning a Task handle
+    Task resize_async(const ImageDesc& src, const ImageDesc& dst, Filter filter = Filter::Passthrough) {
+        auto c_src = src.to_c();
+        auto c_dst = dst.to_c();
+        ScalixTask* task = scalix_resize_async(
+            engine_,
+            &c_src,
+            &c_dst,
+            static_cast<ScalixFilterMode>(filter)
+        );
+        if (!task) {
+            throw std::runtime_error("Failed to spawn async task in Scalix Engine");
+        }
+        return Task(task);
     }
 
     /// Callback-driven execution

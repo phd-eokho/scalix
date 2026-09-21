@@ -164,6 +164,61 @@ pub unsafe extern "C" fn scalix_engine_create_with_prefix(
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ScalixProfileMetrics {
+    pub host_unpack_ms: f64,
+    pub gpu_upload_ms: f64,
+    pub gpu_pure_blit_ms: f64,
+    pub gpu_download_ms: f64,
+    pub host_repack_ms: f64,
+    pub driver_sync_ms: f64,
+    pub total_wall_ms: f64,
+}
+
+impl From<scalix_core::ProfileMetrics> for ScalixProfileMetrics {
+    fn from(m: scalix_core::ProfileMetrics) -> Self {
+        Self {
+            host_unpack_ms: m.host_unpack_ms,
+            gpu_upload_ms: m.gpu_upload_ms,
+            gpu_pure_blit_ms: m.gpu_pure_blit_ms,
+            gpu_download_ms: m.gpu_download_ms,
+            host_repack_ms: m.host_repack_ms,
+            driver_sync_ms: m.driver_sync_ms,
+            total_wall_ms: m.total_wall_ms,
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_engine_set_profiling(
+    engine: *mut ScalixEngine,
+    enabled: bool,
+) -> i32 {
+    if engine.is_null() {
+        return SCALIX_ERR_NULL_PTR;
+    }
+    (*engine).inner.set_profiling(enabled);
+    SCALIX_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_engine_get_last_profile(
+    engine: *const ScalixEngine,
+    out_metrics: *mut ScalixProfileMetrics,
+) -> i32 {
+    if engine.is_null() || out_metrics.is_null() {
+        return SCALIX_ERR_NULL_PTR;
+    }
+    match (*engine).inner.last_profile() {
+        Some(m) => {
+            *out_metrics = m.into();
+            SCALIX_SUCCESS
+        }
+        None => SCALIX_ERR_FAILED,
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn scalix_engine_destroy(engine: *mut ScalixEngine) {
     if !engine.is_null() {
