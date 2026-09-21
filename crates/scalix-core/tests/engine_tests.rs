@@ -3,8 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use scalix_core::{
-    Backend, BackendType, Engine, FilterMode, ImageDesc, ImageDescMut, OwnedImage, PixelFormat,
-    ScalixError,
+    Backend, BackendType, Engine, EngineConfig, FilterMode, ImageDesc, ImageDescMut,
+    ImageDimensions, ImageGeometry, OwnedImage, PixelFormat, ProfileMetrics, Profiler, ScalixError,
+    WorkerPool,
 };
 
 #[test]
@@ -269,6 +270,9 @@ fn test_dma_buffer_lifecycle_and_probing() {
             assert_eq!(desc.data[0], 0xDE);
             assert_eq!(desc.data[1], 0xAD);
             assert!(desc.dma_buf_fd.is_some());
+            assert_eq!(dma_buf.dimensions(), ImageDimensions::new(width, height));
+            assert_eq!(dma_buf.width(), width);
+            assert_eq!(dma_buf.height(), height);
         }
         Err(ScalixError::DmaUnavailable(reason)) => {
             // Expected on virtualized/container environments without DMA-Heap/DRM hardware nodes
@@ -278,6 +282,10 @@ fn test_dma_buffer_lifecycle_and_probing() {
             panic!("Unexpected DMA error: {:?}", other);
         }
     }
+
+    // Dimension validation test
+    assert!(DmaBuffer::allocate_dimensions(ImageDimensions::new(0, 64), format).is_err());
+    assert!(DmaBuffer::allocate_dimensions(ImageDimensions::new(64, 0), format).is_err());
 }
 
 #[test]
@@ -479,6 +487,127 @@ fn test_pluggable_profiler_and_gpu_metrics() {
     assert!(profile.total_wall_ms > 0.0);
     assert!(profile.gpu_pure_blit_ms >= 0.0);
 }
+
+#[test]
+fn test_image_dimensions_and_geometry() {
+    let dims = ImageDimensions::new(64, 48);
+    assert!(!dims.is_empty());
+    assert_eq!(dims.checked_area(), Some(64 * 48));
+    assert!(dims.validate_even().is_ok());
+
+    let empty_dims = ImageDimensions::new(0, 100);
+    assert!(empty_dims.is_empty());
+
+    let odd_dims = ImageDimensions::new(63, 48);
+    assert!(matches!(odd_dims.validate_even(), Err(ScalixError::InvalidDimensions { .. })));
+
+    let geom = ImageGeometry::new(dims, PixelFormat::Rgba8888).unwrap();
+    assert_eq!(geom.dimensions, dims);
+    assert_eq!(geom.stride, 64 * 4);
+    assert_eq!(geom.min_buffer_size().unwrap(), 64 * 48 * 4);
+
+    let owned = OwnedImage::allocate_geometry(geom).unwrap();
+    assert_eq!(owned.dimensions(), dims);
+    assert_eq!(owned.stride(), 64 * 4);
+    assert_eq!(owned.format(), PixelFormat::Rgba8888);
+    assert_eq!(owned.geometry(), geom);
+
+    let desc = ImageDesc::from_geometry(geom, owned.data()).unwrap();
+    assert_eq!(desc.dimensions(), dims);
+    assert_eq!(desc.stride, geom.stride);
+
+    let mut owned_mut = owned.clone();
+    let desc_mut = ImageDescMut::from_geometry(geom, owned_mut.data_mut()).unwrap();
+    assert_eq!(desc_mut.dimensions(), dims);
+}
+
+#[test]
+fn test_engine_config_and_worker_pool() {
+    let config = EngineConfig::new()
+        .with_thread_prefix("cfg_eng")
+        .with_hw_threads(1)
+        .with_callback_workers(2)
+        .with_queue_capacity(512);
+
+    let backend = Arc::new(scalix_core::PassthroughBackend::new());
+    let engine = Engine::with_config(backend, config);
+
+    assert!(engine.backend_name().contains("Passthrough"));
+    assert_eq!(engine.backend_type(), BackendType::Passthrough);
+
+    let dims = ImageDimensions::new(16, 16);
+    let geom = ImageGeometry::new(dims, PixelFormat::Rgba8888).unwrap();
+    let mut src = OwnedImage::allocate_geometry(geom).unwrap();
+    src.data_mut().fill(0x7F);
+    let dst = OwnedImage::allocate_geometry(geom).unwrap();
+
+    let task = engine.resize_async(src, dst, FilterMode::Passthrough);
+    let completed = task.wait(Some(Duration::from_secs(2))).unwrap();
+    assert_eq!(completed.data()[0], 0x7F);
+
+    // Test WorkerPool try_with_prefix directly
+    let pool = WorkerPool::try_with_prefix("tst-p", 2, 256).unwrap();
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    pool.submit(move || {
+        let _ = tx.send(42);
+    }).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), 42);
+}
+
+#[test]
+fn test_custom_profiler_default_implementations() {
+    struct MinimalProfiler;
+    impl Profiler for MinimalProfiler {
+        fn is_enabled(&self) -> bool {
+            false
+        }
+        fn record(&self, _metrics: ProfileMetrics) {}
+    }
+
+    let p = MinimalProfiler;
+    assert!(!p.is_enabled());
+    assert_eq!(p.last_metrics(), None);
+    p.set_enabled(true); // Should not panic
+}
+
+#[test]
+fn test_vulkan_pipeline_trait_and_dma_allocator() {
+    use scalix_core::backend::vulkan::VulkanPipeline;
+    use scalix_core::dma::DmaAllocator;
+
+    #[cfg(target_os = "linux")]
+    {
+        let heap_alloc = scalix_core::dma::linux_dma_heap::LinuxDmaHeapAllocator;
+        assert_eq!(heap_alloc.name(), "linux_dma_heap");
+
+        let drm_alloc = scalix_core::dma::linux_drm::LinuxDrmAllocator;
+        assert_eq!(drm_alloc.name(), "linux_drm");
+    }
+
+    struct MockPipeline;
+    impl VulkanPipeline for MockPipeline {
+        fn name(&self) -> &'static str {
+            "MockPipeline"
+        }
+        fn strategy(&self) -> scalix_core::VulkanStrategy {
+            scalix_core::VulkanStrategy::Blit
+        }
+        fn process(
+            &self,
+            _src: &scalix_core::ImageDesc,
+            _dst: &mut scalix_core::ImageDescMut,
+            _options: &scalix_core::ResizeOptions,
+        ) -> scalix_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    let pipeline: Box<dyn VulkanPipeline> = Box::new(MockPipeline);
+    assert_eq!(pipeline.name(), "MockPipeline");
+    assert_eq!(pipeline.strategy(), scalix_core::VulkanStrategy::Blit);
+}
+
+
 
 
 

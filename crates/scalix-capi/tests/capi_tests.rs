@@ -93,6 +93,7 @@ fn test_c_api_async_wait() {
         assert_eq!(status, SCALIX_SUCCESS);
         assert_eq!(dst_data, src_data);
 
+        scalix_task_release(task);
         scalix_engine_destroy(engine);
     }
 }

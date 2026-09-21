@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
+
+use crossbeam_channel::bounded;
 
 use crate::backend::{Backend, PassthroughBackend};
 use crate::buffer::OwnedImage;
@@ -8,7 +9,72 @@ use crate::profiler::{ActiveProfiler, ProfileMetrics, Profiler};
 use crate::types::{
     BackendType, ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError,
 };
-use crate::worker::{TaskHandle, WorkerPool};
+use crate::worker::{TaskHandle, WorkerPool, DEFAULT_WORKER_CAPACITY};
+
+pub const MAX_THREAD_PREFIX_LEN: usize = 7;
+pub const DEFAULT_WORKER_QUEUE_CAP: usize = DEFAULT_WORKER_CAPACITY;
+pub const DEFAULT_PARALLELISM: usize = 4;
+pub const DEFAULT_NUM_HW_THREADS: usize = 1;
+pub const MIN_CALLBACK_WORKERS: usize = 2;
+
+/// Configuration options for initializing the Scalix Engine.
+#[derive(Debug, Clone)]
+pub struct EngineConfig {
+    pub num_hw_threads: usize,
+    pub num_callback_workers: usize,
+    pub worker_queue_capacity: usize,
+    pub thread_prefix: Option<String>,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(DEFAULT_PARALLELISM);
+        Self {
+            num_hw_threads: DEFAULT_NUM_HW_THREADS,
+            num_callback_workers: cpus.max(MIN_CALLBACK_WORKERS),
+            worker_queue_capacity: DEFAULT_WORKER_QUEUE_CAP,
+            thread_prefix: None,
+        }
+    }
+}
+
+impl EngineConfig {
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_thread_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.thread_prefix = Some(prefix.into());
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_hw_threads(mut self, threads: usize) -> Self {
+        self.num_hw_threads = threads;
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_callback_workers(mut self, workers: usize) -> Self {
+        self.num_callback_workers = workers;
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_queue_capacity(mut self, cap: usize) -> Self {
+        self.worker_queue_capacity = cap;
+        self
+    }
+}
 
 /// Unified Scalix Engine coordinator.
 ///
@@ -29,11 +95,12 @@ pub fn sanitize_thread_prefix(custom_prefix: Option<&str>) -> String {
     match custom_prefix {
         Some(p) if !p.trim().is_empty() => {
             let trimmed = p.trim();
-            if trimmed.len() > 7 {
-                let truncated = &trimmed[..7];
+            if trimmed.len() > MAX_THREAD_PREFIX_LEN {
+                let truncated = &trimmed[..MAX_THREAD_PREFIX_LEN];
                 log::warn!(
-                    "Thread prefix '{}' exceeds the maximum limit of 7 characters and will be truncated to '{}' to guarantee compliance with Linux 15-char thread name limit.",
+                    "Thread prefix '{}' exceeds the maximum limit of {} characters and will be truncated to '{}' to guarantee compliance with Linux 15-char thread name limit.",
                     trimmed,
+                    MAX_THREAD_PREFIX_LEN,
                     truncated
                 );
                 truncated.to_string()
@@ -43,8 +110,8 @@ pub fn sanitize_thread_prefix(custom_prefix: Option<&str>) -> String {
         }
         _ => {
             let pid = std::process::id().to_string();
-            if pid.len() > 7 {
-                pid[..7].to_string()
+            if pid.len() > MAX_THREAD_PREFIX_LEN {
+                pid[..MAX_THREAD_PREFIX_LEN].to_string()
             } else {
                 pid
             }
@@ -88,24 +155,51 @@ impl Engine {
             other => return Err(ScalixError::BackendUnavailable(other)),
         };
 
-        let num_cpus = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+        let mut config = EngineConfig::default();
+        if let Some(p) = prefix {
+            config.thread_prefix = Some(p.to_string());
+        }
 
-        let p = sanitize_thread_prefix(prefix);
+        Ok(Self::with_config_and_profiler(backend, config, profiler))
+    }
+
+    /// Initializes an Engine with custom backend and configuration.
+    pub fn with_config(backend: Arc<dyn Backend>, config: EngineConfig) -> Self {
+        let profiler: Arc<dyn Profiler> = Arc::new(ActiveProfiler::new());
+        Self::with_config_and_profiler(backend, config, profiler)
+    }
+
+    /// Initializes an Engine with custom backend, configuration, and explicit profiler.
+    pub fn with_config_and_profiler(
+        backend: Arc<dyn Backend>,
+        config: EngineConfig,
+        profiler: Arc<dyn Profiler>,
+    ) -> Self {
+        let p = sanitize_thread_prefix(config.thread_prefix.as_deref());
         let hw_prefix = format!("{}/scx-hw", p);
         let cb_prefix = format!("{}/scx-w", p);
+        let cap = config.worker_queue_capacity;
 
-        // 1 dedicated hardware context thread, multi-worker callback pool
-        let hw_executor = Arc::new(WorkerPool::with_prefix(&hw_prefix, 1));
-        let callback_pool = Arc::new(WorkerPool::with_prefix(&cb_prefix, num_cpus.max(2)));
-
-        Ok(Self {
+        Self {
             backend,
             profiler,
-            hw_executor,
-            callback_pool,
-        })
+            hw_executor: Arc::new(
+                WorkerPool::try_with_prefix(
+                    &hw_prefix,
+                    config.num_hw_threads.max(DEFAULT_NUM_HW_THREADS),
+                    cap,
+                )
+                .expect("Failed to initialize hardware executor worker pool"),
+            ),
+            callback_pool: Arc::new(
+                WorkerPool::try_with_prefix(
+                    &cb_prefix,
+                    config.num_callback_workers.max(1),
+                    cap,
+                )
+                .expect("Failed to initialize callback worker pool"),
+            ),
+        }
     }
 
     /// Enables or disables profiling dynamically.
@@ -114,47 +208,25 @@ impl Engine {
     }
 
     /// Retrieves the most recent profile metrics if profiling is active.
+    #[must_use]
     pub fn last_profile(&self) -> Option<ProfileMetrics> {
         self.profiler.last_metrics()
     }
 
     /// Returns a reference to the active profiler handle.
+    #[must_use]
     pub fn profiler(&self) -> &Arc<dyn Profiler> {
         &self.profiler
     }
 
-    /// Initializes an Engine with custom backend, configurable thread concurrency, and optional prefix.
-    pub fn with_config(
-        backend: Arc<dyn Backend>,
-        num_hw_threads: usize,
-        num_callback_workers: usize,
-        prefix: Option<&str>,
-    ) -> Self {
-        let profiler: Arc<dyn Profiler> = Arc::new(ActiveProfiler::new());
-        let p = sanitize_thread_prefix(prefix);
-        let hw_prefix = format!("{}/scx-hw", p);
-        let cb_prefix = format!("{}/scx-w", p);
-
-        Self {
-            backend,
-            profiler,
-            hw_executor: Arc::new(WorkerPool::with_prefix(
-                &hw_prefix,
-                num_hw_threads.max(1),
-            )),
-            callback_pool: Arc::new(WorkerPool::with_prefix(
-                &cb_prefix,
-                num_callback_workers.max(1),
-            )),
-        }
-    }
-
     /// Returns the name of the active backend provider.
+    #[must_use]
     pub fn backend_name(&self) -> &'static str {
         self.backend.name()
     }
 
     /// Returns the backend type of the active provider.
+    #[must_use]
     pub fn backend_type(&self) -> BackendType {
         self.backend.backend_type()
     }
@@ -171,6 +243,7 @@ impl Engine {
     }
 
     /// 2. Asynchronous execution: queues on dedicated hardware thread and returns TaskHandle.
+    #[must_use]
     pub fn resize_async<O: Into<ResizeOptions>>(
         &self,
         src: OwnedImage,
@@ -178,7 +251,7 @@ impl Engine {
         options: O,
     ) -> TaskHandle<OwnedImage> {
         let opt = options.into();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = bounded(1);
         let done = Arc::new(AtomicBool::new(false));
         let done_flag = Arc::clone(&done);
         let backend = Arc::clone(&self.backend);
@@ -187,14 +260,14 @@ impl Engine {
             let res = backend
                 .process(&src.as_desc(), &mut dst.as_desc_mut(), &opt)
                 .map(|_| dst);
-            done_flag.store(true, Ordering::Release);
             let _ = tx.send(res);
+            done_flag.store(true, Ordering::Release);
         });
 
         if let Err(e) = submit_res {
-            done.store(true, Ordering::Release);
-            let (err_tx, err_rx) = mpsc::channel();
+            let (err_tx, err_rx) = bounded(1);
             let _ = err_tx.send(Err(e));
+            done.store(true, Ordering::Release);
             return TaskHandle::new(err_rx, done);
         }
 

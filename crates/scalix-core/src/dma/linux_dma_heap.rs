@@ -2,7 +2,7 @@
 
 use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use crate::types::{PixelFormat, Result, ScalixError};
+use crate::types::{ImageDimensions, PixelFormat, Result, ScalixError};
 
 #[repr(C)]
 struct DmaHeapAllocationData {
@@ -15,7 +15,7 @@ struct DmaHeapAllocationData {
 // _IOWR('H', 0x0, struct DmaHeapAllocationData) -> 0xc0184800
 const DMA_HEAP_IOCTL_ALLOC: libc::c_ulong = 0xc0184800;
 
-const DMA_HEAP_CANDIDATE_PATHS: &[&str] = &[
+pub(crate) const DMA_HEAP_CANDIDATE_PATHS: &[&str] = &[
     "/dev/dma_heap/system",
     "/dev/dma_heap/system-uncached",
     "/dev/dma_heap/cma",
@@ -26,14 +26,32 @@ const DMA_HEAP_CANDIDATE_PATHS: &[&str] = &[
 pub struct LinuxDmaHeapAllocator;
 
 impl LinuxDmaHeapAllocator {
+    /// Checks whether any DMA-Heap device node is currently accessible.
+    #[inline]
+    #[must_use]
+    pub fn is_available() -> bool {
+        DMA_HEAP_CANDIDATE_PATHS
+            .iter()
+            .any(|path| OpenOptions::new().read(true).write(true).open(path).is_ok())
+    }
+
     /// Attempts to probe and allocate a DMA-BUF file descriptor from available DMA-Heap device nodes.
+    #[inline]
     pub fn allocate(
         width: u32,
         height: u32,
         format: PixelFormat,
     ) -> Result<(OwnedFd, usize, usize)> {
-        let stride = format.min_stride(width)?;
-        let size = format.min_buffer_size(width, height, stride)?;
+        Self::allocate_dimensions(ImageDimensions::new(width, height), format)
+    }
+
+    /// Attempts to probe and allocate a DMA-BUF file descriptor for given image dimensions.
+    pub fn allocate_dimensions(
+        dimensions: ImageDimensions,
+        format: PixelFormat,
+    ) -> Result<(OwnedFd, usize, usize)> {
+        let stride = format.min_stride(dimensions.width)?;
+        let size = format.min_buffer_size_dims(dimensions, stride)?;
 
         // Find the first accessible DMA-Heap device node
         let mut last_err = String::from("No DMA-Heap device nodes accessible");

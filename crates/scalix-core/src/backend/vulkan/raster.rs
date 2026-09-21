@@ -7,8 +7,10 @@ use std::sync::Arc;
 use ash::vk;
 use crate::backend::vulkan::blit::{to_vk_filter, to_vk_format_info};
 use crate::backend::vulkan::context::VulkanContext;
+use crate::backend::vulkan::util::{CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard};
+use crate::backend::vulkan::{VulkanPipeline, VulkanStrategy};
 use crate::profiler::{ProfileMetrics, Profiler};
-use crate::types::{FilterMode, ImageDesc, ImageDescMut, Result, ScalixError};
+use crate::types::{FilterMode, ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError};
 
 /// Pre-compiled SPIR-V binary bytecode for fullscreen triangle vertex shader.
 ///
@@ -58,12 +60,62 @@ pub const FRAG_SPV: &[u32] = &[
     17, 10, 262205, 5, 18, 12, 327767, 6, 19, 17, 18, 196670, 14, 19, 65789, 65592,
 ];
 
+struct RasterPipelineResources {
+    sampler: vk::Sampler,
+    desc_set_layout: vk::DescriptorSetLayout,
+    pipeline_layout: vk::PipelineLayout,
+    render_pass: vk::RenderPass,
+    vert_module: vk::ShaderModule,
+    frag_module: vk::ShaderModule,
+    pipeline: vk::Pipeline,
+    framebuffer: vk::Framebuffer,
+    desc_pool: vk::DescriptorPool,
+    ctx: Arc<VulkanContext>,
+}
+
+impl Drop for RasterPipelineResources {
+    fn drop(&mut self) {
+        let d = &self.ctx.device;
+        unsafe {
+            if self.desc_pool != vk::DescriptorPool::null() {
+                d.destroy_descriptor_pool(self.desc_pool, None);
+            }
+            if self.framebuffer != vk::Framebuffer::null() {
+                d.destroy_framebuffer(self.framebuffer, None);
+            }
+            if self.pipeline != vk::Pipeline::null() {
+                d.destroy_pipeline(self.pipeline, None);
+            }
+            if self.pipeline_layout != vk::PipelineLayout::null() {
+                d.destroy_pipeline_layout(self.pipeline_layout, None);
+            }
+            if self.render_pass != vk::RenderPass::null() {
+                d.destroy_render_pass(self.render_pass, None);
+            }
+            if self.desc_set_layout != vk::DescriptorSetLayout::null() {
+                d.destroy_descriptor_set_layout(self.desc_set_layout, None);
+            }
+            if self.vert_module != vk::ShaderModule::null() {
+                d.destroy_shader_module(self.vert_module, None);
+            }
+            if self.frag_module != vk::ShaderModule::null() {
+                d.destroy_shader_module(self.frag_module, None);
+            }
+            if self.sampler != vk::Sampler::null() {
+                d.destroy_sampler(self.sampler, None);
+            }
+        }
+    }
+}
+
 pub struct VulkanRasterResizer {
     ctx: Arc<VulkanContext>,
     profiler: Arc<dyn Profiler>,
 }
 
 impl VulkanRasterResizer {
+    #[inline]
+    #[must_use]
     pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Self {
         Self { ctx, profiler }
     }
@@ -98,35 +150,22 @@ impl VulkanRasterResizer {
         };
 
         unsafe {
-            // 1. Create Staging Buffers
-            let src_buf_info = vk::BufferCreateInfo {
-                size: src_size,
-                usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                ..Default::default()
-            };
-            let src_staging_buf = device.create_buffer(&src_buf_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create src staging buffer: {}", e))
-            })?;
-
-            let src_mem_reqs = device.get_buffer_memory_requirements(src_staging_buf);
-            let src_mem_type = self.ctx.find_memory_type(
-                src_mem_reqs.memory_type_bits,
+            // 1. Create Staging Buffers via RAII guards
+            let src_staging = GpuBuffer::allocate(
+                &self.ctx,
+                src_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
-            let src_alloc_info = vk::MemoryAllocateInfo {
-                allocation_size: src_mem_reqs.size,
-                memory_type_index: src_mem_type,
-                ..Default::default()
-            };
-            let src_staging_mem = device.allocate_memory(&src_alloc_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate src staging memory: {}", e))
-            })?;
-            device.bind_buffer_memory(src_staging_buf, src_staging_mem, 0).unwrap();
+            let src_staging_buf = src_staging.buffer;
+            let src_staging_mem = src_staging.memory;
 
             // Host Unpack RGB888 -> RGBA8888 if needed
             let t_unpack_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
-            let ptr = device.map_memory(src_staging_mem, 0, src_size, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+            let ptr = device
+                .map_memory(src_staging_mem, 0, src_size, vk::MemoryMapFlags::empty())
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map src staging memory: {e}")))?
+                as *mut u8;
             if src_is_rgb {
                 let num_pixels = (src.width * src.height) as usize;
                 for p in 0..num_pixels {
@@ -143,87 +182,40 @@ impl VulkanRasterResizer {
             device.unmap_memory(src_staging_mem);
             let host_unpack_ms = t_unpack_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
 
-            let dst_buf_info = vk::BufferCreateInfo {
-                size: dst_size,
-                usage: vk::BufferUsageFlags::TRANSFER_DST,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                ..Default::default()
-            };
-            let dst_staging_buf = device.create_buffer(&dst_buf_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create dst staging buffer: {}", e))
-            })?;
-
-            let dst_mem_reqs = device.get_buffer_memory_requirements(dst_staging_buf);
-            let dst_mem_type = self.ctx.find_memory_type(
-                dst_mem_reqs.memory_type_bits,
+            let dst_staging = GpuBuffer::allocate(
+                &self.ctx,
+                dst_size,
+                vk::BufferUsageFlags::TRANSFER_DST,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
-            let dst_alloc_info = vk::MemoryAllocateInfo {
-                allocation_size: dst_mem_reqs.size,
-                memory_type_index: dst_mem_type,
-                ..Default::default()
-            };
-            let dst_staging_mem = device.allocate_memory(&dst_alloc_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate dst staging memory: {}", e))
-            })?;
-            device.bind_buffer_memory(dst_staging_buf, dst_staging_mem, 0).unwrap();
+            let dst_staging_buf = dst_staging.buffer;
+            let dst_staging_mem = dst_staging.memory;
 
             // 2. Create Source Image (SAMPLED | TRANSFER_DST) and Destination Image (COLOR_ATTACHMENT | TRANSFER_SRC)
-            let src_img_info = vk::ImageCreateInfo {
-                image_type: vk::ImageType::TYPE_2D,
-                format: vk_format,
-                extent: vk::Extent3D { width: src.width, height: src.height, depth: 1 },
-                mip_levels: 1,
-                array_layers: 1,
-                samples: vk::SampleCountFlags::TYPE_1,
-                tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                initial_layout: vk::ImageLayout::UNDEFINED,
-                ..Default::default()
-            };
-            let src_image = device.create_image(&src_img_info, None).unwrap();
-            let src_img_mem_reqs = device.get_image_memory_requirements(src_image);
-            let src_img_mem_type = self.ctx.find_memory_type(
-                src_img_mem_reqs.memory_type_bits,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            let mut src_gpu_img = GpuImage::allocate(
+                &self.ctx,
+                vk_format,
+                src.width,
+                src.height,
+                1,
+                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
             )?;
-            let src_img_alloc = vk::MemoryAllocateInfo {
-                allocation_size: src_img_mem_reqs.size,
-                memory_type_index: src_img_mem_type,
-                ..Default::default()
-            };
-            let src_img_mem = device.allocate_memory(&src_img_alloc, None).unwrap();
-            device.bind_image_memory(src_image, src_img_mem, 0).unwrap();
+            let src_image = src_gpu_img.image;
 
-            let dst_img_info = vk::ImageCreateInfo {
-                image_type: vk::ImageType::TYPE_2D,
-                format: vk_format,
-                extent: vk::Extent3D { width: dst.width, height: dst.height, depth: 1 },
-                mip_levels: 1,
-                array_layers: 1,
-                samples: vk::SampleCountFlags::TYPE_1,
-                tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                initial_layout: vk::ImageLayout::UNDEFINED,
-                ..Default::default()
-            };
-            let dst_image = device.create_image(&dst_img_info, None).unwrap();
-            let dst_img_mem_reqs = device.get_image_memory_requirements(dst_image);
-            let dst_img_mem_type = self.ctx.find_memory_type(
-                dst_img_mem_reqs.memory_type_bits,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            let mut dst_gpu_img = GpuImage::allocate(
+                &self.ctx,
+                vk_format,
+                dst.width,
+                dst.height,
+                1,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
             )?;
-            let dst_img_alloc = vk::MemoryAllocateInfo {
-                allocation_size: dst_img_mem_reqs.size,
-                memory_type_index: dst_img_mem_type,
-                ..Default::default()
-            };
-            let dst_img_mem = device.allocate_memory(&dst_img_alloc, None).unwrap();
-            device.bind_image_memory(dst_image, dst_img_mem, 0).unwrap();
+            let dst_image = dst_gpu_img.image;
 
-            // 3. Create Image Views
+            // 3. Create Image Views via GpuImage helper
+            let src_view = src_gpu_img.create_view(vk_format, vk::ImageAspectFlags::COLOR)?;
+            let dst_view = dst_gpu_img.create_view(vk_format, vk::ImageAspectFlags::COLOR)?;
+
             let subresource_range = vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
@@ -231,24 +223,6 @@ impl VulkanRasterResizer {
                 base_array_layer: 0,
                 layer_count: 1,
             };
-
-            let src_view_info = vk::ImageViewCreateInfo {
-                image: src_image,
-                view_type: vk::ImageViewType::TYPE_2D,
-                format: vk_format,
-                subresource_range,
-                ..Default::default()
-            };
-            let src_view = device.create_image_view(&src_view_info, None).unwrap();
-
-            let dst_view_info = vk::ImageViewCreateInfo {
-                image: dst_image,
-                view_type: vk::ImageViewType::TYPE_2D,
-                format: vk_format,
-                subresource_range,
-                ..Default::default()
-            };
-            let dst_view = device.create_image_view(&dst_view_info, None).unwrap();
 
             // 4. Create Hardware Sampler
             let sampler_info = vk::SamplerCreateInfo {
@@ -267,7 +241,9 @@ impl VulkanRasterResizer {
                 max_lod: 0.0,
                 ..Default::default()
             };
-            let sampler = device.create_sampler(&sampler_info, None).unwrap();
+            let sampler = device
+                .create_sampler(&sampler_info, None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create sampler: {e}")))?;
 
             // 5. Create Descriptor Set Layout, Pipeline Layout & Render Pass
             let dsl_binding = vk::DescriptorSetLayoutBinding {
@@ -283,14 +259,18 @@ impl VulkanRasterResizer {
                 p_bindings: &dsl_binding,
                 ..Default::default()
             };
-            let desc_set_layout = device.create_descriptor_set_layout(&dsl_info, None).unwrap();
+            let desc_set_layout = device
+                .create_descriptor_set_layout(&dsl_info, None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create descriptor set layout: {e}")))?;
 
             let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
                 set_layout_count: 1,
                 p_set_layouts: &desc_set_layout,
                 ..Default::default()
             };
-            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None).unwrap();
+            let pipeline_layout = device
+                .create_pipeline_layout(&pipeline_layout_info, None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create pipeline layout: {e}")))?;
 
             let color_attachment = vk::AttachmentDescription {
                 format: vk_format,
@@ -320,7 +300,9 @@ impl VulkanRasterResizer {
                 p_subpasses: &subpass,
                 ..Default::default()
             };
-            let render_pass = device.create_render_pass(&render_pass_info, None).unwrap();
+            let render_pass = device
+                .create_render_pass(&render_pass_info, None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create render pass: {e}")))?;
 
             // 6. Create Shaders & Graphics Pipeline
             let vert_module_info = vk::ShaderModuleCreateInfo {
@@ -328,16 +310,21 @@ impl VulkanRasterResizer {
                 p_code: VERT_SPV.as_ptr(),
                 ..Default::default()
             };
-            let vert_module = device.create_shader_module(&vert_module_info, None).unwrap();
+            let vert_module = device
+                .create_shader_module(&vert_module_info, None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create vert shader module: {e}")))?;
 
             let frag_module_info = vk::ShaderModuleCreateInfo {
                 code_size: std::mem::size_of_val(FRAG_SPV),
                 p_code: FRAG_SPV.as_ptr(),
                 ..Default::default()
             };
-            let frag_module = device.create_shader_module(&frag_module_info, None).unwrap();
+            let frag_module = device
+                .create_shader_module(&frag_module_info, None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create frag shader module: {e}")))?;
 
-            let main_name = std::ffi::CString::new("main").unwrap();
+            let main_name = std::ffi::CStr::from_bytes_with_nul(b"main\0")
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Invalid shader entry point CStr: {e}")))?;
             let shader_stages = [
                 vk::PipelineShaderStageCreateInfo {
                     stage: vk::ShaderStageFlags::VERTEX,
@@ -425,7 +412,9 @@ impl VulkanRasterResizer {
                 layers: 1,
                 ..Default::default()
             };
-            let framebuffer = device.create_framebuffer(&fb_info, None).unwrap();
+            let framebuffer = device
+                .create_framebuffer(&fb_info, None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create framebuffer: {e}")))?;
 
             // 8. Create Descriptor Pool & Descriptor Set
             let pool_size = vk::DescriptorPoolSize {
@@ -438,14 +427,22 @@ impl VulkanRasterResizer {
                 p_pool_sizes: &pool_size,
                 ..Default::default()
             };
-            let desc_pool = device.create_descriptor_pool(&desc_pool_info, None).unwrap();
+            let desc_pool = device
+                .create_descriptor_pool(&desc_pool_info, None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create descriptor pool: {e}")))?;
+
             let desc_alloc_info = vk::DescriptorSetAllocateInfo {
                 descriptor_pool: desc_pool,
                 descriptor_set_count: 1,
                 p_set_layouts: &desc_set_layout,
                 ..Default::default()
             };
-            let desc_set = device.allocate_descriptor_sets(&desc_alloc_info).unwrap()[0];
+            let desc_set = device
+                .allocate_descriptor_sets(&desc_alloc_info)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to allocate descriptor sets: {e}")))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| ScalixError::ExecutionFailed("Allocated empty descriptor sets".to_string()))?;
 
             let desc_image_info = vk::DescriptorImageInfo {
                 sampler,
@@ -463,25 +460,30 @@ impl VulkanRasterResizer {
             };
             device.update_descriptor_sets(&[write_desc], &[]);
 
-            // 9. Command Buffer & Timestamps
-            let alloc_info = vk::CommandBufferAllocateInfo {
-                command_pool: self.ctx.command_pool,
-                level: vk::CommandBufferLevel::PRIMARY,
-                command_buffer_count: 1,
-                ..Default::default()
+            // RAII guard to safely drop pipeline resources
+            let _pipeline_res = RasterPipelineResources {
+                sampler,
+                desc_set_layout,
+                pipeline_layout,
+                render_pass,
+                vert_module,
+                frag_module,
+                pipeline,
+                framebuffer,
+                desc_pool,
+                ctx: Arc::clone(&self.ctx),
             };
-            let cmd_buf = device.allocate_command_buffers(&alloc_info).unwrap()[0];
 
-            let query_pool = if is_profiling {
-                let query_pool_info = vk::QueryPoolCreateInfo {
-                    query_type: vk::QueryType::TIMESTAMP,
-                    query_count: 4,
-                    ..Default::default()
-                };
-                device.create_query_pool(&query_pool_info, None).ok()
+            // 9. Command Buffer & Timestamps via RAII guards
+            let cmd_guard = CommandBufferGuard::allocate(&self.ctx)?;
+            let cmd_buf = cmd_guard.cmd_buf;
+
+            let query_guard = if is_profiling {
+                QueryPoolGuard::new(&self.ctx, 4)
             } else {
                 None
             };
+            let query_pool = query_guard.as_ref().map(|q| q.pool);
 
             let begin_info = vk::CommandBufferBeginInfo {
                 flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
@@ -661,7 +663,9 @@ impl VulkanRasterResizer {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::BOTTOM_OF_PIPE, qp, 3);
             }
 
-            device.end_command_buffer(cmd_buf).unwrap();
+            device
+                .end_command_buffer(cmd_buf)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to end command buffer: {e}")))?;
 
             // Submit and synchronize
             let submit_info = vk::SubmitInfo {
@@ -670,8 +674,12 @@ impl VulkanRasterResizer {
                 ..Default::default()
             };
             let t_sync_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
-            device.queue_submit(self.ctx.queue, &[submit_info], vk::Fence::null()).unwrap();
-            device.queue_wait_idle(self.ctx.queue).unwrap();
+            device
+                .queue_submit(self.ctx.queue, &[submit_info], vk::Fence::null())
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to submit queue: {e}")))?;
+            device
+                .queue_wait_idle(self.ctx.queue)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to wait for queue idle: {e}")))?;
             let driver_sync_ms = t_sync_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
 
             let mut gpu_upload_ms = 0.0;
@@ -691,12 +699,14 @@ impl VulkanRasterResizer {
                     gpu_pure_blit_ms = timestamps[2].saturating_sub(timestamps[1]) as f64 * period_ms;
                     gpu_download_ms = timestamps[3].saturating_sub(timestamps[2]) as f64 * period_ms;
                 }
-                device.destroy_query_pool(qp, None);
             }
 
             // Copy result from staging buffer to destination slice (with RGBA -> RGB repack if necessary)
             let t_repack_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
-            let out_ptr = device.map_memory(dst_staging_mem, 0, dst_size, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
+            let out_ptr = device
+                .map_memory(dst_staging_mem, 0, dst_size, vk::MemoryMapFlags::empty())
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map dst staging memory: {e}")))?
+                as *const u8;
             if dst_is_rgb {
                 let num_pixels = (dst.width * dst.height) as usize;
                 for p in 0..num_pixels {
@@ -725,29 +735,24 @@ impl VulkanRasterResizer {
                 });
             }
 
-            // Cleanup resources
-            device.free_command_buffers(self.ctx.command_pool, &[cmd_buf]);
-            device.destroy_descriptor_pool(desc_pool, None);
-            device.destroy_framebuffer(framebuffer, None);
-            device.destroy_pipeline(pipeline, None);
-            device.destroy_pipeline_layout(pipeline_layout, None);
-            device.destroy_render_pass(render_pass, None);
-            device.destroy_descriptor_set_layout(desc_set_layout, None);
-            device.destroy_shader_module(vert_module, None);
-            device.destroy_shader_module(frag_module, None);
-            device.destroy_sampler(sampler, None);
-            device.destroy_image_view(src_view, None);
-            device.destroy_image_view(dst_view, None);
-            device.destroy_image(src_image, None);
-            device.free_memory(src_img_mem, None);
-            device.destroy_image(dst_image, None);
-            device.free_memory(dst_img_mem, None);
-            device.destroy_buffer(src_staging_buf, None);
-            device.free_memory(src_staging_mem, None);
-            device.destroy_buffer(dst_staging_buf, None);
-            device.free_memory(dst_staging_mem, None);
-
             Ok(())
         }
+    }
+}
+
+impl VulkanPipeline for VulkanRasterResizer {
+    #[inline]
+    fn name(&self) -> &'static str {
+        "VulkanRasterResizer"
+    }
+
+    #[inline]
+    fn strategy(&self) -> VulkanStrategy {
+        VulkanStrategy::Raster
+    }
+
+    #[inline]
+    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()> {
+        self.process(src, dst, options.filter)
     }
 }

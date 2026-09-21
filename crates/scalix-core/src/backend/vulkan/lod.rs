@@ -8,6 +8,8 @@ use std::sync::Arc;
 use ash::vk;
 use crate::backend::vulkan::blit::{to_vk_filter, to_vk_format_info};
 use crate::backend::vulkan::context::VulkanContext;
+use crate::backend::vulkan::util::{CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard};
+use crate::backend::vulkan::{VulkanPipeline, VulkanStrategy};
 use crate::profiler::{ProfileMetrics, Profiler};
 use crate::types::{ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError};
 
@@ -17,6 +19,8 @@ pub struct VulkanLodDownscaler {
 }
 
 impl VulkanLodDownscaler {
+    #[inline]
+    #[must_use]
     pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Self {
         Self { ctx, profiler }
     }
@@ -38,27 +42,22 @@ impl VulkanLodDownscaler {
         let vk_filter = to_vk_filter(options.filter);
         let device = &self.ctx.device;
 
-        // Calculate required pyramid mip levels to reach the target destination resolution.
-        // We only generate down to the smallest mip level whose dimensions are >= dst dimensions,
-        // and cap by options.vulkan.max_mip_levels if specified (> 0).
-        let mut num_levels = 1u32;
-        let mut cur_w = src.width;
-        let mut cur_h = src.height;
-        let max_limit = if options.vulkan.max_mip_levels > 0 {
-            options.vulkan.max_mip_levels
+        // Branchless single-cycle hardware intrinsic calculation using ilog2
+        let ratio = if dst.width == 0 || dst.height == 0 {
+            1
         } else {
-            u32::MAX
+            (src.width / dst.width).min(src.height / dst.height)
         };
-
-        while num_levels < max_limit
-            && (cur_w / 2) >= dst.width
-            && (cur_h / 2) >= dst.height
-            && (cur_w > 1 || cur_h > 1)
-        {
-            num_levels += 1;
-            cur_w /= 2;
-            cur_h /= 2;
-        }
+        let num_levels = if ratio > 1 {
+            let calculated = ratio.ilog2().saturating_add(1);
+            if options.vulkan.max_mip_levels > 0 {
+                calculated.min(options.vulkan.max_mip_levels)
+            } else {
+                calculated
+            }
+        } else {
+            1
+        };
 
         let src_size = if src_is_rgb {
             (src.width as usize * src.height as usize * 4) as vk::DeviceSize
@@ -73,38 +72,21 @@ impl VulkanLodDownscaler {
         };
 
         unsafe {
-            // 1. Create Staging Buffers
-            let src_buf_info = vk::BufferCreateInfo {
-                size: src_size,
-                usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                ..Default::default()
-            };
-            let src_staging_buf = device.create_buffer(&src_buf_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create src staging buffer: {}", e))
-            })?;
-
-            let src_mem_reqs = device.get_buffer_memory_requirements(src_staging_buf);
-            let src_mem_type = self.ctx.find_memory_type(
-                src_mem_reqs.memory_type_bits,
+            // 1. Create Staging Buffers via RAII guards
+            let src_staging = GpuBuffer::allocate(
+                &self.ctx,
+                src_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
-
-            let src_alloc_info = vk::MemoryAllocateInfo {
-                allocation_size: src_mem_reqs.size,
-                memory_type_index: src_mem_type,
-                ..Default::default()
-            };
-            let src_staging_mem = device.allocate_memory(&src_alloc_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate src staging memory: {}", e))
-            })?;
-            device.bind_buffer_memory(src_staging_buf, src_staging_mem, 0).unwrap();
+            let src_staging_buf = src_staging.buffer;
+            let src_staging_mem = src_staging.memory;
 
             // Copy source data into staging memory (unpack RGB -> RGBA if needed)
             let t_unpack_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
             let mapped_src = device
                 .map_memory(src_staging_mem, 0, src_size, vk::MemoryMapFlags::empty())
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map src staging memory: {}", e)))?
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map src staging memory: {e}")))?
                 as *mut u8;
 
             if src_is_rgb {
@@ -125,133 +107,55 @@ impl VulkanLodDownscaler {
             let host_unpack_ms = t_unpack_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
 
             // 2. Create Destination Staging Buffer
-            let dst_buf_info = vk::BufferCreateInfo {
-                size: dst_size,
-                usage: vk::BufferUsageFlags::TRANSFER_DST,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                ..Default::default()
-            };
-            let dst_staging_buf = device.create_buffer(&dst_buf_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create dst staging buffer: {}", e))
-            })?;
-
-            let dst_mem_reqs = device.get_buffer_memory_requirements(dst_staging_buf);
-            let dst_mem_type = self.ctx.find_memory_type(
-                dst_mem_reqs.memory_type_bits,
+            let dst_staging = GpuBuffer::allocate(
+                &self.ctx,
+                dst_size,
+                vk::BufferUsageFlags::TRANSFER_DST,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
-
-            let dst_alloc_info = vk::MemoryAllocateInfo {
-                allocation_size: dst_mem_reqs.size,
-                memory_type_index: dst_mem_type,
-                ..Default::default()
-            };
-            let dst_staging_mem = device.allocate_memory(&dst_alloc_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate dst staging memory: {}", e))
-            })?;
-            device.bind_buffer_memory(dst_staging_buf, dst_staging_mem, 0).unwrap();
+            let dst_staging_buf = dst_staging.buffer;
+            let dst_staging_mem = dst_staging.memory;
 
             // 3. Create Multi-Level Source VkImage (Mip Pyramid Allocation)
-            let src_img_info = vk::ImageCreateInfo {
-                image_type: vk::ImageType::TYPE_2D,
-                format: vk_format,
-                extent: vk::Extent3D {
-                    width: src.width,
-                    height: src.height,
-                    depth: 1,
-                },
-                mip_levels: num_levels,
-                array_layers: 1,
-                samples: vk::SampleCountFlags::TYPE_1,
-                tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                initial_layout: vk::ImageLayout::UNDEFINED,
-                ..Default::default()
-            };
-            let src_image = device.create_image(&src_img_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create multi-level src image: {}", e))
-            })?;
-
-            let src_img_reqs = device.get_image_memory_requirements(src_image);
-            let src_img_mem_type = self.ctx.find_memory_type(
-                src_img_reqs.memory_type_bits,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            let src_gpu_img = GpuImage::allocate(
+                &self.ctx,
+                vk_format,
+                src.width,
+                src.height,
+                num_levels,
+                vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST,
             )?;
-            let src_img_alloc = vk::MemoryAllocateInfo {
-                allocation_size: src_img_reqs.size,
-                memory_type_index: src_img_mem_type,
-                ..Default::default()
-            };
-            let src_img_mem = device.allocate_memory(&src_img_alloc, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate src image memory: {}", e))
-            })?;
-            device.bind_image_memory(src_image, src_img_mem, 0).unwrap();
+            let src_image = src_gpu_img.image;
 
             // 4. Create Single-Level Destination VkImage
-            let dst_img_info = vk::ImageCreateInfo {
-                image_type: vk::ImageType::TYPE_2D,
-                format: dst_vk_format,
-                extent: vk::Extent3D {
-                    width: dst.width,
-                    height: dst.height,
-                    depth: 1,
-                },
-                mip_levels: 1,
-                array_layers: 1,
-                samples: vk::SampleCountFlags::TYPE_1,
-                tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                initial_layout: vk::ImageLayout::UNDEFINED,
-                ..Default::default()
-            };
-            let dst_image = device.create_image(&dst_img_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create dst image: {}", e))
-            })?;
-
-            let dst_img_reqs = device.get_image_memory_requirements(dst_image);
-            let dst_img_mem_type = self.ctx.find_memory_type(
-                dst_img_reqs.memory_type_bits,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            let dst_gpu_img = GpuImage::allocate(
+                &self.ctx,
+                dst_vk_format,
+                dst.width,
+                dst.height,
+                1,
+                vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST,
             )?;
-            let dst_img_alloc = vk::MemoryAllocateInfo {
-                allocation_size: dst_img_reqs.size,
-                memory_type_index: dst_img_mem_type,
-                ..Default::default()
-            };
-            let dst_img_mem = device.allocate_memory(&dst_img_alloc, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate dst image memory: {}", e))
-            })?;
-            device.bind_image_memory(dst_image, dst_img_mem, 0).unwrap();
+            let dst_image = dst_gpu_img.image;
 
             // 5. Allocate and Record Command Buffer
-            let alloc_info = vk::CommandBufferAllocateInfo {
-                command_pool: self.ctx.command_pool,
-                level: vk::CommandBufferLevel::PRIMARY,
-                command_buffer_count: 1,
-                ..Default::default()
-            };
-            let cmd_buf = device.allocate_command_buffers(&alloc_info).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate command buffer: {}", e))
-            })?[0];
+            let cmd_guard = CommandBufferGuard::allocate(&self.ctx)?;
+            let cmd_buf = cmd_guard.cmd_buf;
 
-            let query_pool = if is_profiling {
-                let qp_info = vk::QueryPoolCreateInfo {
-                    query_type: vk::QueryType::TIMESTAMP,
-                    query_count: 4,
-                    ..Default::default()
-                };
-                device.create_query_pool(&qp_info, None).ok()
+            let query_guard = if is_profiling {
+                QueryPoolGuard::new(&self.ctx, 4)
             } else {
                 None
             };
+            let query_pool = query_guard.as_ref().map(|q| q.pool);
 
             let begin_info = vk::CommandBufferBeginInfo {
                 flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
                 ..Default::default()
             };
-            device.begin_command_buffer(cmd_buf, &begin_info).unwrap();
+            device
+                .begin_command_buffer(cmd_buf, &begin_info)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to begin command buffer: {e}")))?;
 
             if let Some(qp) = query_pool {
                 device.cmd_reset_query_pool(cmd_buf, qp, 0, 4);
@@ -567,7 +471,9 @@ impl VulkanLodDownscaler {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::TRANSFER, qp, 3);
             }
 
-            device.end_command_buffer(cmd_buf).unwrap();
+            device
+                .end_command_buffer(cmd_buf)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to end command buffer: {e}")))?;
 
             // 7. Submit Queue and Synchronize
             let submit_info = vk::SubmitInfo {
@@ -578,11 +484,11 @@ impl VulkanLodDownscaler {
             let t_sync_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
             device
                 .queue_submit(self.ctx.queue, &[submit_info], vk::Fence::null())
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to submit queue: {}", e)))?;
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to submit queue: {e}")))?;
 
             device
                 .queue_wait_idle(self.ctx.queue)
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Queue wait idle failed: {}", e)))?;
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Queue wait idle failed: {e}")))?;
             let driver_sync_ms = t_sync_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
 
             let mut gpu_upload_ms = 0.0;
@@ -603,14 +509,13 @@ impl VulkanLodDownscaler {
                     gpu_pure_blit_ms = timestamps[2].saturating_sub(timestamps[1]) as f64 * period_ms;
                     gpu_download_ms = timestamps[3].saturating_sub(timestamps[2]) as f64 * period_ms;
                 }
-                device.destroy_query_pool(qp, None);
             }
 
             // 8. Copy Back from Destination Staging Memory (pack RGBA -> RGB if needed)
             let t_repack_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
             let mapped_dst = device
                 .map_memory(dst_staging_mem, 0, dst_size, vk::MemoryMapFlags::empty())
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map dst staging memory: {}", e)))?
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map dst staging memory: {e}")))?
                 as *const u8;
 
             if dst_is_rgb {
@@ -642,18 +547,24 @@ impl VulkanLodDownscaler {
                 });
             }
 
-            // Cleanup GPU Resources
-            device.free_command_buffers(self.ctx.command_pool, &[cmd_buf]);
-            device.destroy_image(dst_image, None);
-            device.free_memory(dst_img_mem, None);
-            device.destroy_image(src_image, None);
-            device.free_memory(src_img_mem, None);
-            device.destroy_buffer(dst_staging_buf, None);
-            device.free_memory(dst_staging_mem, None);
-            device.destroy_buffer(src_staging_buf, None);
-            device.free_memory(src_staging_mem, None);
+            Ok(())
         }
+    }
+}
 
-        Ok(())
+impl VulkanPipeline for VulkanLodDownscaler {
+    #[inline]
+    fn name(&self) -> &'static str {
+        "VulkanLodDownscaler"
+    }
+
+    #[inline]
+    fn strategy(&self) -> VulkanStrategy {
+        VulkanStrategy::LodPyramid
+    }
+
+    #[inline]
+    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()> {
+        self.process(src, dst, options)
     }
 }

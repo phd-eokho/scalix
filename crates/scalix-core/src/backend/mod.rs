@@ -2,7 +2,7 @@ pub mod passthrough;
 pub mod vulkan;
 
 pub use passthrough::PassthroughBackend;
-pub use vulkan::{VulkanBackend, VulkanOptions, VulkanStrategy};
+pub use vulkan::{VulkanBackend, VulkanOptions, VulkanPipeline, VulkanStrategy};
 
 use crate::types::{BackendType, ImageDesc, ImageDescMut, ResizeOptions, Result};
 

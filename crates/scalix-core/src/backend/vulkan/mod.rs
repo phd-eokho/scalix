@@ -12,6 +12,7 @@ pub mod context;
 pub mod lod;
 pub mod raster;
 pub mod strategy;
+pub mod util;
 
 pub use blit::VulkanBlitter;
 pub use compute::VulkanComputeResizer;
@@ -19,11 +20,19 @@ pub use context::VulkanContext;
 pub use lod::VulkanLodDownscaler;
 pub use raster::VulkanRasterResizer;
 pub use strategy::{VulkanOptions, VulkanStrategy};
+pub use util::{CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard};
 
 use std::sync::Arc;
 use crate::backend::Backend;
 use crate::profiler::{ActiveProfiler, Profiler};
 use crate::types::{BackendType, FilterMode, ImageDesc, ImageDescMut, ResizeOptions, Result};
+
+/// Pluggable interface for Vulkan execution pipelines.
+pub trait VulkanPipeline: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn strategy(&self) -> VulkanStrategy;
+    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()>;
+}
 
 pub struct VulkanBackend {
     ctx: Arc<VulkanContext>,
@@ -58,33 +67,38 @@ impl VulkanBackend {
         })
     }
 
+    #[inline]
+    #[must_use]
     pub fn context(&self) -> &Arc<VulkanContext> {
         &self.ctx
     }
 
+    #[inline]
+    #[must_use]
     pub fn profiler(&self) -> &Arc<dyn Profiler> {
         &self.profiler
     }
 }
 
 impl Backend for VulkanBackend {
+    #[inline]
     fn name(&self) -> &'static str {
         "Vulkan Hardware Backend (Headless / Compute / Blit / Raster)"
     }
 
+    #[inline]
     fn backend_type(&self) -> BackendType {
         BackendType::Vulkan
     }
 
+    #[inline]
     fn is_available(&self) -> bool {
         true
     }
 
     fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()> {
         if options.filter == FilterMode::Passthrough {
-            let copy_len = src.data.len().min(dst.data.len());
-            dst.data[..copy_len].copy_from_slice(&src.data[..copy_len]);
-            return Ok(());
+            return crate::backend::PassthroughBackend::new().process(src, dst, options);
         }
 
         let chosen_strategy = match options.vulkan.strategy {
@@ -96,7 +110,7 @@ impl Backend for VulkanBackend {
         };
 
         match chosen_strategy {
-            VulkanStrategy::Blit | VulkanStrategy::Auto => {
+            VulkanStrategy::Blit => {
                 self.blitter.process(src, dst, options.filter)
             }
             VulkanStrategy::Raster => {
@@ -108,6 +122,7 @@ impl Backend for VulkanBackend {
             VulkanStrategy::Compute => {
                 self.compute.process(src, dst, options.filter)
             }
+            VulkanStrategy::Auto => unreachable!("Auto strategy mapped prior to execution"),
         }
     }
 }

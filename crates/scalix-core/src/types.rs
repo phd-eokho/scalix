@@ -1,5 +1,69 @@
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(C)]
+pub struct ImageDimensions {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ImageDimensions {
+    #[inline]
+    #[must_use]
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn checked_area(self) -> Option<usize> {
+        (self.width as usize).checked_mul(self.height as usize)
+    }
+
+    #[inline]
+    pub fn validate_even(self) -> Result<()> {
+        if self.width % 2 != 0 || self.height % 2 != 0 {
+            Err(ScalixError::InvalidDimensions {
+                width: self.width,
+                height: self.height,
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(C)]
+pub struct ImageGeometry {
+    pub dimensions: ImageDimensions,
+    pub stride: usize,
+    pub format: PixelFormat,
+}
+
+impl ImageGeometry {
+    #[inline]
+    pub fn new(dimensions: ImageDimensions, format: PixelFormat) -> Result<Self> {
+        let stride = format.min_stride(dimensions.width)?;
+        Ok(Self {
+            dimensions,
+            stride,
+            format,
+        })
+    }
+
+    #[inline]
+    pub fn min_buffer_size(&self) -> Result<usize> {
+        self.format.min_buffer_size_dims(self.dimensions, self.stride)
+    }
+}
+
 /// Pixel format definitions supported across backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
@@ -19,6 +83,8 @@ pub enum PixelFormat {
 impl PixelFormat {
     /// Returns the bytes per pixel for packed formats.
     /// For planar/semi-planar formats (NV12, YUV420p), returns None.
+    #[inline]
+    #[must_use]
     pub const fn bytes_per_pixel(self) -> Option<usize> {
         match self {
             PixelFormat::Rgba8888 | PixelFormat::Bgra8888 => Some(4),
@@ -32,7 +98,11 @@ impl PixelFormat {
     }
 
     /// Computes minimum byte stride for a given width.
+    #[inline]
     pub fn min_stride(self, width: u32) -> Result<usize> {
+        if width == 0 {
+            return Err(ScalixError::InvalidDimensions { width: 0, height: 0 });
+        }
         if let Some(bpp) = self.bytes_per_pixel() {
             (width as usize)
                 .checked_mul(bpp)
@@ -44,11 +114,20 @@ impl PixelFormat {
     }
 
     /// Computes minimum required buffer size for an image of given dimensions and stride.
+    #[inline]
     pub fn min_buffer_size(self, width: u32, height: u32, stride: usize) -> Result<usize> {
-        if width == 0 || height == 0 {
-            return Err(ScalixError::InvalidDimensions { width, height });
+        self.min_buffer_size_dims(ImageDimensions::new(width, height), stride)
+    }
+
+    /// Computes minimum required buffer size for given image dimensions and stride.
+    pub fn min_buffer_size_dims(self, dims: ImageDimensions, stride: usize) -> Result<usize> {
+        if dims.is_empty() {
+            return Err(ScalixError::InvalidDimensions {
+                width: dims.width,
+                height: dims.height,
+            });
         }
-        let min_s = self.min_stride(width)?;
+        let min_s = self.min_stride(dims.width)?;
         if stride < min_s {
             return Err(ScalixError::InvalidStride {
                 stride,
@@ -57,23 +136,39 @@ impl PixelFormat {
         }
 
         match self {
-            PixelFormat::Nv12 | PixelFormat::Yuv420p => {
-                // Y plane (stride * height) + UV planes (stride * height / 2)
-                let y_size = stride
-                    .checked_mul(height as usize)
-                    .ok_or(ScalixError::InvalidDimensions { width, height })?;
-                let uv_size = y_size / 2;
-                Ok(y_size + uv_size)
-            }
-            _ => {
-                let h = height as usize;
-                // Last row needs at least min_stride bytes, preceding rows need stride bytes
-                let preceding = stride
-                    .checked_mul(h.saturating_sub(1))
-                    .ok_or(ScalixError::InvalidDimensions { width, height })?;
-                Ok(preceding + min_s)
-            }
+            PixelFormat::Nv12 | PixelFormat::Yuv420p => self.min_planar_size(dims, stride),
+            _ => self.min_packed_size(dims, stride, min_s),
         }
+    }
+
+    #[inline]
+    fn min_planar_size(self, dims: ImageDimensions, stride: usize) -> Result<usize> {
+        dims.validate_even()?;
+        let y_size = stride
+            .checked_mul(dims.height as usize)
+            .ok_or(ScalixError::InvalidDimensions {
+                width: dims.width,
+                height: dims.height,
+            })?;
+        let uv_size = y_size / 2;
+        y_size.checked_add(uv_size).ok_or(ScalixError::InvalidDimensions {
+            width: dims.width,
+            height: dims.height,
+        })
+    }
+
+    #[inline]
+    fn min_packed_size(self, dims: ImageDimensions, stride: usize, min_s: usize) -> Result<usize> {
+        let preceding = stride
+            .checked_mul((dims.height as usize).saturating_sub(1))
+            .ok_or(ScalixError::InvalidDimensions {
+                width: dims.width,
+                height: dims.height,
+            })?;
+        preceding.checked_add(min_s).ok_or(ScalixError::InvalidDimensions {
+            width: dims.width,
+            height: dims.height,
+        })
     }
 }
 
@@ -184,7 +279,25 @@ impl<'a> ImageDesc<'a> {
         })
     }
 
-    pub fn with_dma_buf(mut self, fd: i32) -> Self {
+    pub fn from_geometry(geom: ImageGeometry, data: &'a [u8]) -> Result<Self> {
+        Self::new(
+            geom.dimensions.width,
+            geom.dimensions.height,
+            geom.stride,
+            geom.format,
+            data,
+        )
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dimensions(&self) -> ImageDimensions {
+        ImageDimensions::new(self.width, self.height)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn with_dma_buf(mut self, fd: i32) -> Self {
         self.dma_buf_fd = Some(fd);
         self
     }
@@ -226,7 +339,25 @@ impl<'a> ImageDescMut<'a> {
         })
     }
 
-    pub fn with_dma_buf(mut self, fd: i32) -> Self {
+    pub fn from_geometry(geom: ImageGeometry, data: &'a mut [u8]) -> Result<Self> {
+        Self::new(
+            geom.dimensions.width,
+            geom.dimensions.height,
+            geom.stride,
+            geom.format,
+            data,
+        )
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dimensions(&self) -> ImageDimensions {
+        ImageDimensions::new(self.width, self.height)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn with_dma_buf(mut self, fd: i32) -> Self {
         self.dma_buf_fd = Some(fd);
         self
     }
@@ -259,6 +390,8 @@ impl From<FilterMode> for ResizeOptions {
 }
 
 impl ResizeOptions {
+    #[inline]
+    #[must_use]
     pub fn new(filter: FilterMode) -> Self {
         Self {
             filter,
@@ -266,11 +399,15 @@ impl ResizeOptions {
         }
     }
 
+    #[inline]
+    #[must_use]
     pub fn with_vulkan_strategy(mut self, strategy: crate::backend::vulkan::VulkanStrategy) -> Self {
         self.vulkan.strategy = strategy;
         self
     }
 
+    #[inline]
+    #[must_use]
     pub fn with_max_mip_levels(mut self, max_levels: u32) -> Self {
         self.vulkan.max_mip_levels = max_levels;
         self

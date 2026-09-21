@@ -3,9 +3,18 @@ use std::slice;
 use std::time::Duration;
 
 use scalix_core::{
-    BackendType, Engine, FilterMode, ImageDesc, ImageDescMut, OwnedImage, PixelFormat, ScalixError,
-    TaskHandle,
+    BackendType, Engine, FilterMode, ImageDesc, ImageDescMut, OwnedImage, PixelFormat, Result,
+    ScalixError, TaskHandle,
 };
+
+macro_rules! ffi_catch {
+    ($fallback:expr, $body:block) => {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body)).unwrap_or($fallback)
+    };
+    ($body:block) => {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body));
+    };
+}
 
 pub const SCALIX_SUCCESS: i32 = 0;
 pub const SCALIX_ERR_NULL_PTR: i32 = -1;
@@ -193,29 +202,80 @@ pub struct ScalixEngine {
 }
 
 pub struct ScalixTask {
-    inner: TaskHandle<OwnedImage>,
+    inner: Option<TaskHandle<OwnedImage>>,
+    result: Option<OwnedImage>,
+}
+
+unsafe fn extract_image_desc<'a>(desc: *const ScalixImageDesc) -> Result<ImageDesc<'a>> {
+    if desc.is_null() {
+        return Err(ScalixError::NullPointer);
+    }
+    let d = &*desc;
+    if d.host_ptr.is_null() {
+        return Err(ScalixError::NullPointer);
+    }
+    let slice = slice::from_raw_parts(d.host_ptr, d.data_len);
+    let mut image_desc = ImageDesc::new(
+        d.width,
+        d.height,
+        d.stride_bytes,
+        d.format.into(),
+        slice,
+    )?;
+    if d.dma_buf_fd >= 0 {
+        image_desc = image_desc.with_dma_buf(d.dma_buf_fd);
+    }
+    Ok(image_desc)
+}
+
+unsafe fn extract_image_desc_mut<'a>(desc: *mut ScalixImageDesc) -> Result<ImageDescMut<'a>> {
+    if desc.is_null() {
+        return Err(ScalixError::NullPointer);
+    }
+    let d = &mut *desc;
+    if d.host_ptr.is_null() {
+        return Err(ScalixError::NullPointer);
+    }
+    let slice = slice::from_raw_parts_mut(d.host_ptr, d.data_len);
+    let mut image_desc = ImageDescMut::new(
+        d.width,
+        d.height,
+        d.stride_bytes,
+        d.format.into(),
+        slice,
+    )?;
+    if d.dma_buf_fd >= 0 {
+        image_desc = image_desc.with_dma_buf(d.dma_buf_fd);
+    }
+    Ok(image_desc)
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_engine_create(backend: ScalixBackendType) -> *mut ScalixEngine {
-    scalix_engine_create_with_prefix(backend, std::ptr::null())
+    ffi_catch!(std::ptr::null_mut(), {
+        scalix_engine_create_with_prefix(backend, std::ptr::null())
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_engine_create_with_prefix(
     backend: ScalixBackendType,
     thread_prefix: *const std::os::raw::c_char,
 ) -> *mut ScalixEngine {
-    let prefix = if thread_prefix.is_null() {
-        None
-    } else {
-        std::ffi::CStr::from_ptr(thread_prefix).to_str().ok()
-    };
+    ffi_catch!(std::ptr::null_mut(), {
+        let prefix = if thread_prefix.is_null() {
+            None
+        } else {
+            std::ffi::CStr::from_ptr(thread_prefix).to_str().ok()
+        };
 
-    match Engine::with_prefix(backend.into(), prefix) {
-        Ok(engine) => Box::into_raw(Box::new(ScalixEngine { inner: engine })),
-        Err(_) => std::ptr::null_mut(),
-    }
+        match Engine::with_prefix(backend.into(), prefix) {
+            Ok(engine) => Box::into_raw(Box::new(ScalixEngine { inner: engine })),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
 }
 
 #[repr(C)]
@@ -245,212 +305,237 @@ impl From<scalix_core::ProfileMetrics> for ScalixProfileMetrics {
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_engine_set_profiling(
     engine: *mut ScalixEngine,
     enabled: bool,
 ) -> i32 {
-    if engine.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
-    (*engine).inner.set_profiling(enabled);
-    SCALIX_SUCCESS
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        if engine.is_null() {
+            return SCALIX_ERR_NULL_PTR;
+        }
+        (*engine).inner.set_profiling(enabled);
+        SCALIX_SUCCESS
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_engine_get_last_profile(
     engine: *const ScalixEngine,
     out_metrics: *mut ScalixProfileMetrics,
 ) -> i32 {
-    if engine.is_null() || out_metrics.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
-    match (*engine).inner.last_profile() {
-        Some(m) => {
-            *out_metrics = m.into();
-            SCALIX_SUCCESS
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        if engine.is_null() || out_metrics.is_null() {
+            return SCALIX_ERR_NULL_PTR;
         }
-        None => SCALIX_ERR_FAILED,
-    }
+        match (*engine).inner.last_profile() {
+            Some(m) => {
+                *out_metrics = m.into();
+                SCALIX_SUCCESS
+            }
+            None => SCALIX_ERR_FAILED,
+        }
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn scalix_engine_destroy(engine: *mut ScalixEngine) {
-    if !engine.is_null() {
-        drop(Box::from_raw(engine));
-    }
+    ffi_catch!({
+        if !engine.is_null() {
+            drop(Box::from_raw(engine));
+        }
+    });
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_resize_sync_with_options(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
     dst: *mut ScalixImageDesc,
     options: *const ScalixResizeOptions,
 ) -> i32 {
-    if engine.is_null() || src.is_null() || dst.is_null() || options.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        if engine.is_null() || options.is_null() {
+            return SCALIX_ERR_NULL_PTR;
+        }
 
-    let src = &*src;
-    let dst = &mut *dst;
-    let options = &*options;
+        let src_desc = match extract_image_desc(src) {
+            Ok(d) => d,
+            Err(e) => return map_error_to_code(e),
+        };
 
-    if src.host_ptr.is_null() || dst.host_ptr.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
+        let mut dst_desc = match extract_image_desc_mut(dst) {
+            Ok(d) => d,
+            Err(e) => return map_error_to_code(e),
+        };
 
-    let src_slice = slice::from_raw_parts(src.host_ptr, src.data_len);
-    let dst_slice = slice::from_raw_parts_mut(dst.host_ptr, dst.data_len);
-
-    let src_desc = match ImageDesc::new(
-        src.width,
-        src.height,
-        src.stride_bytes,
-        src.format.into(),
-        src_slice,
-    ) {
-        Ok(d) => d,
-        Err(e) => return map_error_to_code(e),
-    };
-
-    let mut dst_desc = match ImageDescMut::new(
-        dst.width,
-        dst.height,
-        dst.stride_bytes,
-        dst.format.into(),
-        dst_slice,
-    ) {
-        Ok(d) => d,
-        Err(e) => return map_error_to_code(e),
-    };
-
-    let core_options: scalix_core::ResizeOptions = (*options).into();
-    match (*engine).inner.resize_sync(&src_desc, &mut dst_desc, core_options) {
-        Ok(()) => SCALIX_SUCCESS,
-        Err(e) => map_error_to_code(e),
-    }
+        let core_options: scalix_core::ResizeOptions = (*options).into();
+        match (*engine).inner.resize_sync(&src_desc, &mut dst_desc, core_options) {
+            Ok(()) => SCALIX_SUCCESS,
+            Err(e) => map_error_to_code(e),
+        }
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_resize_sync(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
     dst: *mut ScalixImageDesc,
     filter: ScalixFilterMode,
 ) -> i32 {
-    let options = ScalixResizeOptions {
-        filter,
-        vulkan: ScalixVulkanOptions {
-            strategy: ScalixStrategy::Auto,
-            max_mip_levels: 0,
-        },
-    };
-    scalix_resize_sync_with_options(engine, src, dst, &options)
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        let options = ScalixResizeOptions {
+            filter,
+            vulkan: ScalixVulkanOptions {
+                strategy: ScalixStrategy::Auto,
+                max_mip_levels: 0,
+            },
+        };
+        scalix_resize_sync_with_options(engine, src, dst, &options)
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_resize_async_with_options(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
     dst: *const ScalixImageDesc,
     options: *const ScalixResizeOptions,
 ) -> *mut ScalixTask {
-    if engine.is_null() || src.is_null() || dst.is_null() || options.is_null() {
-        return std::ptr::null_mut();
-    }
+    ffi_catch!(std::ptr::null_mut(), {
+        if engine.is_null() || src.is_null() || dst.is_null() || options.is_null() {
+            return std::ptr::null_mut();
+        }
 
-    let src = &*src;
-    let dst = &*dst;
-    let options = &*options;
+        let src = &*src;
+        let dst = &*dst;
+        let options = &*options;
 
-    if src.host_ptr.is_null() {
-        return std::ptr::null_mut();
-    }
+        if src.host_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
 
-    let src_slice = slice::from_raw_parts(src.host_ptr, src.data_len);
-    let src_owned = match OwnedImage::from_vec(
-        src.width,
-        src.height,
-        src.stride_bytes,
-        src.format.into(),
-        src_slice.to_vec(),
-    ) {
-        Ok(img) => img,
-        Err(_) => return std::ptr::null_mut(),
-    };
+        let src_slice = slice::from_raw_parts(src.host_ptr, src.data_len);
+        let src_owned = match OwnedImage::from_vec(
+            src.width,
+            src.height,
+            src.stride_bytes,
+            src.format.into(),
+            src_slice.to_vec(),
+        ) {
+            Ok(img) => img,
+            Err(_) => return std::ptr::null_mut(),
+        };
 
-    let dst_owned = match OwnedImage::allocate(dst.width, dst.height, dst.format.into()) {
-        Ok(img) => img,
-        Err(_) => return std::ptr::null_mut(),
-    };
+        let dst_owned = match OwnedImage::allocate(dst.width, dst.height, dst.format.into()) {
+            Ok(img) => img,
+            Err(_) => return std::ptr::null_mut(),
+        };
 
-    let core_options: scalix_core::ResizeOptions = (*options).into();
-    let task = (*engine).inner.resize_async(src_owned, dst_owned, core_options);
-    Box::into_raw(Box::new(ScalixTask { inner: task }))
+        let core_options: scalix_core::ResizeOptions = (*options).into();
+        let task = (*engine).inner.resize_async(src_owned, dst_owned, core_options);
+        Box::into_raw(Box::new(ScalixTask {
+            inner: Some(task),
+            result: None,
+        }))
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_resize_async(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
     dst: *const ScalixImageDesc,
     filter: ScalixFilterMode,
 ) -> *mut ScalixTask {
-    let options = ScalixResizeOptions {
-        filter,
-        vulkan: ScalixVulkanOptions {
-            strategy: ScalixStrategy::Auto,
-            max_mip_levels: 0,
-        },
-    };
-    scalix_resize_async_with_options(engine, src, dst, &options)
+    ffi_catch!(std::ptr::null_mut(), {
+        let options = ScalixResizeOptions {
+            filter,
+            vulkan: ScalixVulkanOptions {
+                strategy: ScalixStrategy::Auto,
+                max_mip_levels: 0,
+            },
+        };
+        scalix_resize_async_with_options(engine, src, dst, &options)
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_task_is_ready(task: *const ScalixTask) -> bool {
-    if task.is_null() {
-        return false;
-    }
-    (*task).inner.is_ready()
+    ffi_catch!(false, {
+        if task.is_null() {
+            return false;
+        }
+        let task_ref = &*task;
+        if task_ref.result.is_some() {
+            return true;
+        }
+        task_ref.inner.as_ref().map_or(false, |t| t.is_ready())
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_task_wait(
     task: *mut ScalixTask,
     timeout_ms: u32,
     out_dst_ptr: *mut u8,
     out_dst_len: usize,
 ) -> i32 {
-    if task.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
-
-    let task = Box::from_raw(task);
-    let timeout = if timeout_ms == 0 {
-        None
-    } else {
-        Some(Duration::from_millis(timeout_ms as u64))
-    };
-
-    match task.inner.wait(timeout) {
-        Ok(image) => {
-            if !out_dst_ptr.is_null() {
-                if out_dst_len < image.data.len() {
-                    return SCALIX_ERR_BUFFER_TOO_SMALL;
-                }
-                std::ptr::copy_nonoverlapping(image.data.as_ptr(), out_dst_ptr, image.data.len());
-            }
-            SCALIX_SUCCESS
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        if task.is_null() {
+            return SCALIX_ERR_NULL_PTR;
         }
-        Err(e) => map_error_to_code(e),
-    }
+
+        let task_ref = &mut *task;
+        let timeout = if timeout_ms == 0 {
+            None
+        } else {
+            Some(Duration::from_millis(timeout_ms as u64))
+        };
+
+        let image = if let Some(ref img) = task_ref.result {
+            img
+        } else if let Some(inner) = task_ref.inner.take() {
+            match inner.wait(timeout) {
+                Ok(img) => {
+                    task_ref.result = Some(img);
+                    task_ref.result.as_ref().unwrap()
+                }
+                Err(ScalixError::Timeout) => {
+                    task_ref.inner = Some(inner);
+                    return SCALIX_ERR_TIMEOUT;
+                }
+                Err(e) => return map_error_to_code(e),
+            }
+        } else {
+            return SCALIX_ERR_FAILED;
+        };
+
+        if !out_dst_ptr.is_null() {
+            if out_dst_len < image.data().len() {
+                return SCALIX_ERR_BUFFER_TOO_SMALL;
+            }
+            std::ptr::copy_nonoverlapping(image.data().as_ptr(), out_dst_ptr, image.data().len());
+        }
+        SCALIX_SUCCESS
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn scalix_task_release(task: *mut ScalixTask) {
-    if !task.is_null() {
-        drop(Box::from_raw(task));
-    }
+    ffi_catch!({
+        if !task.is_null() {
+            drop(Box::from_raw(task));
+        }
+    });
 }
 
 // Wrapper struct for transmitting raw callback pointers across thread boundaries safely
@@ -461,6 +546,7 @@ struct CallbackCtx {
 unsafe impl Send for CallbackCtx {}
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_resize_submit_with_options(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
@@ -469,66 +555,69 @@ pub unsafe extern "C" fn scalix_resize_submit_with_options(
     callback: ScalixCompletionCallback,
     user_data: *mut c_void,
 ) -> i32 {
-    if engine.is_null() || src.is_null() || dst.is_null() || options.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        if engine.is_null() || src.is_null() || dst.is_null() || options.is_null() {
+            return SCALIX_ERR_NULL_PTR;
+        }
 
-    let src = &*src;
-    let dst = &*dst;
-    let options = &*options;
+        let src = &*src;
+        let dst = &*dst;
+        let options = &*options;
 
-    if src.host_ptr.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
+        if src.host_ptr.is_null() {
+            return SCALIX_ERR_NULL_PTR;
+        }
 
-    let src_slice = slice::from_raw_parts(src.host_ptr, src.data_len);
-    let src_owned = match OwnedImage::from_vec(
-        src.width,
-        src.height,
-        src.stride_bytes,
-        src.format.into(),
-        src_slice.to_vec(),
-    ) {
-        Ok(img) => img,
-        Err(e) => return map_error_to_code(e),
-    };
+        let src_slice = slice::from_raw_parts(src.host_ptr, src.data_len);
+        let src_owned = match OwnedImage::from_vec(
+            src.width,
+            src.height,
+            src.stride_bytes,
+            src.format.into(),
+            src_slice.to_vec(),
+        ) {
+            Ok(img) => img,
+            Err(e) => return map_error_to_code(e),
+        };
 
-    let dst_owned = match OwnedImage::allocate(dst.width, dst.height, dst.format.into()) {
-        Ok(img) => img,
-        Err(e) => return map_error_to_code(e),
-    };
+        let dst_owned = match OwnedImage::allocate(dst.width, dst.height, dst.format.into()) {
+            Ok(img) => img,
+            Err(e) => return map_error_to_code(e),
+        };
 
-    let ctx = CallbackCtx {
-        callback,
-        user_data: user_data as usize,
-    };
+        let ctx = CallbackCtx {
+            callback,
+            user_data: user_data as usize,
+        };
 
-    let core_options: scalix_core::ResizeOptions = (*options).into();
-    let res = (*engine).inner.resize_callback(
-        src_owned,
-        dst_owned,
-        core_options,
-        move |task_res| match task_res {
-            Ok(_img) => {
-                if let Some(cb) = ctx.callback {
-                    unsafe { cb(SCALIX_SUCCESS, ctx.user_data as *mut c_void) };
+        let core_options: scalix_core::ResizeOptions = (*options).into();
+        let res = (*engine).inner.resize_callback(
+            src_owned,
+            dst_owned,
+            core_options,
+            move |task_res| match task_res {
+                Ok(_img) => {
+                    if let Some(cb) = ctx.callback {
+                        unsafe { cb(SCALIX_SUCCESS, ctx.user_data as *mut c_void) };
+                    }
                 }
-            }
-            Err(e) => {
-                if let Some(cb) = ctx.callback {
-                    unsafe { cb(map_error_to_code(e), ctx.user_data as *mut c_void) };
+                Err(e) => {
+                    if let Some(cb) = ctx.callback {
+                        unsafe { cb(map_error_to_code(e), ctx.user_data as *mut c_void) };
+                    }
                 }
-            }
-        },
-    );
+            },
+        );
 
-    match res {
-        Ok(()) => SCALIX_SUCCESS,
-        Err(e) => map_error_to_code(e),
-    }
+        match res {
+            Ok(()) => SCALIX_SUCCESS,
+            Err(e) => map_error_to_code(e),
+        }
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_resize_submit(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
@@ -537,14 +626,16 @@ pub unsafe extern "C" fn scalix_resize_submit(
     callback: ScalixCompletionCallback,
     user_data: *mut c_void,
 ) -> i32 {
-    let options = ScalixResizeOptions {
-        filter,
-        vulkan: ScalixVulkanOptions {
-            strategy: ScalixStrategy::Auto,
-            max_mip_levels: 0,
-        },
-    };
-    scalix_resize_submit_with_options(engine, src, dst, &options, callback, user_data)
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        let options = ScalixResizeOptions {
+            filter,
+            vulkan: ScalixVulkanOptions {
+                strategy: ScalixStrategy::Auto,
+                max_mip_levels: 0,
+            },
+        };
+        scalix_resize_submit_with_options(engine, src, dst, &options, callback, user_data)
+    })
 }
 
 pub struct ScalixDmaBuffer {
@@ -552,127 +643,152 @@ pub struct ScalixDmaBuffer {
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_allocate(
     width: u32,
     height: u32,
     format: ScalixPixelFormat,
 ) -> *mut ScalixDmaBuffer {
-    match scalix_core::DmaBuffer::allocate(width, height, format.into()) {
-        Ok(buf) => Box::into_raw(Box::new(ScalixDmaBuffer { inner: buf })),
-        Err(_) => std::ptr::null_mut(),
-    }
+    ffi_catch!(std::ptr::null_mut(), {
+        match scalix_core::DmaBuffer::allocate(width, height, format.into()) {
+            Ok(buf) => Box::into_raw(Box::new(ScalixDmaBuffer { inner: buf })),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn scalix_dma_buffer_free(buffer: *mut ScalixDmaBuffer) {
-    if !buffer.is_null() {
-        drop(Box::from_raw(buffer));
-    }
+    ffi_catch!({
+        if !buffer.is_null() {
+            drop(Box::from_raw(buffer));
+        }
+    });
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_get_fd(buffer: *const ScalixDmaBuffer) -> i32 {
-    if buffer.is_null() {
-        return -1;
-    }
-    (*buffer).inner.fd()
+    ffi_catch!(-1, {
+        if buffer.is_null() {
+            return -1;
+        }
+        (*buffer).inner.fd()
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_get_host_ptr(buffer: *const ScalixDmaBuffer) -> *mut u8 {
-    if buffer.is_null() {
-        return std::ptr::null_mut();
-    }
-    (*buffer).inner.host_ptr()
+    ffi_catch!(std::ptr::null_mut(), {
+        if buffer.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*buffer).inner.host_ptr()
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_get_size(buffer: *const ScalixDmaBuffer) -> usize {
-    if buffer.is_null() {
-        return 0;
-    }
-    (*buffer).inner.size()
+    ffi_catch!(0, {
+        if buffer.is_null() {
+            return 0;
+        }
+        (*buffer).inner.size()
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_get_stride(buffer: *const ScalixDmaBuffer) -> usize {
-    if buffer.is_null() {
-        return 0;
-    }
-    (*buffer).inner.stride()
+    ffi_catch!(0, {
+        if buffer.is_null() {
+            return 0;
+        }
+        (*buffer).inner.stride()
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_get_desc(
     buffer: *const ScalixDmaBuffer,
     out_desc: *mut ScalixImageDesc,
 ) -> i32 {
-    if buffer.is_null() || out_desc.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        if buffer.is_null() || out_desc.is_null() {
+            return SCALIX_ERR_NULL_PTR;
+        }
 
-    let b = &(*buffer).inner;
-    let format = match b.format() {
-        PixelFormat::Rgba8888 => ScalixPixelFormat::Rgba8888,
-        PixelFormat::Bgra8888 => ScalixPixelFormat::Bgra8888,
-        PixelFormat::Rgb888 => ScalixPixelFormat::Rgb888,
-        PixelFormat::Bgr888 => ScalixPixelFormat::Bgr888,
-        PixelFormat::R8 => ScalixPixelFormat::R8,
-        PixelFormat::Rg88 => ScalixPixelFormat::Rg88,
-        PixelFormat::Nv12 => ScalixPixelFormat::Nv12,
-        PixelFormat::Yuv420p => ScalixPixelFormat::Yuv420p,
-        PixelFormat::Rgba16f => ScalixPixelFormat::Rgba16f,
-        PixelFormat::Rgba32f => ScalixPixelFormat::Rgba32f,
-    };
+        let b = &(*buffer).inner;
+        let format = match b.format() {
+            PixelFormat::Rgba8888 => ScalixPixelFormat::Rgba8888,
+            PixelFormat::Bgra8888 => ScalixPixelFormat::Bgra8888,
+            PixelFormat::Rgb888 => ScalixPixelFormat::Rgb888,
+            PixelFormat::Bgr888 => ScalixPixelFormat::Bgr888,
+            PixelFormat::R8 => ScalixPixelFormat::R8,
+            PixelFormat::Rg88 => ScalixPixelFormat::Rg88,
+            PixelFormat::Nv12 => ScalixPixelFormat::Nv12,
+            PixelFormat::Yuv420p => ScalixPixelFormat::Yuv420p,
+            PixelFormat::Rgba16f => ScalixPixelFormat::Rgba16f,
+            PixelFormat::Rgba32f => ScalixPixelFormat::Rgba32f,
+        };
 
-    *out_desc = ScalixImageDesc {
-        width: b.width(),
-        height: b.height(),
-        stride_bytes: b.stride(),
-        format,
-        host_ptr: b.host_ptr(),
-        data_len: b.size(),
-        dma_buf_fd: b.fd(),
-    };
+        *out_desc = ScalixImageDesc {
+            width: b.width(),
+            height: b.height(),
+            stride_bytes: b.stride(),
+            format,
+            host_ptr: b.host_ptr(),
+            data_len: b.size(),
+            dma_buf_fd: b.fd(),
+        };
 
-    SCALIX_SUCCESS
+        SCALIX_SUCCESS
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_sync_start(
     buffer: *const ScalixDmaBuffer,
     is_write: bool,
 ) -> i32 {
-    if buffer.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
-    let flag = if is_write {
-        scalix_core::DmaSyncFlags::Write
-    } else {
-        scalix_core::DmaSyncFlags::Read
-    };
-    match (*buffer).inner.sync_start(flag) {
-        Ok(()) => SCALIX_SUCCESS,
-        Err(e) => map_error_to_code(e),
-    }
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        if buffer.is_null() {
+            return SCALIX_ERR_NULL_PTR;
+        }
+        let flag = if is_write {
+            scalix_core::DmaSyncFlags::Write
+        } else {
+            scalix_core::DmaSyncFlags::Read
+        };
+        match (*buffer).inner.sync_start(flag) {
+            Ok(()) => SCALIX_SUCCESS,
+            Err(e) => map_error_to_code(e),
+        }
+    })
 }
 
 #[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_sync_end(
     buffer: *const ScalixDmaBuffer,
     is_write: bool,
 ) -> i32 {
-    if buffer.is_null() {
-        return SCALIX_ERR_NULL_PTR;
-    }
-    let flag = if is_write {
-        scalix_core::DmaSyncFlags::Write
-    } else {
-        scalix_core::DmaSyncFlags::Read
-    };
-    match (*buffer).inner.sync_end(flag) {
-        Ok(()) => SCALIX_SUCCESS,
-        Err(e) => map_error_to_code(e),
-    }
+    ffi_catch!(SCALIX_ERR_FAILED, {
+        if buffer.is_null() {
+            return SCALIX_ERR_NULL_PTR;
+        }
+        let flag = if is_write {
+            scalix_core::DmaSyncFlags::Write
+        } else {
+            scalix_core::DmaSyncFlags::Read
+        };
+        match (*buffer).inner.sync_end(flag) {
+            Ok(()) => SCALIX_SUCCESS,
+            Err(e) => map_error_to_code(e),
+        }
+    })
 }
-

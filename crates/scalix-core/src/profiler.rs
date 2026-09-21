@@ -30,10 +30,13 @@ pub trait Profiler: Send + Sync {
     fn record(&self, metrics: ProfileMetrics);
 
     /// Retrieves the most recent profile metrics if available.
-    fn last_metrics(&self) -> Option<ProfileMetrics>;
+    #[must_use]
+    fn last_metrics(&self) -> Option<ProfileMetrics> {
+        None
+    }
 
     /// Enables or disables profiling at runtime.
-    fn set_enabled(&self, enabled: bool);
+    fn set_enabled(&self, _enabled: bool) {}
 }
 
 /// Zero-cost No-Op Profiler (default in production builds).
@@ -58,9 +61,12 @@ impl Profiler for NoopProfiler {
     fn set_enabled(&self, _enabled: bool) {}
 }
 
+#[repr(align(64))]
+struct CacheAlignedAtomicBool(AtomicBool);
+
 /// Active Latency & GPU Hardware Profiler.
 pub struct ActiveProfiler {
-    enabled: AtomicBool,
+    enabled: CacheAlignedAtomicBool,
     last: Mutex<Option<ProfileMetrics>>,
 }
 
@@ -72,18 +78,20 @@ impl Default for ActiveProfiler {
 
 impl ActiveProfiler {
     /// Creates a new active profiler (disabled by default for zero runtime overhead).
+    #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            enabled: AtomicBool::new(false),
+            enabled: CacheAlignedAtomicBool(AtomicBool::new(false)),
             last: Mutex::new(None),
         }
     }
 }
 
 impl Profiler for ActiveProfiler {
-    #[inline(always)]
+    #[inline]
     fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
+        self.enabled.0.load(Ordering::Relaxed)
     }
 
     fn record(&self, metrics: ProfileMetrics) {
@@ -99,6 +107,6 @@ impl Profiler for ActiveProfiler {
     }
 
     fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Relaxed);
+        self.enabled.0.store(enabled, Ordering::Relaxed);
     }
 }

@@ -28,8 +28,10 @@ impl VulkanContext {
             })?
         };
 
-        let app_name = std::ffi::CString::new("Scalix Engine").unwrap();
-        let engine_name = std::ffi::CString::new("Scalix").unwrap();
+        let app_name = std::ffi::CStr::from_bytes_with_nul(b"Scalix Engine\0")
+            .map_err(|e| ScalixError::ExecutionFailed(format!("Invalid application name: {e}")))?;
+        let engine_name = std::ffi::CStr::from_bytes_with_nul(b"Scalix\0")
+            .map_err(|e| ScalixError::ExecutionFailed(format!("Invalid engine name: {e}")))?;
 
         let app_info = vk::ApplicationInfo {
             p_application_name: app_name.as_ptr(),
@@ -65,7 +67,7 @@ impl VulkanContext {
         // Pick discrete GPU if available, else first supported device
         let physical_device = physical_devices
             .iter()
-            .cloned()
+            .copied()
             .max_by_key(|&pdev| {
                 let props = unsafe { instance.get_physical_device_properties(pdev) };
                 match props.device_type {
@@ -75,7 +77,7 @@ impl VulkanContext {
                     _ => 0,
                 }
             })
-            .unwrap();
+            .ok_or_else(|| ScalixError::BackendUnavailable(crate::types::BackendType::Vulkan))?;
 
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
