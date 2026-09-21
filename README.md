@@ -8,7 +8,11 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
 
 ## Key Features
 
-* **Headless & Offscreen Native:** No display server (X11 / Wayland) required; operates cleanly in background workers, cloud servers, and embedded pipelines.
+* **Headless & Offscreen Native:** No display server (X11 / Wayland) required; executes pure offscreen GPU workloads in background workers, cloud servers, and embedded pipelines.
+* **Vulkan Offscreen Rendering Strategies:**
+  * **Hardware Blit (`Blit`):** Fixed-function 2D blitting for maximum raw throughput and zero shader overhead.
+  * **Offscreen Raster Graphics (`Raster`):** Complete graphics pipeline with vertex/fragment shaders and hardware bilinear/trilinear samplers.
+  * **Hierarchical LoD Pyramid (`LodPyramid`):** Multi-pass $2\times 2$ box filtering downscaler with configurable `max_mip_levels` to eliminate aliasing and moiré artifacts during extreme downscaling ($>4\times$).
 * **Flexible Execution Models:**
   * **Synchronous (Blocking):** Direct execution for CLI tools and deterministic pipelines.
   * **Asynchronous (Future / Task):** Non-blocking polling and timeout waits with hardware timeline semaphores.
@@ -16,7 +20,7 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
 * **In-Process Context Worker:** Embedded worker thread pool managing accelerator context affinity (single-threaded EGL / Vulkan queue ownership) and pipelining memory staging.
 * **Zero-Copy Memory Subsystem:** First-class support for Linux **DMA-BUF** and Android **AHardwareBuffer** across GPU, 2D hardware blitters, and V4L2.
 * **Multi-Language APIs:** Core engine with stable **C ABI** (`libscalix.so` / `scalix.h`), idiomatic **C++20** wrapper (`scalix.hpp`), and native **Rust** crate.
-* **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic (Catmull-Rom), Lanczos2/Lanczos3, Area Averaging, and pluggable AI Super-Resolution.
+* **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic, and hierarchical mipchain downscaling.
 
 ---
 
@@ -25,7 +29,7 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
 This matrix tracks the hardware backends, execution paradigms, and platform capabilities supported by Scalix, along with their active verification status.
 
 ### Legend
-* 🟢 **Verified & Tested:** Fully implemented and validated with automated test suite.
+* 🟢 **Verified & Tested:** Fully implemented and validated with automated test suite and benchmarks.
 * 🟡 **In Progress / Scaffolded:** Core interface or backend under active implementation.
 * ⚪ **Planned / Unverified:** Supported by architectural specification, pending implementation and test verification.
 * ⏸️ **Deferred:** Planned for future milestone (e.g. standalone daemon service).
@@ -34,14 +38,14 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 ### 1. Hardware Backends & Accelerators
 
-| Backend Provider | Subsystem / API | Host / Silicon Target | Priority | WSL2 Dev Host | Linux (x86_64) | Linux (ARM64) | Android (NDK) | Status |
+| Backend Provider | Subsystem / API | Host / Silicon Target | Priority | WSL2 Dev Host | Linux (x86_64) | Linux (ARM64) | Android (NDK) | Verification Status |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Vulkan** | Compute Shader / Offscreen | Modern GPU (AMD / NVIDIA / Intel / Adreno / Mali) | **P0** | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ *Unverified* |
-| **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | **P1** | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ *Unverified* |
-| **CPU SIMD** | AVX-512 / AVX2 / FMA | x86_64 (Zen 4/5, Intel Core) | **P3** | ⚪ Supported | ⚪ Supported | N/A | N/A | ⚪ *Unverified* |
-| **CPU SIMD** | ARM Neon / FP16 | aarch64 / armv7 | **P3** | ⚪ Cross-compile | N/A | ⚪ Supported | ⚪ Supported | ⚪ *Unverified* |
-| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | **P2** | ⚪ Mock / Loopback | ⚪ Hardware Req. | ⚪ Supported | N/A | ⚪ *Unverified* |
-| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | **P2** | ⚪ Mock / CPU | ⚪ OpenVINO | ⚪ QNN/NPU | ⚪ NNAPI/QNN | ⚪ *Unverified* |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | **P0** | 🟢 Verified | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
+| **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | **P1** | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ *Planned* |
+| **CPU SIMD** | AVX-512 / AVX2 / FMA | x86_64 (Zen 4/5, Intel Core) | **P3** | ⚪ Supported | ⚪ Supported | N/A | N/A | ⚪ *Planned* |
+| **CPU SIMD** | ARM Neon / FP16 | aarch64 / armv7 | **P3** | ⚪ Cross-compile | N/A | ⚪ Supported | ⚪ Supported | ⚪ *Planned* |
+| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | **P2** | ⚪ Mock / Loopback | ⚪ Hardware Req. | ⚪ Supported | N/A | ⚪ *Planned* |
+| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | **P2** | ⚪ Mock / CPU | ⚪ OpenVINO | ⚪ QNN/NPU | ⚪ NNAPI/QNN | ⚪ *Planned* |
 
 ---
 
@@ -49,9 +53,9 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 | Execution Mode | Description | Rust Core | C ABI | C++20 API | Verification Status |
 | :--- | :--- | :---: | :---: | :---: | :---: |
-| **Synchronous (`sync`)** | Blocking call until completion or timeout | ⚪ | ⚪ | ⚪ | ⚪ *Unverified* |
-| **Asynchronous (`async`)** | Returns `TaskHandle` / `std::future` / Rust `Future` | ⚪ | ⚪ | ⚪ | ⚪ *Unverified* |
-| **Callback (`callback`)** | Dispatches completion function on worker thread | ⚪ | ⚪ | ⚪ | ⚪ *Unverified* |
+| **Synchronous (`sync`)** | Blocking call until GPU completion or timeout | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
+| **Asynchronous (`async`)** | Returns `TaskHandle` / `std::future` / Rust `Future` | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
+| **Callback (`callback`)** | Dispatches completion function on worker thread pool | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
 
 ---
 
@@ -59,10 +63,10 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 | Feature | Interface / Handle | Linux x86_64 / WSL2 | Linux ARM64 | Android (API 26+) | Verification Status |
 | :--- | :--- | :---: | :---: | :---: | :---: |
-| **Host Memory Pointers** | Standard contiguous CPU memory buffer | ⚪ | ⚪ | ⚪ | ⚪ *Unverified* |
-| **Staging Ring Pool** | Pinned / mapped host-to-device buffer pool | ⚪ | ⚪ | ⚪ | ⚪ *Unverified* |
-| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / V4L2 zero-copy) | ⚪ | ⚪ | N/A | ⚪ *Unverified* |
-| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | N/A | N/A | ⚪ | ⚪ *Unverified* |
+| **Host Memory Pointers** | Standard contiguous CPU memory buffer (RGB/RGBA) | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
+| **Staging Ring Pool** | Pinned / mapped host-to-device buffer pool | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
+| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | 🟢 Probed / Fallback | ⚪ Supported | N/A | 🟢 **Verified** |
+| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | N/A | N/A | ⚪ | ⚪ *Planned* |
 
 ---
 
@@ -74,29 +78,39 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 #include <scalix/scalix.hpp>
 
 int main() {
-    // 1. Initialize Scalix Engine (Vulkan with OpenGL/CPU fallback)
+    // 1. Initialize Scalix Engine
     scalix::Engine engine(scalix::Backend::Auto);
+    engine.set_profiling(true); // Optional hardware latency profiling
 
     scalix::ImageDesc src{
         .width = 3840, .height = 2160, .stride_bytes = 3840 * 4,
-        .format = scalix::PixelFormat::RGBA8888, .host_ptr = src_data
+        .format = scalix::PixelFormat::Rgba8888, .host_ptr = src_data
     };
 
     scalix::ImageDesc dst{
-        .width = 1920, .height = 1080, .stride_bytes = 1920 * 4,
-        .format = scalix::PixelFormat::RGBA8888, .host_ptr = dst_data
+        .width = 320, .height = 320, .stride_bytes = 320 * 4,
+        .format = scalix::PixelFormat::Rgba8888, .host_ptr = dst_data
+    };
+
+    // Configure dynamic resize options (Strategy: Blit, Raster, LodPyramid)
+    scalix::ResizeOptions options{
+        .filter = scalix::Filter::Bilinear,
+        .vulkan = {
+            .strategy = scalix::Strategy::LodPyramid,
+            .max_mip_levels = 2, // Hierarchical anti-aliased downscale
+        },
     };
 
     // Mode A: Synchronous
-    engine.resize(src, dst, scalix::Filter::Lanczos3);
+    engine.resize(src, dst, options);
 
     // Mode B: Asynchronous Future
-    auto future = engine.resize_async(src, dst, scalix::Filter::Lanczos3);
+    auto future = engine.resize_async(src, dst, options);
     future.get(); // Wait for completion
 
     // Mode C: Callback-driven
-    engine.resize_callback(src, dst, scalix::Filter::Lanczos3, [](int status) {
-        // Handle completion
+    engine.resize_callback(src, dst, options, [](int status) {
+        // Handle completion on worker thread pool
     });
 
     return 0;
@@ -112,11 +126,19 @@ ScalixEngine* engine = scalix_engine_create(SCALIX_BACKEND_AUTO);
 
 ScalixImageDesc src = { .width = 3840, .height = 2160, .stride_bytes = 3840 * 4,
                         .format = SCALIX_FORMAT_RGBA8888, .host_ptr = src_ptr, .dma_buf_fd = -1 };
-ScalixImageDesc dst = { .width = 1920, .height = 1080, .stride_bytes = 1920 * 4,
+ScalixImageDesc dst = { .width = 320, .height = 320, .stride_bytes = 320 * 4,
                         .format = SCALIX_FORMAT_RGBA8888, .host_ptr = dst_ptr, .dma_buf_fd = -1 };
 
-// Synchronous resize
-scalix_resize_sync(engine, &src, &dst, SCALIX_FILTER_BICUBIC);
+ScalixResizeOptions options = {
+    .filter = SCALIX_FILTER_BILINEAR,
+    .vulkan = {
+        .strategy = SCALIX_STRATEGY_LOD_PYRAMID,
+        .max_mip_levels = 2,
+    },
+};
+
+// Synchronous resize with dynamic options
+scalix_resize_sync_with_options(engine, &src, &dst, &options);
 
 scalix_engine_destroy(engine);
 ```
@@ -165,7 +187,8 @@ make -C examples clean
 
 #### Individual Examples:
 * **`cpp_basic`**: Demonstrates synchronous, asynchronous callback, and zero-copy DMA buffer pre-allocation.
-* **`cpp_jpeg`**: Loads [`assets/sample.jpg`](assets/sample.jpg) using `libjpeg-turbo`, decodes directly into memory-mapped DMA buffers, executes the Scalix pipeline, and writes the output JPEG (`/tmp/output_sample.jpg`).
+* **`cpp_jpeg`**: Loads [`assets/sample.jpg`](assets/sample.jpg) using `libjpeg-turbo`, decodes directly into memory-mapped DMA buffers, executes the Scalix pipeline (`blit`, `raster`, or `lod [max_mip_levels]`), and writes the output JPEG.
+* **`cpp_benchmark`**: Micro-benchmarking multi-resolution downscaling workloads across 4K UHD, 1080p, and 720p to $320\times 320$ tensors.
 
 ---
 
@@ -187,12 +210,6 @@ Scalix provides unified zero-copy DMA buffer allocation across supported target 
 ### 3. Android (API Level 26+, `aarch64` only)
 * **Allocator:** Native **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`).
 * **Platform Gating:** Exclusively compiled for `aarch64-linux-android` (`-landroid`). Android symbols are never linked or exposed on Linux builds.
-
----
-
-## Project Architecture
-
-For deep-dive architectural specifications, backend traits, pipeline hierarchies, and threading topology, refer to [REFACTOR.md](file:///home/duty/workspace/scalix/REFACTOR.md).
 
 ---
 
