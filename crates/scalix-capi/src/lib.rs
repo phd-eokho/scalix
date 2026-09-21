@@ -66,6 +66,58 @@ impl From<ScalixBackendType> for BackendType {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalixStrategy {
+    Auto = 0,
+    Blit = 1,
+    Raster = 2,
+    LodPyramid = 3,
+    Compute = 4,
+}
+
+impl From<ScalixStrategy> for scalix_core::VulkanStrategy {
+    fn from(s: ScalixStrategy) -> Self {
+        match s {
+            ScalixStrategy::Auto => scalix_core::VulkanStrategy::Auto,
+            ScalixStrategy::Blit => scalix_core::VulkanStrategy::Blit,
+            ScalixStrategy::Raster => scalix_core::VulkanStrategy::Raster,
+            ScalixStrategy::LodPyramid => scalix_core::VulkanStrategy::LodPyramid,
+            ScalixStrategy::Compute => scalix_core::VulkanStrategy::Compute,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScalixVulkanOptions {
+    pub strategy: ScalixStrategy,
+}
+
+impl From<ScalixVulkanOptions> for scalix_core::VulkanOptions {
+    fn from(v: ScalixVulkanOptions) -> Self {
+        Self {
+            strategy: v.strategy.into(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScalixResizeOptions {
+    pub filter: ScalixFilterMode,
+    pub vulkan: ScalixVulkanOptions,
+}
+
+impl From<ScalixResizeOptions> for scalix_core::ResizeOptions {
+    fn from(o: ScalixResizeOptions) -> Self {
+        Self {
+            filter: o.filter.into(),
+            vulkan: o.vulkan.into(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalixFilterMode {
     Nearest = 0,
     Bilinear = 1,
@@ -227,18 +279,19 @@ pub unsafe extern "C" fn scalix_engine_destroy(engine: *mut ScalixEngine) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn scalix_resize_sync(
+pub unsafe extern "C" fn scalix_resize_sync_with_options(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
     dst: *mut ScalixImageDesc,
-    filter: ScalixFilterMode,
+    options: *const ScalixResizeOptions,
 ) -> i32 {
-    if engine.is_null() || src.is_null() || dst.is_null() {
+    if engine.is_null() || src.is_null() || dst.is_null() || options.is_null() {
         return SCALIX_ERR_NULL_PTR;
     }
 
     let src = &*src;
     let dst = &mut *dst;
+    let options = &*options;
 
     if src.host_ptr.is_null() || dst.host_ptr.is_null() {
         return SCALIX_ERR_NULL_PTR;
@@ -269,25 +322,43 @@ pub unsafe extern "C" fn scalix_resize_sync(
         Err(e) => return map_error_to_code(e),
     };
 
-    match (*engine).inner.resize_sync(&src_desc, &mut dst_desc, filter.into()) {
+    let core_options: scalix_core::ResizeOptions = (*options).into();
+    match (*engine).inner.resize_sync(&src_desc, &mut dst_desc, core_options) {
         Ok(()) => SCALIX_SUCCESS,
         Err(e) => map_error_to_code(e),
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn scalix_resize_async(
+pub unsafe extern "C" fn scalix_resize_sync(
+    engine: *mut ScalixEngine,
+    src: *const ScalixImageDesc,
+    dst: *mut ScalixImageDesc,
+    filter: ScalixFilterMode,
+) -> i32 {
+    let options = ScalixResizeOptions {
+        filter,
+        vulkan: ScalixVulkanOptions {
+            strategy: ScalixStrategy::Auto,
+        },
+    };
+    scalix_resize_sync_with_options(engine, src, dst, &options)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_resize_async_with_options(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
     dst: *const ScalixImageDesc,
-    filter: ScalixFilterMode,
+    options: *const ScalixResizeOptions,
 ) -> *mut ScalixTask {
-    if engine.is_null() || src.is_null() || dst.is_null() {
+    if engine.is_null() || src.is_null() || dst.is_null() || options.is_null() {
         return std::ptr::null_mut();
     }
 
     let src = &*src;
     let dst = &*dst;
+    let options = &*options;
 
     if src.host_ptr.is_null() {
         return std::ptr::null_mut();
@@ -310,8 +381,25 @@ pub unsafe extern "C" fn scalix_resize_async(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let task = (*engine).inner.resize_async(src_owned, dst_owned, filter.into());
+    let core_options: scalix_core::ResizeOptions = (*options).into();
+    let task = (*engine).inner.resize_async(src_owned, dst_owned, core_options);
     Box::into_raw(Box::new(ScalixTask { inner: task }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_resize_async(
+    engine: *mut ScalixEngine,
+    src: *const ScalixImageDesc,
+    dst: *const ScalixImageDesc,
+    filter: ScalixFilterMode,
+) -> *mut ScalixTask {
+    let options = ScalixResizeOptions {
+        filter,
+        vulkan: ScalixVulkanOptions {
+            strategy: ScalixStrategy::Auto,
+        },
+    };
+    scalix_resize_async_with_options(engine, src, dst, &options)
 }
 
 #[no_mangle]
@@ -369,20 +457,21 @@ struct CallbackCtx {
 unsafe impl Send for CallbackCtx {}
 
 #[no_mangle]
-pub unsafe extern "C" fn scalix_resize_submit(
+pub unsafe extern "C" fn scalix_resize_submit_with_options(
     engine: *mut ScalixEngine,
     src: *const ScalixImageDesc,
     dst: *const ScalixImageDesc,
-    filter: ScalixFilterMode,
+    options: *const ScalixResizeOptions,
     callback: ScalixCompletionCallback,
     user_data: *mut c_void,
 ) -> i32 {
-    if engine.is_null() || src.is_null() || dst.is_null() {
+    if engine.is_null() || src.is_null() || dst.is_null() || options.is_null() {
         return SCALIX_ERR_NULL_PTR;
     }
 
     let src = &*src;
     let dst = &*dst;
+    let options = &*options;
 
     if src.host_ptr.is_null() {
         return SCALIX_ERR_NULL_PTR;
@@ -410,18 +499,20 @@ pub unsafe extern "C" fn scalix_resize_submit(
         user_data: user_data as usize,
     };
 
+    let core_options: scalix_core::ResizeOptions = (*options).into();
     let res = (*engine).inner.resize_callback(
         src_owned,
         dst_owned,
-        filter.into(),
-        move |res| {
-            let status = match res {
-                Ok(_) => SCALIX_SUCCESS,
-                Err(e) => map_error_to_code(e),
-            };
-            if let Some(cb) = ctx.callback {
-                unsafe {
-                    cb(status, ctx.user_data as *mut c_void);
+        core_options,
+        move |task_res| match task_res {
+            Ok(_img) => {
+                if let Some(cb) = ctx.callback {
+                    unsafe { cb(SCALIX_SUCCESS, ctx.user_data as *mut c_void) };
+                }
+            }
+            Err(e) => {
+                if let Some(cb) = ctx.callback {
+                    unsafe { cb(map_error_to_code(e), ctx.user_data as *mut c_void) };
                 }
             }
         },
@@ -431,6 +522,24 @@ pub unsafe extern "C" fn scalix_resize_submit(
         Ok(()) => SCALIX_SUCCESS,
         Err(e) => map_error_to_code(e),
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_resize_submit(
+    engine: *mut ScalixEngine,
+    src: *const ScalixImageDesc,
+    dst: *const ScalixImageDesc,
+    filter: ScalixFilterMode,
+    callback: ScalixCompletionCallback,
+    user_data: *mut c_void,
+) -> i32 {
+    let options = ScalixResizeOptions {
+        filter,
+        vulkan: ScalixVulkanOptions {
+            strategy: ScalixStrategy::Auto,
+        },
+    };
+    scalix_resize_submit_with_options(engine, src, dst, &options, callback, user_data)
 }
 
 pub struct ScalixDmaBuffer {

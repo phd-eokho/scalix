@@ -143,7 +143,7 @@ int main() {
     std::cout << "[Scalix Multi-Resolution Performance Benchmark]" << std::endl;
     std::cout << "Scenario: Video Frame Stream Downscaling for Neural Model Input (→ 320x320)" << std::endl;
     std::cout << "Format: Packed RGB888 (3 Channels - Standard Tensor Input)" << std::endl;
-    std::cout << "Backend: Vulkan Option A (Hardware Blitter `vkCmdBlitImage`)" << std::endl;
+    std::cout << "Backend: Vulkan Hardware Blitter (`vkCmdBlitImage`)" << std::endl;
     std::cout << "========================================================" << std::endl;
 
     scalix::Engine engine(scalix::Backend::Auto);

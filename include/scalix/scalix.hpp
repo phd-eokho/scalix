@@ -23,6 +23,14 @@ enum class Backend : int {
     Passthrough = SCALIX_BACKEND_PASSTHROUGH
 };
 
+enum class Strategy : int {
+    Auto        = SCALIX_STRATEGY_AUTO,
+    Blit        = SCALIX_STRATEGY_BLIT,
+    Raster      = SCALIX_STRATEGY_RASTER,
+    LodPyramid  = SCALIX_STRATEGY_LOD_PYRAMID,
+    Compute     = SCALIX_STRATEGY_COMPUTE
+};
+
 enum class Filter : int {
     Nearest     = SCALIX_FILTER_NEAREST,
     Bilinear    = SCALIX_FILTER_BILINEAR,
@@ -288,6 +296,28 @@ private:
     ScalixTask* task_{nullptr};
 };
 
+struct VulkanOptions {
+    Strategy strategy{Strategy::Auto};
+
+    ScalixVulkanOptions to_c() const {
+        return ScalixVulkanOptions{
+            .strategy = static_cast<ScalixStrategy>(strategy),
+        };
+    }
+};
+
+struct ResizeOptions {
+    Filter filter{Filter::Passthrough};
+    VulkanOptions vulkan{};
+
+    ScalixResizeOptions to_c() const {
+        return ScalixResizeOptions{
+            .filter = static_cast<ScalixFilterMode>(filter),
+            .vulkan = vulkan.to_c(),
+        };
+    }
+};
+
 class Engine {
 public:
     /**
@@ -354,30 +384,42 @@ public:
         return std::nullopt;
     }
 
-    /// Synchronous execution
-    void resize(const ImageDesc& src, ImageDesc& dst, Filter filter = Filter::Passthrough) {
+    /// Synchronous execution with explicit options
+    void resize(const ImageDesc& src, ImageDesc& dst, const ResizeOptions& options) {
         auto c_src = src.to_c();
         auto c_dst = dst.to_c();
-        int status = scalix_resize_sync(
+        auto c_opt = options.to_c();
+        int status = scalix_resize_sync_with_options(
             engine_,
             &c_src,
             &c_dst,
-            static_cast<ScalixFilterMode>(filter)
+            &c_opt
         );
         if (status != SCALIX_SUCCESS) {
             throw std::runtime_error("Scalix resize_sync failed with status code: " + std::to_string(status));
         }
     }
 
-    /// Asynchronous execution returning a Task handle
-    Task resize_async(const ImageDesc& src, const ImageDesc& dst, Filter filter = Filter::Passthrough) {
+    /// Synchronous execution with filter
+    void resize(const ImageDesc& src, ImageDesc& dst, Filter filter = Filter::Passthrough) {
+        resize(src, dst, ResizeOptions{.filter = filter});
+    }
+
+    /// Synchronous execution with filter and strategy
+    void resize(const ImageDesc& src, ImageDesc& dst, Filter filter, Strategy strategy) {
+        resize(src, dst, ResizeOptions{.filter = filter, .vulkan = {.strategy = strategy}});
+    }
+
+    /// Asynchronous execution returning a Task handle with explicit options
+    Task resize_async(const ImageDesc& src, const ImageDesc& dst, const ResizeOptions& options) {
         auto c_src = src.to_c();
         auto c_dst = dst.to_c();
-        ScalixTask* task = scalix_resize_async(
+        auto c_opt = options.to_c();
+        ScalixTask* task = scalix_resize_async_with_options(
             engine_,
             &c_src,
             &c_dst,
-            static_cast<ScalixFilterMode>(filter)
+            &c_opt
         );
         if (!task) {
             throw std::runtime_error("Failed to spawn async task in Scalix Engine");
@@ -385,22 +427,33 @@ public:
         return Task(task);
     }
 
-    /// Callback-driven execution
+    /// Asynchronous execution with filter
+    Task resize_async(const ImageDesc& src, const ImageDesc& dst, Filter filter = Filter::Passthrough) {
+        return resize_async(src, dst, ResizeOptions{.filter = filter});
+    }
+
+    /// Asynchronous execution with filter and strategy
+    Task resize_async(const ImageDesc& src, const ImageDesc& dst, Filter filter, Strategy strategy) {
+        return resize_async(src, dst, ResizeOptions{.filter = filter, .vulkan = {.strategy = strategy}});
+    }
+
+    /// Callback-driven execution with explicit options
     void resize_callback(
         const ImageDesc& src,
         const ImageDesc& dst,
-        Filter filter,
+        const ResizeOptions& options,
         std::function<void(int status)> callback
     ) {
         auto* cb_ptr = new std::function<void(int status)>(std::move(callback));
         auto c_src = src.to_c();
         auto c_dst = dst.to_c();
+        auto c_opt = options.to_c();
 
-        int status = scalix_resize_submit(
+        int status = scalix_resize_submit_with_options(
             engine_,
             &c_src,
             &c_dst,
-            static_cast<ScalixFilterMode>(filter),
+            &c_opt,
             [](int code, void* user_data) {
                 auto* cb = static_cast<std::function<void(int status)>*>(user_data);
                 if (cb) {
@@ -415,6 +468,32 @@ public:
             delete cb_ptr;
             throw std::runtime_error("Scalix resize_submit failed with status code: " + std::to_string(status));
         }
+    }
+
+    /// Callback-driven execution with filter
+    void resize_callback(
+        const ImageDesc& src,
+        const ImageDesc& dst,
+        Filter filter,
+        std::function<void(int status)> callback
+    ) {
+        resize_callback(src, dst, ResizeOptions{.filter = filter}, std::move(callback));
+    }
+
+    /// Callback-driven execution with filter and strategy
+    void resize_callback(
+        const ImageDesc& src,
+        const ImageDesc& dst,
+        Filter filter,
+        Strategy strategy,
+        std::function<void(int status)> callback
+    ) {
+        resize_callback(
+            src,
+            dst,
+            ResizeOptions{.filter = filter, .vulkan = {.strategy = strategy}},
+            std::move(callback)
+        );
     }
 
 private:

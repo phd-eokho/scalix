@@ -1,4 +1,4 @@
-//! Option A: Hardware Blitter Pipeline (`vkCmdBlitImage`)
+//! Hardware Blitter Pipeline (`vkCmdBlitImage`)
 
 use std::sync::Arc;
 use ash::vk;
@@ -314,7 +314,7 @@ impl VulkanBlitter {
                 &[barrier_src_blit, barrier_dst_blit],
             );
 
-            // Issue Hardware Blit (Option A)
+            // Issue Hardware Blit
             if let Some(qp) = query_pool {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::TOP_OF_PIPE, qp, 1);
             }

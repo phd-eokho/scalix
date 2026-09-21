@@ -1,21 +1,28 @@
-//! Vulkan Pipeline Strategy Hierarchy (HW-oriented: A -> C -> D -> B)
+//! Vulkan Pipeline Strategy Hierarchy
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 pub enum VulkanStrategy {
-    /// Option A: Hardware Blitter (`vkCmdBlitImage`) using fixed-function GPU scaling units.
-    Blit,
-    /// Option C: Offscreen Raster Graphics pipeline (`vkCmdDraw` fullscreen triangle with hardware sampler).
-    Raster,
-    /// Option D: Hierarchical LoD / Mipchain Downscaler (multi-pass pyramid reduction).
-    LodPyramid,
-    /// Option B: Compute Shader Kernel (`vkCmdDispatch` with programmable filters like Lanczos3/Bicubic).
-    Compute,
-    /// Automatic selection based on hardware capabilities and filter mode.
-    Auto,
+    Auto = 0,
+    /// Hardware Blitter (`vkCmdBlitImage`) using fixed-function GPU 2D scaling units.
+    Blit = 1,
+    /// Offscreen Raster Graphics pipeline (`vkCmdDraw` fullscreen quad/triangle with hardware sampler).
+    Raster = 2,
+    /// Hierarchical LoD / Mipchain Downscaler (multi-pass pyramid reduction).
+    LodPyramid = 3,
+    /// Compute Shader Kernel (`vkCmdDispatch` with programmable filters).
+    Compute = 4,
 }
 
 impl Default for VulkanStrategy {
     fn default() -> Self {
         Self::Auto
     }
+}
+
+/// Vulkan-specific execution metadata and options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct VulkanOptions {
+    pub strategy: VulkanStrategy,
 }

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use crate::backend::{Backend, PassthroughBackend};
 use crate::buffer::OwnedImage;
 use crate::profiler::{ActiveProfiler, ProfileMetrics, Profiler};
-use crate::types::{BackendType, FilterMode, ImageDesc, ImageDescMut, Result, ScalixError};
+use crate::types::{
+    BackendType, ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError,
+};
 use crate::worker::{TaskHandle, WorkerPool};
 
 /// Unified Scalix Engine coordinator.
@@ -158,22 +160,24 @@ impl Engine {
     }
 
     /// 1. Synchronous execution: blocks caller thread until resize completes.
-    pub fn resize_sync(
+    pub fn resize_sync<O: Into<ResizeOptions>>(
         &self,
         src: &ImageDesc,
         dst: &mut ImageDescMut,
-        filter: FilterMode,
+        options: O,
     ) -> Result<()> {
-        self.backend.process(src, dst, filter)
+        let opt = options.into();
+        self.backend.process(src, dst, &opt)
     }
 
     /// 2. Asynchronous execution: queues on dedicated hardware thread and returns TaskHandle.
-    pub fn resize_async(
+    pub fn resize_async<O: Into<ResizeOptions>>(
         &self,
         src: OwnedImage,
         mut dst: OwnedImage,
-        filter: FilterMode,
+        options: O,
     ) -> TaskHandle<OwnedImage> {
+        let opt = options.into();
         let (tx, rx) = mpsc::channel();
         let done = Arc::new(AtomicBool::new(false));
         let done_flag = Arc::clone(&done);
@@ -181,7 +185,7 @@ impl Engine {
 
         let submit_res = self.hw_executor.submit(move || {
             let res = backend
-                .process(&src.as_desc(), &mut dst.as_desc_mut(), filter)
+                .process(&src.as_desc(), &mut dst.as_desc_mut(), &opt)
                 .map(|_| dst);
             done_flag.store(true, Ordering::Release);
             let _ = tx.send(res);
@@ -200,22 +204,23 @@ impl Engine {
     /// 3. Callback-driven execution:
     /// Hardware kernel executes on dedicated HW thread, then immediately dispatches
     /// the user callback / post-processing to the multi-worker thread pool.
-    pub fn resize_callback<F>(
+    pub fn resize_callback<O: Into<ResizeOptions>, F>(
         &self,
         src: OwnedImage,
         mut dst: OwnedImage,
-        filter: FilterMode,
+        options: O,
         callback: F,
     ) -> Result<()>
     where
         F: FnOnce(Result<OwnedImage>) + Send + 'static,
     {
+        let opt = options.into();
         let backend = Arc::clone(&self.backend);
         let callback_pool = Arc::clone(&self.callback_pool);
 
         self.hw_executor.submit(move || {
             let res = backend
-                .process(&src.as_desc(), &mut dst.as_desc_mut(), filter)
+                .process(&src.as_desc(), &mut dst.as_desc_mut(), &opt)
                 .map(|_| dst);
 
             // Offload callback & post-processing to the multi-worker callback pool,

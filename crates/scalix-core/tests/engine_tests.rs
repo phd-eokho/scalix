@@ -282,10 +282,10 @@ fn test_dma_buffer_lifecycle_and_probing() {
 
 #[test]
 fn test_vulkan_backend_blit_resize() {
-    use scalix_core::{VulkanBackend, VulkanStrategy};
+    use scalix_core::{ResizeOptions, VulkanBackend, VulkanStrategy};
 
-    // 1. Instantiate Vulkan backend with Option A (Hardware Blitter)
-    let vk_backend = match VulkanBackend::with_strategy(VulkanStrategy::Blit) {
+    // 1. Instantiate Vulkan backend
+    let vk_backend = match VulkanBackend::new() {
         Ok(backend) => backend,
         Err(e) => {
             println!("Vulkan backend not available on this environment ({:?}); skipping test.", e);
@@ -293,9 +293,7 @@ fn test_vulkan_backend_blit_resize() {
         }
     };
 
-    assert_eq!(vk_backend.strategy(), VulkanStrategy::Blit);
-
-    // 2. Perform 64x64 -> 32x32 downscale
+    // 2. Perform 64x64 -> 32x32 downscale with dynamic Blit strategy
     let src_w = 64;
     let src_h = 64;
     let dst_w = 32;
@@ -311,12 +309,67 @@ fn test_vulkan_backend_blit_resize() {
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
 
-    let process_res = vk_backend.process(&src_desc, &mut dst_desc, FilterMode::Bilinear);
+    let options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Blit);
+    let process_res = vk_backend.process(&src_desc, &mut dst_desc, &options);
     assert!(process_res.is_ok(), "Vulkan blit process failed: {:?}", process_res.err());
 
     // Verify destination pixels were populated by Vulkan GPU blit
     assert_eq!(dst_data[0], 0xAA);
     assert_eq!(dst_data[dst_data.len() - 1], 0xAA);
+}
+
+#[test]
+fn test_vulkan_backend_raster_resize() {
+    use scalix_core::{ResizeOptions, VulkanBackend, VulkanStrategy};
+
+    // 1. Instantiate Vulkan backend
+    let vk_backend = match VulkanBackend::new() {
+        Ok(backend) => backend,
+        Err(e) => {
+            println!("Vulkan backend not available on this environment ({:?}); skipping test.", e);
+            return;
+        }
+    };
+
+    // 2. Perform 64x64 -> 32x32 downscale with Bilinear sampling and dynamic Raster strategy
+    let src_w = 64;
+    let src_h = 64;
+    let dst_w = 32;
+    let dst_h = 32;
+    let format = PixelFormat::Rgba8888;
+
+    let src_stride = format.min_stride(src_w).unwrap();
+    let dst_stride = format.min_stride(dst_w).unwrap();
+
+    let src_data = vec![0xBBu8; src_stride * (src_h as usize)];
+    let mut dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
+
+    let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
+    let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+
+    let options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Raster);
+    let process_res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+    assert!(process_res.is_ok(), "Vulkan raster process failed: {:?}", process_res.err());
+
+    // Verify destination pixels were populated by Vulkan GPU rasterization
+    assert_eq!(dst_data[0], 0xBB);
+    assert_eq!(dst_data[dst_data.len() - 1], 0xBB);
+
+    // 3. Test Packed RGB888 format with dynamic Raster strategy
+    let rgb_format = PixelFormat::Rgb888;
+    let rgb_src_stride = rgb_format.min_stride(src_w).unwrap();
+    let rgb_dst_stride = rgb_format.min_stride(dst_w).unwrap();
+    let rgb_src_data = vec![0xCCu8; rgb_src_stride * (src_h as usize)];
+    let mut rgb_dst_data = vec![0x00u8; rgb_dst_stride * (dst_h as usize)];
+
+    let rgb_src_desc = ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_format, &rgb_src_data).unwrap();
+    let mut rgb_dst_desc = ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_format, &mut rgb_dst_data).unwrap();
+
+    let rgb_options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Raster);
+    let rgb_res = vk_backend.process(&rgb_src_desc, &mut rgb_dst_desc, &rgb_options);
+    assert!(rgb_res.is_ok(), "Vulkan raster RGB888 process failed: {:?}", rgb_res.err());
+    assert_eq!(rgb_dst_data[0], 0xCC);
+    assert_eq!(rgb_dst_data[rgb_dst_data.len() - 1], 0xCC);
 }
 
 #[test]

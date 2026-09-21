@@ -40,6 +40,15 @@ typedef enum ScalixBackendType {
     SCALIX_BACKEND_PASSTHROUGH = 6
 } ScalixBackendType;
 
+/* Execution Pipeline Strategy */
+typedef enum ScalixStrategy {
+    SCALIX_STRATEGY_AUTO        = 0,
+    SCALIX_STRATEGY_BLIT        = 1,
+    SCALIX_STRATEGY_RASTER      = 2,
+    SCALIX_STRATEGY_LOD_PYRAMID = 3,
+    SCALIX_STRATEGY_COMPUTE     = 4
+} ScalixStrategy;
+
 /* Interpolation / Scaling Filters */
 typedef enum ScalixFilterMode {
     SCALIX_FILTER_NEAREST     = 0,
@@ -63,6 +72,17 @@ typedef enum ScalixPixelFormat {
     SCALIX_FORMAT_RGBA16F  = 8,
     SCALIX_FORMAT_RGBA32F  = 9
 } ScalixPixelFormat;
+
+/* Vulkan Backend Options */
+typedef struct ScalixVulkanOptions {
+    ScalixStrategy strategy;
+} ScalixVulkanOptions;
+
+/* Dynamic Resize Options */
+typedef struct ScalixResizeOptions {
+    ScalixFilterMode filter;
+    ScalixVulkanOptions vulkan;
+} ScalixResizeOptions;
 
 /* Image Descriptor */
 typedef struct ScalixImageDesc {
@@ -146,6 +166,13 @@ int scalix_engine_get_last_profile(
 );
 
 /* 1. Synchronous Execution */
+int scalix_resize_sync_with_options(
+    ScalixEngine* engine,
+    const ScalixImageDesc* src,
+    ScalixImageDesc* dst,
+    const ScalixResizeOptions* options
+);
+
 int scalix_resize_sync(
     ScalixEngine* engine,
     const ScalixImageDesc* src,
@@ -154,6 +181,13 @@ int scalix_resize_sync(
 );
 
 /* 2. Asynchronous Execution (Task Handle / Polling / Wait) */
+ScalixTask* scalix_resize_async_with_options(
+    ScalixEngine* engine,
+    const ScalixImageDesc* src,
+    const ScalixImageDesc* dst,
+    const ScalixResizeOptions* options
+);
+
 ScalixTask* scalix_resize_async(
     ScalixEngine* engine,
     const ScalixImageDesc* src,
@@ -170,6 +204,15 @@ int scalix_task_wait(
 void scalix_task_release(ScalixTask* task);
 
 /* 3. Callback-driven Execution */
+int scalix_resize_submit_with_options(
+    ScalixEngine* engine,
+    const ScalixImageDesc* src,
+    const ScalixImageDesc* dst,
+    const ScalixResizeOptions* options,
+    ScalixCompletionCallback callback,
+    void* user_data
+);
+
 int scalix_resize_submit(
     ScalixEngine* engine,
     const ScalixImageDesc* src,

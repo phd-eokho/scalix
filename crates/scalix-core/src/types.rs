@@ -231,3 +231,43 @@ impl<'a> ImageDescMut<'a> {
         self
     }
 }
+
+/// Dynamic per-resize operation metadata and configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct ResizeOptions {
+    pub filter: FilterMode,
+    pub vulkan: crate::backend::vulkan::VulkanOptions,
+}
+
+impl Default for ResizeOptions {
+    fn default() -> Self {
+        Self {
+            filter: FilterMode::Bilinear,
+            vulkan: crate::backend::vulkan::VulkanOptions::default(),
+        }
+    }
+}
+
+impl From<FilterMode> for ResizeOptions {
+    fn from(filter: FilterMode) -> Self {
+        Self {
+            filter,
+            vulkan: crate::backend::vulkan::VulkanOptions::default(),
+        }
+    }
+}
+
+impl ResizeOptions {
+    pub fn new(filter: FilterMode) -> Self {
+        Self {
+            filter,
+            vulkan: crate::backend::vulkan::VulkanOptions::default(),
+        }
+    }
+
+    pub fn with_vulkan_strategy(mut self, strategy: crate::backend::vulkan::VulkanStrategy) -> Self {
+        self.vulkan.strategy = strategy;
+        self
+    }
+}

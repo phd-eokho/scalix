@@ -1,5 +1,5 @@
 use super::Backend;
-use crate::types::{BackendType, FilterMode, ImageDesc, ImageDescMut, Result, ScalixError};
+use crate::types::{BackendType, ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError};
 
 /// A reference passthrough backend that performs direct memory transfer
 /// without resizing (or clips/pads according to dimensions).
@@ -25,7 +25,7 @@ impl Backend for PassthroughBackend {
         true
     }
 
-    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, _filter: FilterMode) -> Result<()> {
+    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, _options: &ResizeOptions) -> Result<()> {
         if src.format != dst.format {
             return Err(ScalixError::ExecutionFailed(format!(
                 "Format conversion not supported in passthrough mode (src: {:?}, dst: {:?})",

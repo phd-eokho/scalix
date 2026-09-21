@@ -2,9 +2,9 @@ pub mod passthrough;
 pub mod vulkan;
 
 pub use passthrough::PassthroughBackend;
-pub use vulkan::VulkanBackend;
+pub use vulkan::{VulkanBackend, VulkanOptions, VulkanStrategy};
 
-use crate::types::{BackendType, FilterMode, ImageDesc, ImageDescMut, Result};
+use crate::types::{BackendType, ImageDesc, ImageDescMut, ResizeOptions, Result};
 
 /// Common hardware/software backend provider interface.
 pub trait Backend: Send + Sync {
@@ -17,6 +17,6 @@ pub trait Backend: Send + Sync {
     /// Checks if this backend is supported and initialized on the current system.
     fn is_available(&self) -> bool;
 
-    /// Executes image processing / resize from source to destination.
-    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, filter: FilterMode) -> Result<()>;
+    /// Executes image processing / resize from source to destination with dynamic options.
+    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()>;
 }

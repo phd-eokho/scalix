@@ -154,8 +154,26 @@ static bool write_jpeg_direct(
 int main(int argc, char** argv) {
     const std::string input_path = (argc > 1) ? argv[1] : "assets/sample.jpg";
     const std::string output_path = (argc > 2) ? argv[2] : "output_sample.jpg";
+    const std::string strategy_arg = (argc > 3) ? argv[3] : "raster";
+
+    scalix::Strategy strategy = scalix::Strategy::Raster;
+    std::string strategy_name = "Raster (Offscreen Graphics Pipeline)";
+    if (strategy_arg == "blit") {
+        strategy = scalix::Strategy::Blit;
+        strategy_name = "Blit (Hardware Fixed-Function 2D Blitter)";
+    } else if (strategy_arg == "lod" || strategy_arg == "lod_pyramid") {
+        strategy = scalix::Strategy::LodPyramid;
+        strategy_name = "LodPyramid (Hierarchical Mipchain Reduction)";
+    } else if (strategy_arg == "compute") {
+        strategy = scalix::Strategy::Compute;
+        strategy_name = "Compute (Programmable Compute Shader Kernel)";
+    } else if (strategy_arg == "auto") {
+        strategy = scalix::Strategy::Auto;
+        strategy_name = "Auto (Default Selection)";
+    }
 
     std::cout << "[Scalix JPEG + Zero-Copy DMA Test]" << std::endl;
+    std::cout << "Pipeline Strategy: " << strategy_name << std::endl;
     std::cout << "Probing image metadata: " << input_path << std::endl;
 
     JpegHeader header;
@@ -173,8 +191,27 @@ int main(int argc, char** argv) {
     std::cout << "  Target Dimensions (1/8 Downscale): " << dst_width << "x" << dst_height
               << " (Filter: Bilinear)" << std::endl;
 
-    // 1. Initialize Scalix Engine (Auto selects Vulkan hardware backend)
+    // 1. Initialize Scalix Engine (General purpose coordinator, agnostic of strategy)
     scalix::Engine engine(scalix::Backend::Auto, "jpeg");
+    engine.set_profiling(true);
+
+    scalix::ResizeOptions resize_options{
+        .filter = scalix::Filter::Bilinear,
+        .vulkan = {.strategy = strategy},
+    };
+
+    auto print_metrics = [&](const scalix::Engine& eng) {
+        if (auto p = eng.last_profile()) {
+            std::cout << "  [Latency Breakdown]" << std::endl;
+            std::cout << "    Host Unpack (Layout) : " << p->host_unpack_ms << " ms" << std::endl;
+            std::cout << "    GPU Staging Upload   : " << p->gpu_upload_ms << " ms" << std::endl;
+            std::cout << "    GPU Core Scaling     : " << p->gpu_pure_blit_ms << " ms" << std::endl;
+            std::cout << "    GPU Staging Readback : " << p->gpu_download_ms << " ms" << std::endl;
+            std::cout << "    Host Repack (Layout) : " << p->host_repack_ms << " ms" << std::endl;
+            std::cout << "    Driver/HW Sync Wait  : " << p->driver_sync_ms << " ms" << std::endl;
+            std::cout << "    Total Wall-Clock     : " << p->total_wall_ms << " ms" << std::endl;
+        }
+    };
 
     // 2. Attempt Zero-Copy DMA buffer allocation
     std::unique_ptr<scalix::DmaBuffer> src_dma;
@@ -215,11 +252,12 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        std::cout << "Executing Scalix engine 1/8 hardware resize on DMA buffers..." << std::endl;
+        std::cout << "Executing Scalix engine 1/8 hardware resize on DMA buffers (dynamic strategy: " << strategy_name << ")..." << std::endl;
         auto src_desc = src_dma->as_image_desc();
         auto dst_desc = dst_dma->as_image_desc();
-        engine.resize(src_desc, dst_desc, scalix::Filter::Bilinear);
+        engine.resize(src_desc, dst_desc, resize_options);
         std::cout << "  1/8 resize completed." << std::endl;
+        print_metrics(engine);
 
         std::cout << "Saving output 1/8 image directly from DMA memory to: " << output_path << " (via with_read lambda)..." << std::endl;
         bool write_ok = dst_dma->with_read([&](const uint8_t* host_ptr, size_t /*size*/) {
@@ -267,9 +305,10 @@ int main(int argc, char** argv) {
         };
 
         std::cout << "Executing Scalix engine 1/8 hardware resize (" << header.width << "x" << header.height
-                  << " → " << dst_width << "x" << dst_height << ")..." << std::endl;
-        engine.resize(src, dst, scalix::Filter::Bilinear);
+                  << " → " << dst_width << "x" << dst_height << ") (dynamic strategy: " << strategy_name << ")..." << std::endl;
+        engine.resize(src, dst, resize_options);
         std::cout << "  1/8 resize completed." << std::endl;
+        print_metrics(engine);
 
         std::cout << "Saving 1/8 resized output JPEG to: " << output_path << std::endl;
         if (!write_jpeg_direct(output_path, dst_width, dst_height, dst_buffer.data(), dst_stride, 90)) {
