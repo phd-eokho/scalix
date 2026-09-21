@@ -155,6 +155,7 @@ int main(int argc, char** argv) {
     const std::string input_path = (argc > 1) ? argv[1] : "assets/sample.jpg";
     const std::string output_path = (argc > 2) ? argv[2] : "output_sample.jpg";
     const std::string strategy_arg = (argc > 3) ? argv[3] : "raster";
+    const uint32_t max_mip_levels = (argc > 4) ? static_cast<uint32_t>(std::stoul(argv[4])) : 2;
 
     scalix::Strategy strategy = scalix::Strategy::Raster;
     std::string strategy_name = "Raster (Offscreen Graphics Pipeline)";
@@ -173,7 +174,15 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "[Scalix JPEG + Zero-Copy DMA Test]" << std::endl;
-    std::cout << "Pipeline Strategy: " << strategy_name << std::endl;
+    std::cout << "Pipeline Strategy: " << strategy_name;
+    if (strategy == scalix::Strategy::LodPyramid) {
+        if (max_mip_levels > 0) {
+            std::cout << " (max_mip_levels=" << max_mip_levels << ")";
+        } else {
+            std::cout << " (max_mip_levels=auto/unlimited)";
+        }
+    }
+    std::cout << std::endl;
     std::cout << "Probing image metadata: " << input_path << std::endl;
 
     JpegHeader header;
@@ -197,7 +206,10 @@ int main(int argc, char** argv) {
 
     scalix::ResizeOptions resize_options{
         .filter = scalix::Filter::Bilinear,
-        .vulkan = {.strategy = strategy},
+        .vulkan = {
+            .strategy = strategy,
+            .max_mip_levels = max_mip_levels,
+        },
     };
 
     auto print_metrics = [&](const scalix::Engine& eng) {

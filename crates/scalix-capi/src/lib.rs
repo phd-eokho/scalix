@@ -90,12 +90,14 @@ impl From<ScalixStrategy> for scalix_core::VulkanStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScalixVulkanOptions {
     pub strategy: ScalixStrategy,
+    pub max_mip_levels: u32,
 }
 
 impl From<ScalixVulkanOptions> for scalix_core::VulkanOptions {
     fn from(v: ScalixVulkanOptions) -> Self {
         Self {
             strategy: v.strategy.into(),
+            max_mip_levels: v.max_mip_levels,
         }
     }
 }
@@ -340,6 +342,7 @@ pub unsafe extern "C" fn scalix_resize_sync(
         filter,
         vulkan: ScalixVulkanOptions {
             strategy: ScalixStrategy::Auto,
+            max_mip_levels: 0,
         },
     };
     scalix_resize_sync_with_options(engine, src, dst, &options)
@@ -397,6 +400,7 @@ pub unsafe extern "C" fn scalix_resize_async(
         filter,
         vulkan: ScalixVulkanOptions {
             strategy: ScalixStrategy::Auto,
+            max_mip_levels: 0,
         },
     };
     scalix_resize_async_with_options(engine, src, dst, &options)
@@ -537,6 +541,7 @@ pub unsafe extern "C" fn scalix_resize_submit(
         filter,
         vulkan: ScalixVulkanOptions {
             strategy: ScalixStrategy::Auto,
+            max_mip_levels: 0,
         },
     };
     scalix_resize_submit_with_options(engine, src, dst, &options, callback, user_data)

@@ -45,7 +45,7 @@ impl VulkanBackend {
         let ctx = VulkanContext::new()?;
         let blitter = VulkanBlitter::new(Arc::clone(&ctx), Arc::clone(&profiler));
         let raster = VulkanRasterResizer::new(Arc::clone(&ctx), Arc::clone(&profiler));
-        let lod = VulkanLodDownscaler::new(Arc::clone(&ctx));
+        let lod = VulkanLodDownscaler::new(Arc::clone(&ctx), Arc::clone(&profiler));
         let compute = VulkanComputeResizer::new(Arc::clone(&ctx));
 
         Ok(Self {
@@ -103,7 +103,7 @@ impl Backend for VulkanBackend {
                 self.raster.process(src, dst, options.filter)
             }
             VulkanStrategy::LodPyramid => {
-                self.lod.process(src, dst, options.filter)
+                self.lod.process(src, dst, options)
             }
             VulkanStrategy::Compute => {
                 self.compute.process(src, dst, options.filter)

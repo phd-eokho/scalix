@@ -76,6 +76,7 @@ typedef enum ScalixPixelFormat {
 /* Vulkan Backend Options */
 typedef struct ScalixVulkanOptions {
     ScalixStrategy strategy;
+    uint32_t max_mip_levels; /* 0 = automatic / unlimited, >0 = limit mipchain depth */
 } ScalixVulkanOptions;
 
 /* Dynamic Resize Options */

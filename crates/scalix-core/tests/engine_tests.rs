@@ -373,6 +373,74 @@ fn test_vulkan_backend_raster_resize() {
 }
 
 #[test]
+fn test_vulkan_backend_lod_pyramid_resize() {
+    use scalix_core::{ResizeOptions, VulkanBackend, VulkanStrategy};
+
+    // 1. Instantiate Vulkan backend
+    let vk_backend = match VulkanBackend::new() {
+        Ok(backend) => backend,
+        Err(e) => {
+            println!("Vulkan backend not available on this environment ({:?}); skipping test.", e);
+            return;
+        }
+    };
+
+    // 2. Perform 128x128 -> 16x16 downscale (8x reduction across 3 mip levels)
+    let src_w = 128;
+    let src_h = 128;
+    let dst_w = 16;
+    let dst_h = 16;
+    let format = PixelFormat::Rgba8888;
+
+    let src_stride = format.min_stride(src_w).unwrap();
+    let dst_stride = format.min_stride(dst_w).unwrap();
+
+    let src_data = vec![0xDDu8; src_stride * (src_h as usize)];
+    let mut dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
+
+    let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
+    {
+        let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::LodPyramid);
+        let process_res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+        assert!(process_res.is_ok(), "Vulkan LoD pyramid process failed: {:?}", process_res.err());
+    }
+
+    // Verify destination pixels were populated by Vulkan GPU LoD downscaler
+    assert_eq!(dst_data[0], 0xDD);
+    assert_eq!(dst_data[dst_data.len() - 1], 0xDD);
+
+    // 3. Test Packed RGB888 format with LodPyramid strategy
+    let rgb_format = PixelFormat::Rgb888;
+    let rgb_src_stride = rgb_format.min_stride(src_w).unwrap();
+    let rgb_dst_stride = rgb_format.min_stride(dst_w).unwrap();
+    let rgb_src_data = vec![0xEEu8; rgb_src_stride * (src_h as usize)];
+    let mut rgb_dst_data = vec![0x00u8; rgb_dst_stride * (dst_h as usize)];
+
+    let rgb_src_desc = ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_format, &rgb_src_data).unwrap();
+    {
+        let mut rgb_dst_desc = ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_format, &mut rgb_dst_data).unwrap();
+        let rgb_options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::LodPyramid);
+        let rgb_res = vk_backend.process(&rgb_src_desc, &mut rgb_dst_desc, &rgb_options);
+        assert!(rgb_res.is_ok(), "Vulkan LoD RGB888 process failed: {:?}", rgb_res.err());
+    }
+    assert_eq!(rgb_dst_data[0], 0xEE);
+    assert_eq!(rgb_dst_data[rgb_dst_data.len() - 1], 0xEE);
+
+    // 4. Test with explicit max_mip_levels limit (capped at 2 levels)
+    let mut capped_dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
+    {
+        let mut capped_dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut capped_dst_data).unwrap();
+        let capped_options = ResizeOptions::new(FilterMode::Bilinear)
+            .with_vulkan_strategy(VulkanStrategy::LodPyramid)
+            .with_max_mip_levels(2);
+        let capped_res = vk_backend.process(&src_desc, &mut capped_dst_desc, &capped_options);
+        assert!(capped_res.is_ok(), "Vulkan LoD capped process failed: {:?}", capped_res.err());
+    }
+    assert_eq!(capped_dst_data[0], 0xDD);
+}
+
+#[test]
 fn test_pluggable_profiler_and_gpu_metrics() {
     let engine = match Engine::new(BackendType::Vulkan) {
         Ok(e) => e,

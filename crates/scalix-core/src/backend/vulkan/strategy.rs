@@ -25,4 +25,7 @@ impl Default for VulkanStrategy {
 #[repr(C)]
 pub struct VulkanOptions {
     pub strategy: VulkanStrategy,
+    /// Maximum mipmap levels to generate during hierarchical LoD downscaling.
+    /// Set to 0 for automatic (generates all levels down to destination size).
+    pub max_mip_levels: u32,
 }

@@ -270,4 +270,9 @@ impl ResizeOptions {
         self.vulkan.strategy = strategy;
         self
     }
+
+    pub fn with_max_mip_levels(mut self, max_levels: u32) -> Self {
+        self.vulkan.max_mip_levels = max_levels;
+        self
+    }
 }

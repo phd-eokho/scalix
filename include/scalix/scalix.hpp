@@ -298,10 +298,12 @@ private:
 
 struct VulkanOptions {
     Strategy strategy{Strategy::Auto};
+    uint32_t max_mip_levels{0}; // 0 = automatic / unlimited, >0 = limit mipchain depth
 
     ScalixVulkanOptions to_c() const {
         return ScalixVulkanOptions{
             .strategy = static_cast<ScalixStrategy>(strategy),
+            .max_mip_levels = max_mip_levels,
         };
     }
 };
