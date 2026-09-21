@@ -1,8 +1,8 @@
 # Scalix
 
-**Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered for modern **Linux** and **Android** platforms.
+**Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered exclusively for modern **Linux (x86_64)** and **Android (aarch64)** platforms.
 
-Designed with a **headless-first and offscreen-first** architecture, Scalix provides a unified interface across **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, **Dedicated 2D HW Engines (V4L2 M2M / DRM)**, and **Vectorized CPU SIMD (AVX-512 / AVX2 / Neon)**.
+Designed with a **headless-first and offscreen-first** architecture, Scalix provides a unified interface across **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, and **Dedicated 2D HW Engines (V4L2 M2M / DRM)**. CPU fallback and host SIMD operations are delegated to third-party image processing libraries (e.g. OpenCV).
 
 ---
 
@@ -28,45 +28,43 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
 
 This matrix tracks the hardware backends, execution paradigms, and platform capabilities supported by Scalix, along with their active verification status.
 
-### Legend
-* 🟢 **Verified & Tested:** Fully implemented and validated with automated test suite and benchmarks.
-* 🟡 **In Progress / Scaffolded:** Core interface or backend under active implementation.
-* ⚪ **Planned / Unverified:** Supported by architectural specification, pending implementation and test verification.
-* ⏸️ **Deferred:** Planned for future milestone (e.g. standalone daemon service).
+#### Legend
+* `✔` **Verified & Tested:** Fully implemented and validated with automated test suite and benchmarks.
+* `◐` **In Progress / Scaffolded:** Core interface or backend under active implementation.
+* `○` **Planned / Unverified:** Supported by architectural specification, pending implementation and test verification.
+* `—` **Deferred / N/A:** Planned for future milestone or not applicable for the target platform.
 
 ---
 
 ### 1. Hardware Backends & Accelerators
 
-| Backend Provider | Subsystem / API | Host / Silicon Target | Priority | WSL2 Dev Host | Linux (x86_64) | Linux (ARM64) | Android (NDK) | Verification Status |
-| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | **P0** | 🟢 Verified | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
-| **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | **P1** | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ *Planned* |
-| **CPU SIMD** | AVX-512 / AVX2 / FMA | x86_64 (Zen 4/5, Intel Core) | **P3** | ⚪ Supported | ⚪ Supported | N/A | N/A | ⚪ *Planned* |
-| **CPU SIMD** | ARM Neon / FP16 | aarch64 / armv7 | **P3** | ⚪ Cross-compile | N/A | ⚪ Supported | ⚪ Supported | ⚪ *Planned* |
-| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | **P2** | ⚪ Mock / Loopback | ⚪ Hardware Req. | ⚪ Supported | N/A | ⚪ *Planned* |
-| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | **P2** | ⚪ Mock / CPU | ⚪ OpenVINO | ⚪ QNN/NPU | ⚪ NNAPI/QNN | ⚪ *Planned* |
+| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64) |
+| :--- | :--- | :--- | :---: | :---: | :---: |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | ✔ Verified | ✔ Verified | ○ Supported |
+| **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | ○ Supported | ○ Supported | ○ Supported |
+| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | ○ Mock / Loopback | ○ Hardware Req. | — |
+| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | ○ Mock / CPU | ○ OpenVINO | ○ QNN / NNAPI |
 
 ---
 
 ### 2. Execution Paradigms
 
-| Execution Mode | Description | Rust Core | C ABI | C++20 API | Verification Status |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **Synchronous (`sync`)** | Blocking call until GPU completion or timeout | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
-| **Asynchronous (`async`)** | Returns `TaskHandle` / `std::future` / Rust `Future` | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
-| **Callback (`callback`)** | Dispatches completion function on worker thread pool | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
+| Execution Mode | Description | Rust Core | C ABI | C++20 API |
+| :--- | :--- | :---: | :---: | :---: |
+| **Synchronous (`sync`)** | Blocking call until GPU completion or timeout | ✔ | ✔ | ✔ |
+| **Asynchronous (`async`)** | Returns `TaskHandle` / `std::future` / Rust `Future` | ✔ | ✔ | ✔ |
+| **Callback (`callback`)** | Dispatches completion function on worker thread pool | ✔ | ✔ | ✔ |
 
 ---
 
 ### 3. Memory & Zero-Copy Subsystems
 
-| Feature | Interface / Handle | Linux x86_64 / WSL2 | Linux ARM64 | Android (API 26+) | Verification Status |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **Host Memory Pointers** | Standard contiguous CPU memory buffer (RGB/RGBA) | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
-| **Staging Ring Pool** | Pinned / mapped host-to-device buffer pool | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
-| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | 🟢 Probed / Fallback | ⚪ Supported | N/A | 🟢 **Verified** |
-| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | N/A | N/A | ⚪ | ⚪ *Planned* |
+| Feature | Interface / Handle | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64, API 26+) |
+| :--- | :--- | :---: | :---: | :---: |
+| **Host Memory Pointers** | Standard contiguous CPU memory buffer (RGB/RGBA) | ✔ Verified | ✔ Verified | ○ Supported |
+| **Staging Ring Pool** | Pinned / mapped host-to-device buffer pool | ✔ Verified | ✔ Verified | ○ Supported |
+| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | ○ Supported | ◐ Fallback (Unverified) | — |
+| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | — | — | ○ Supported |
 
 ---
 
@@ -200,16 +198,16 @@ make -C examples clean
 
 Scalix provides unified zero-copy DMA buffer allocation across supported target environments:
 
-### 1. Bare-Metal Linux (x86_64 / aarch64, Kernel 5.6+)
+### 1. Bare-Metal Linux (x86_64, Kernel 5.6+)
 * **Allocators:** Uses **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) with fallback to **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128` via GEM PRIME).
 * **Permissions:** Ensure the executing user is added to `render` and `video` groups:
   ```bash
   sudo usermod -aG render,video $USER
   ```
 
-### 2. WSL2 (Windows Subsystem for Linux 2)
-* **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12.
-* **DMA Allocation Behavior:** Stock WSL2 kernels do not enable `/dev/dma_heap` by default. Scalix's runtime probing safely detects this and automatically falls back to contiguous host memory, ensuring seamless execution on WSL2 dev environments.
+### 2. WSL2 (Windows Subsystem for Linux 2: Ubuntu 22.04, NVIDIA GPU + AMD CPU)
+* **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12 for offscreen rendering.
+* **DMA Allocation Behavior & Limitation:** Linux `dma-buf` is **not yet verified to work** on WSL2. Stock WSL2 kernels do not provide `/dev/dma_heap`, and DRM GEM dumb buffer allocations often fail or lack PRIME hardware export support across the `/dev/dxg` virtual translation layer. Scalix's runtime allocator probing detects this DMA failure automatically and safely falls back to host memory staging buffers. Testing true zero-copy DMA requires bare-metal Linux with native DRM render nodes.
 
 ### 3. Android (API Level 26+, `aarch64` only)
 * **Allocator:** Native **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`).
