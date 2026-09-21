@@ -1,8 +1,8 @@
 # Scalix
 
-**Scalix**는 최신 **Linux** 및 **Android** 플랫폼을 위해 설계된 고성능 하드웨어 가속 이미지 스케일링 및 리샘플링 엔진입니다.
+**Scalix**는 최신 **Linux (x86_64)** 및 **Android (aarch64)** 플랫폼을 위해 설계된 고성능 하드웨어 가속 이미지 스케일링 및 리샘플링 엔진입니다.
 
-**Headless 및 Offscreen 전용** 아키텍처로 설계되어 디스플레이 서버 없이도 **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, **2D HW Engines (V4L2 M2M / DRM)**, **Vectorized CPU SIMD (AVX-512 / AVX2 / Neon)** 전반에 걸쳐 통합된 인터페이스를 제공합니다.
+**Headless 및 Offscreen 전용** 아키텍처로 설계되어 디스플레이 서버 없이도 **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, **2D HW Engines (V4L2 M2M / DRM)** 전반에 걸쳐 통합된 인터페이스를 제공합니다. CPU Fallback 및 Host SIMD 연산은 OpenCV 등 서드파티 이미지 처리 라이브러리로 위임됩니다.
 
 ---
 
@@ -28,45 +28,43 @@
 
 이 매트릭스는 Scalix가 지원하는 하드웨어 백엔드, 실행 패러다임, 플랫폼 기능 및 현재 검증 상태를 나타냅니다.
 
-### 범례
-* 🟢 **Verified & Tested:** 완벽히 구현되었으며 자동화된 테스트 스위트 및 벤치마크로 검증 완료.
-* 🟡 **In Progress / Scaffolded:** 핵심 인터페이스 또는 백엔드 구현 진행 중.
-* ⚪ **Planned / Unverified:** 아키텍처 규격상 지원 예정이며 구현 및 검증 대기 중.
-* ⏸️ **Deferred:** 향후 마일스톤(예: 독립 데몬 서비스)으로 연기됨.
+#### 범례
+* `✔` **Verified & Tested:** 완벽히 구현되었으며 자동화된 테스트 스위트 및 벤치마크로 검증 완료.
+* `◐` **In Progress / Scaffolded:** 핵심 인터페이스 또는 백엔드 구현 진행 중.
+* `○` **Planned / Unverified:** 아키텍처 규격상 지원 예정이며 구현 및 검증 대기 중.
+* `—` **Deferred / N/A:** 향후 마일스톤으로 연기되었거나 대상 플랫폼에 해당하지 않음.
 
 ---
 
 ### 1. 하드웨어 백엔드 및 가속기
 
-| Backend Provider | Subsystem / API | Host / Silicon Target | Priority | WSL2 Dev Host | Linux (x86_64) | Linux (ARM64) | Android (NDK) | 검증 상태 |
-| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | **P0** | 🟢 Verified | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
-| **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | **P1** | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ Supported | ⚪ *Planned* |
-| **CPU SIMD** | AVX-512 / AVX2 / FMA | x86_64 (Zen 4/5, Intel Core) | **P3** | ⚪ Supported | ⚪ Supported | N/A | N/A | ⚪ *Planned* |
-| **CPU SIMD** | ARM Neon / FP16 | aarch64 / armv7 | **P3** | ⚪ Cross-compile | N/A | ⚪ Supported | ⚪ Supported | ⚪ *Planned* |
-| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | **P2** | ⚪ Mock / Loopback | ⚪ Hardware Req. | ⚪ Supported | N/A | ⚪ *Planned* |
-| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | **P2** | ⚪ Mock / CPU | ⚪ OpenVINO | ⚪ QNN/NPU | ⚪ NNAPI/QNN | ⚪ *Planned* |
+| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64) |
+| :--- | :--- | :--- | :---: | :---: | :---: |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | ✔ Verified | ✔ Verified | ○ Supported |
+| **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | ○ Supported | ○ Supported | ○ Supported |
+| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | ○ Mock / Loopback | ○ Hardware Req. | — |
+| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | ○ Mock / CPU | ○ OpenVINO | ○ QNN / NNAPI |
 
 ---
 
 ### 2. 실행 패러다임
 
-| 실행 모드 | 설명 | Rust Core | C ABI | C++20 API | 검증 상태 |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **동기식 (`sync`)** | GPU 작업 완료 또는 타임아웃까지 블로킹 호출 | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
-| **비동기식 (`async`)** | `TaskHandle` / `std::future` / Rust `Future` 반환 | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
-| **콜백 (`callback`)** | 워커 스레드 풀에서 비동기 완료 콜백 함수 디스패치 | 🟢 | 🟢 | 🟢 | 🟢 **Verified** |
+| 실행 모드 | 설명 | Rust Core | C ABI | C++20 API |
+| :--- | :--- | :---: | :---: | :---: |
+| **동기식 (`sync`)** | GPU 작업 완료 또는 타임아웃까지 블로킹 호출 | ✔ | ✔ | ✔ |
+| **비동기식 (`async`)** | `TaskHandle` / `std::future` / Rust `Future` 반환 | ✔ | ✔ | ✔ |
+| **콜백 (`callback`)** | 워커 스레드 풀에서 비동기 완료 콜백 함수 디스패치 | ✔ | ✔ | ✔ |
 
 ---
 
 ### 3. 메모리 및 Zero-Copy 서브시스템
 
-| 기능 | 인터페이스 / 핸들 | Linux x86_64 / WSL2 | Linux ARM64 | Android (API 26+) | 검증 상태 |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **Host Memory Pointers** | 표준 연속형 CPU 메모리 버퍼 (RGB/RGBA) | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
-| **Staging Ring Pool** | Pinned / Mapped Host-to-Device 버퍼 풀 | 🟢 Verified | ⚪ Supported | ⚪ Supported | 🟢 **Verified** |
-| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME Zero-Copy) | 🟢 Probed / Fallback | ⚪ Supported | N/A | 🟢 **Verified** |
-| **AHardwareBuffer** | `AHardwareBuffer*` Zero-Copy 연동 | N/A | N/A | ⚪ | ⚪ *Planned* |
+| 기능 | 인터페이스 / 핸들 | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64, API 26+) |
+| :--- | :--- | :---: | :---: | :---: |
+| **Host Memory Pointers** | 표준 연속형 CPU 메모리 버퍼 (RGB/RGBA) | ✔ Verified | ✔ Verified | ○ Supported |
+| **Staging Ring Pool** | Pinned / Mapped Host-to-Device 버퍼 풀 | ✔ Verified | ✔ Verified | ○ Supported |
+| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME Zero-Copy) | ○ Supported | ◐ Fallback (미검증) | — |
+| **AHardwareBuffer** | `AHardwareBuffer*` Zero-Copy 연동 | — | — | ○ Supported |
 
 ---
 
@@ -196,16 +194,16 @@ make -C examples clean
 
 Scalix는 지원되는 실행 환경 전반에서 통합된 Zero-Copy DMA 버퍼 할당 방식을 제공합니다:
 
-### 1. Bare-Metal Linux (x86_64 / aarch64, 커널 5.6+)
+### 1. Bare-Metal Linux (x86_64, 커널 5.6+)
 * **할당자(Allocators):** **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`)을 사용하며, 부재 시 **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128`, GEM PRIME 기반)로 자동 Fallback.
 * **권한 설정:** 실행 사용자가 `render` 및 `video` 그룹에 추가되어 있어야 합니다:
   ```bash
   sudo usermod -aG render,video $USER
   ```
 
-### 2. WSL2 (Windows Subsystem for Linux 2)
-* **GPU 가속:** Microsoft DirectX 브리지 (`/dev/dxg`) 및 Mesa Vulkan/D3D12를 통해 완벽 지원.
-* **DMA 할당 동작:** 기본 WSL2 커널은 `/dev/dma_heap`을 기본 활성화하지 않습니다. Scalix의 런타임 탐지 기능은 이를 안전하게 감지하고 연속형 Host 메모리로 자동 Fallback하여 WSL2 개발 환경에서도 원활하게 동작합니다.
+### 2. WSL2 (Windows Subsystem for Linux 2: Ubuntu 22.04, NVIDIA GPU + AMD CPU)
+* **GPU 가속:** Microsoft DirectX 브리지 (`/dev/dxg`) 및 Mesa Vulkan/D3D12를 통해 오프스크린 렌더링을 완벽 지원.
+* **DMA 할당 동작 및 제약사항:** WSL2 환경에서는 Linux `dma-buf`가 **아직 검증되지 않았습니다**. 기본 WSL2 커널에는 `/dev/dma_heap`이 포함되어 있지 않으며, DRM GEM Dumb 버퍼 할당 역시 `/dev/dxg` 가상화 계층으로 인해 실패하거나 PRIME 하드웨어 내보내기가 지원되지 않는 한계가 있습니다. Scalix의 런타임 탐지 로직은 이러한 DMA 실패를 감지하여 연속형 Host 메모리 Staging 버퍼로 안전하게 자동 Fallback합니다. 실제 Zero-Copy DMA 검증은 네이티브 DRM 렌더 노드를 지원하는 Bare-Metal Linux 환경에서 진행되어야 합니다.
 
 ### 3. Android (API Level 26+, `aarch64` 전용)
 * **할당자(Allocator):** 네이티브 **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`).
