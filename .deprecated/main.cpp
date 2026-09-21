@@ -18,7 +18,7 @@ int main(int argc, const char *argv[])
 
     int64_t elapsed = 0;
     int N = 100;
-    auto m0 = cv::imread("data/image_00.jpg");
+    auto m0 = cv::imread("assets/sample.jpg");
 
     const auto random_roi = [&m0]()
     {
