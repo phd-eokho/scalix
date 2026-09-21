@@ -22,9 +22,12 @@ cpp_jpeg: cpp_jpeg.cpp
 	@echo "[Compiling $@ with libjpeg-turbo]"
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(LDFLAGS) -o $@
 
+OPENCV_FLAGS ?= $(shell pkg-config --cflags opencv4 2>/dev/null || pkg-config --cflags opencv 2>/dev/null || echo "")
+OPENCV_LIBS ?= $(shell pkg-config --libs opencv4 2>/dev/null || pkg-config --libs opencv 2>/dev/null || echo "")
+
 cpp_benchmark: cpp_benchmark.cpp
-	@echo "[Compiling $@]"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(LDFLAGS) -o $@
+	@echo "[Compiling $@ with OpenCV comparison support]"
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(OPENCV_FLAGS) $< $(LDFLAGS) $(OPENCV_LIBS) -o $@
 
 run: cargo-build cpp_basic cpp_jpeg
 	@echo "\n=== Running cpp_basic ==="

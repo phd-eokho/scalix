@@ -7,6 +7,19 @@
 #include <thread>
 #include <scalix/scalix.hpp>
 
+#if __has_include(<opencv2/opencv.hpp>)
+#include <opencv2/opencv.hpp>
+#define SCALIX_HAS_OPENCV 1
+#else
+#define SCALIX_HAS_OPENCV 0
+#endif
+
+struct OpencvInterpolationBenchmark {
+    std::string method_name;
+    double avg_ms;
+    double fps;
+};
+
 struct BenchmarkMetrics {
     std::string name;
     uint32_t src_w;
@@ -294,6 +307,83 @@ int main() {
     std::cout << "          reducing latency to pure GPU execution (~" << (gpu_pure_blit_ms + driver_sync_ms) << " ms, >"
               << (driver_sync_ms + gpu_pure_blit_ms > 0 ? static_cast<int>(1000.0 / (driver_sync_ms + gpu_pure_blit_ms)) : 400) << " FPS)!" << std::endl;
     std::cout << "==========================================================================================" << std::endl;
+
+#if SCALIX_HAS_OPENCV
+    // Comparative Benchmark: Scalix vs OpenCV across different interpolation methods
+    std::cout << "\n==========================================================================================" << std::endl;
+    std::cout << "    OPENCV vs SCALIX EXECUTION TIME COMPARISON (4K UHD 3840x2160 → 320x320, RGB888)" << std::endl;
+    std::cout << "==========================================================================================" << std::endl;
+
+    struct InterpTest {
+        std::string name;
+        int cv_interp;
+        scalix::Filter scalix_filter;
+    };
+
+    const std::vector<InterpTest> interp_tests = {
+        {"Nearest Neighbor", cv::INTER_NEAREST, scalix::Filter::Nearest},
+        {"Bilinear", cv::INTER_LINEAR, scalix::Filter::Bilinear},
+        {"Bicubic", cv::INTER_CUBIC, scalix::Filter::Bicubic},
+        {"Area / Box Filter", cv::INTER_AREA, scalix::Filter::Area},
+        {"Lanczos", cv::INTER_LANCZOS4, scalix::Filter::Lanczos3},
+    };
+
+    cv::Mat cv_src(2160, 3840, CV_8UC3);
+    cv_src.setTo(cv::Scalar(0x33, 0x66, 0x99));
+    cv::Mat cv_dst(320, 320, CV_8UC3);
+
+    // Warm-up OpenCV
+    cv::resize(cv_src, cv_dst, cv::Size(320, 320), 0, 0, cv::INTER_LINEAR);
+
+    constexpr size_t CV_ROUNDS = 10;
+
+    std::cout << std::left << std::setw(20) << "Interpolation"
+              << std::setw(18) << "OpenCV Latency"
+              << std::setw(16) << "OpenCV FPS"
+              << std::setw(18) << "Scalix (Async)"
+              << std::setw(16) << "Scalix FPS"
+              << "Speedup" << std::endl;
+    std::cout << "------------------------------------------------------------------------------------------" << std::endl;
+
+    for (const auto& test : interp_tests) {
+        // Benchmark OpenCV
+        auto cv_start = std::chrono::high_resolution_clock::now();
+        for (size_t r = 0; r < CV_ROUNDS; ++r) {
+            cv::resize(cv_src, cv_dst, cv::Size(320, 320), 0, 0, test.cv_interp);
+        }
+        auto cv_end = std::chrono::high_resolution_clock::now();
+        double cv_total_ms = std::chrono::duration<double, std::milli>(cv_end - cv_start).count();
+        double cv_avg_ms = cv_total_ms / CV_ROUNDS;
+        double cv_fps = (CV_ROUNDS / cv_total_ms) * 1000.0;
+
+        // Benchmark Scalix (Async Pipelined)
+        auto sc_start = std::chrono::high_resolution_clock::now();
+        std::vector<scalix::Task> tasks;
+        tasks.reserve(CV_ROUNDS);
+        for (size_t r = 0; r < CV_ROUNDS; ++r) {
+            tasks.push_back(engine.resize_async(rgb_src_desc, rgb_dst_desc, test.scalix_filter));
+        }
+        for (size_t r = 0; r < CV_ROUNDS; ++r) {
+            tasks[r].wait(0, rgb_dst.data(), rgb_dst.size());
+        }
+        auto sc_end = std::chrono::high_resolution_clock::now();
+        double sc_total_ms = std::chrono::duration<double, std::milli>(sc_end - sc_start).count();
+        double sc_avg_ms = sc_total_ms / CV_ROUNDS;
+        double sc_fps = (CV_ROUNDS / sc_total_ms) * 1000.0;
+
+        double speedup = cv_avg_ms / sc_avg_ms;
+
+        std::cout << std::left << std::setw(20) << test.name
+                  << std::setw(18) << (std::to_string(cv_avg_ms).substr(0, 6) + " ms")
+                  << std::setw(16) << (std::to_string(cv_fps).substr(0, 6) + " FPS")
+                  << std::setw(18) << (std::to_string(sc_avg_ms).substr(0, 6) + " ms")
+                  << std::setw(16) << (std::to_string(sc_fps).substr(0, 6) + " FPS")
+                  << (std::to_string(speedup).substr(0, 5) + "x") << std::endl;
+    }
+    std::cout << "==========================================================================================" << std::endl;
+#else
+    std::cout << "\n[Note: OpenCV headers not found during compilation. Install libopencv-dev to enable comparison table.]" << std::endl;
+#endif
 
     std::cout << "\n[Multi-resolution benchmark & hardware breakdown finished successfully!]" << std::endl;
     return 0;
