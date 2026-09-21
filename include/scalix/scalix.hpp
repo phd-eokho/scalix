@@ -66,8 +66,22 @@ struct ImageDesc {
 
 class Engine {
 public:
-    explicit Engine(Backend backend = Backend::Auto) {
-        engine_ = scalix_engine_create(static_cast<ScalixBackendType>(backend));
+    /**
+     * @brief Constructs a new Scalix Engine instance.
+     * 
+     * @param backend Hardware accelerator backend type (default: Backend::Auto).
+     * @param thread_prefix Optional custom naming prefix for engine worker threads
+     *                      (e.g., `<prefix>/scx-hw` and `<prefix>/scx-w<id>`). If nullptr
+     *                      or empty, defaults to current process ID (`<pid>`).
+     * @note Maximum effective length of @p thread_prefix is 7 characters.
+     * @warning Prefixes longer than 7 characters are automatically truncated to 7 characters
+     *          to guarantee strict compliance with Linux OS 15-character thread name (`comm`) limit.
+     */
+    explicit Engine(Backend backend = Backend::Auto, const char* thread_prefix = nullptr) {
+        engine_ = scalix_engine_create_with_prefix(
+            static_cast<ScalixBackendType>(backend),
+            thread_prefix
+        );
         if (!engine_) {
             throw std::runtime_error("Failed to create Scalix Engine");
         }

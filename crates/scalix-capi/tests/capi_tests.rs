@@ -161,3 +161,15 @@ fn test_c_api_callback_submit() {
         scalix_engine_destroy(engine);
     }
 }
+
+#[test]
+fn test_c_api_with_custom_prefix() {
+    use std::ffi::CString;
+    unsafe {
+        let prefix = CString::new("testapp").unwrap();
+        let engine = scalix_engine_create_with_prefix(ScalixBackendType::Auto, prefix.as_ptr());
+        assert!(!engine.is_null());
+        scalix_engine_destroy(engine);
+    }
+}
+

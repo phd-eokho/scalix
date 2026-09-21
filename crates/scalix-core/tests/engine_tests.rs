@@ -155,3 +155,82 @@ fn test_parallel_callback_dispatch() {
     );
 }
 
+#[test]
+fn test_thread_names_format_and_length_limit() {
+    let pid = std::process::id();
+
+    // 1. Default PID prefix: <pid>/scx-hw and <pid>/scx-w<id>
+    {
+        let engine = Engine::new(BackendType::Auto).expect("Failed to create engine");
+        let expected_hw_name = format!("{}/scx-hw", pid);
+        let expected_cb_prefix = format!("{}/scx-w", pid);
+
+        let src = OwnedImage::allocate(4, 4, PixelFormat::Rgba8888).unwrap();
+        let dst = OwnedImage::allocate(4, 4, PixelFormat::Rgba8888).unwrap();
+        let task = engine.resize_async(src, dst, FilterMode::Passthrough);
+        let _ = task.wait(Some(Duration::from_secs(1))).unwrap();
+
+        let src2 = OwnedImage::allocate(4, 4, PixelFormat::Rgba8888).unwrap();
+        let dst2 = OwnedImage::allocate(4, 4, PixelFormat::Rgba8888).unwrap();
+        let (tx_cb, rx_cb) = std::sync::mpsc::channel();
+        engine
+            .resize_callback(src2, dst2, FilterMode::Passthrough, move |_| {
+                let current = std::thread::current();
+                let name = current.name().map(|s| s.to_string()).unwrap_or_default();
+                let _ = tx_cb.send(name);
+            })
+            .unwrap();
+
+        let cb_name = rx_cb.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert!(
+            expected_hw_name.len() <= 15,
+            "HW thread name '{}' exceeds Linux 15-char limit (len={})",
+            expected_hw_name,
+            expected_hw_name.len()
+        );
+        assert!(
+            cb_name.len() <= 15,
+            "CB thread name '{}' exceeds Linux 15-char limit (len={})",
+            cb_name,
+            cb_name.len()
+        );
+        assert!(
+            cb_name.starts_with(&expected_cb_prefix),
+            "CB thread name '{}' should start with '{}'",
+            cb_name,
+            expected_cb_prefix
+        );
+    }
+
+    // 2. Custom Prefix with truncation: "cam_pipeline" -> truncated to 7 chars: "cam_pip"
+    {
+        let engine = Engine::with_prefix(BackendType::Auto, Some("cam_pipeline")).unwrap();
+        let expected_hw_name = "cam_pip/scx-hw";
+        let expected_cb_prefix = "cam_pip/scx-w";
+
+        let src = OwnedImage::allocate(4, 4, PixelFormat::Rgba8888).unwrap();
+        let dst = OwnedImage::allocate(4, 4, PixelFormat::Rgba8888).unwrap();
+        let (tx_cb, rx_cb) = std::sync::mpsc::channel();
+        engine
+            .resize_callback(src, dst, FilterMode::Passthrough, move |_| {
+                let current = std::thread::current();
+                let name = current.name().map(|s| s.to_string()).unwrap_or_default();
+                let _ = tx_cb.send(name);
+            })
+            .unwrap();
+
+        let cb_name = rx_cb.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(expected_hw_name.len(), 14); // <= 15
+        assert!(cb_name.len() <= 15);
+        assert!(
+            cb_name.starts_with(expected_cb_prefix),
+            "CB thread name '{}' should start with '{}'",
+            cb_name,
+            expected_cb_prefix
+        );
+    }
+}
+
+

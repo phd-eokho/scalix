@@ -73,8 +73,39 @@ typedef struct ScalixImageDesc {
 /* Completion Callback Signature */
 typedef void (*ScalixCompletionCallback)(int status_code, void* user_data);
 
-/* Engine Lifecycle */
+/**
+ * @brief Creates a new Scalix Engine instance with default PID thread naming (`<pid>/scx-*`).
+ * 
+ * @param backend Hardware accelerator backend type to initialize.
+ * @return ScalixEngine* Pointer to created engine handle, or NULL on failure.
+ */
 ScalixEngine* scalix_engine_create(ScalixBackendType backend);
+
+/**
+ * @brief Creates a new Scalix Engine instance with a custom thread naming prefix.
+ * 
+ * Internal threads are named `<prefix>/scx-hw` (hardware executor) and
+ * `<prefix>/scx-w<id>` (callback/worker pool).
+ * 
+ * @param backend Hardware accelerator backend type to initialize.
+ * @param thread_prefix Custom prefix string for naming internal engine threads.
+ *                      Pass NULL or empty string to default to process ID (`<pid>`).
+ * @note Maximum effective length of @p thread_prefix is 7 characters.
+ * @warning Prefixes exceeding 7 characters will be automatically truncated to 7 characters
+ *          with a runtime warning log to strictly adhere to the Linux 15-character thread
+ *          name (`comm`) limit.
+ * @return ScalixEngine* Pointer to created engine handle, or NULL on failure.
+ */
+ScalixEngine* scalix_engine_create_with_prefix(
+    ScalixBackendType backend,
+    const char* thread_prefix
+);
+
+/**
+ * @brief Destroys a Scalix Engine instance and releases all associated worker threads.
+ * 
+ * @param engine Pointer to engine handle to destroy.
+ */
 void scalix_engine_destroy(ScalixEngine* engine);
 
 /* 1. Synchronous Execution */

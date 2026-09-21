@@ -136,7 +136,21 @@ pub struct ScalixTask {
 
 #[no_mangle]
 pub unsafe extern "C" fn scalix_engine_create(backend: ScalixBackendType) -> *mut ScalixEngine {
-    match Engine::new(backend.into()) {
+    scalix_engine_create_with_prefix(backend, std::ptr::null())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scalix_engine_create_with_prefix(
+    backend: ScalixBackendType,
+    thread_prefix: *const std::os::raw::c_char,
+) -> *mut ScalixEngine {
+    let prefix = if thread_prefix.is_null() {
+        None
+    } else {
+        std::ffi::CStr::from_ptr(thread_prefix).to_str().ok()
+    };
+
+    match Engine::with_prefix(backend.into(), prefix) {
         Ok(engine) => Box::into_raw(Box::new(ScalixEngine { inner: engine })),
         Err(_) => std::ptr::null_mut(),
     }

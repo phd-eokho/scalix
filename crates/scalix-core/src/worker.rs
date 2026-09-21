@@ -47,12 +47,15 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
-    /// Creates a new worker pool with the specified number of threads and default name prefix.
+    /// Creates a new worker pool with the specified number of threads and default PID-scoped prefix (`<pid>/scx-w`).
     pub fn new(num_threads: usize) -> Self {
-        Self::with_prefix("scalix-worker", num_threads)
+        let pid = std::process::id();
+        Self::with_prefix(&format!("{}/scx-w", pid), num_threads)
     }
 
     /// Creates a new worker pool with custom thread name prefix.
+    /// If `num_threads == 1`, the name is `<name_prefix>`.
+    /// If `num_threads > 1`, threads are named `<name_prefix><id>`.
     pub fn with_prefix(name_prefix: &str, num_threads: usize) -> Self {
         let (sender, receiver) = mpsc::channel::<Job>();
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
@@ -60,8 +63,13 @@ impl WorkerPool {
 
         for id in 0..num_threads {
             let rx = Arc::clone(&receiver);
+            let thread_name = if num_threads == 1 {
+                name_prefix.to_string()
+            } else {
+                format!("{}{}", name_prefix, id)
+            };
             let handle = thread::Builder::new()
-                .name(format!("{}-{}", name_prefix, id))
+                .name(thread_name)
                 .spawn(move || loop {
                     let job = {
                         let lock = rx.lock().unwrap();

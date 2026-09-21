@@ -18,9 +18,44 @@ pub struct Engine {
     callback_pool: Arc<WorkerPool>,
 }
 
+/// Sanitizes and limits the thread prefix to ensure names fit within Linux's 15-character limit.
+/// Suffixes: `/scx-hw` (7 chars) and `/scx-w<id>` (7-8 chars).
+/// Maximum allowed prefix length is 7 characters.
+pub fn sanitize_thread_prefix(custom_prefix: Option<&str>) -> String {
+    match custom_prefix {
+        Some(p) if !p.trim().is_empty() => {
+            let trimmed = p.trim();
+            if trimmed.len() > 7 {
+                let truncated = &trimmed[..7];
+                log::warn!(
+                    "Thread prefix '{}' exceeds the maximum limit of 7 characters and will be truncated to '{}' to guarantee compliance with Linux 15-char thread name limit.",
+                    trimmed,
+                    truncated
+                );
+                truncated.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        _ => {
+            let pid = std::process::id().to_string();
+            if pid.len() > 7 {
+                pid[..7].to_string()
+            } else {
+                pid
+            }
+        }
+    }
+}
+
 impl Engine {
-    /// Initializes a new Scalix Engine with the requested backend.
+    /// Initializes a new Scalix Engine with the requested backend and default PID thread prefix (`<pid>/scx-hw`).
     pub fn new(backend_type: BackendType) -> Result<Self> {
+        Self::with_prefix(backend_type, None)
+    }
+
+    /// Initializes a new Scalix Engine with the requested backend and optional custom thread prefix.
+    pub fn with_prefix(backend_type: BackendType, prefix: Option<&str>) -> Result<Self> {
         let backend: Arc<dyn Backend> = match backend_type {
             BackendType::Auto | BackendType::Passthrough | BackendType::Cpu => {
                 Arc::new(PassthroughBackend::new())
@@ -32,9 +67,13 @@ impl Engine {
             .map(|n| n.get())
             .unwrap_or(4);
 
+        let p = sanitize_thread_prefix(prefix);
+        let hw_prefix = format!("{}/scx-hw", p);
+        let cb_prefix = format!("{}/scx-w", p);
+
         // 1 dedicated hardware context thread, multi-worker callback pool
-        let hw_executor = Arc::new(WorkerPool::with_prefix("scalix-hw-ctx", 1));
-        let callback_pool = Arc::new(WorkerPool::with_prefix("scalix-cb-worker", num_cpus.max(2)));
+        let hw_executor = Arc::new(WorkerPool::with_prefix(&hw_prefix, 1));
+        let callback_pool = Arc::new(WorkerPool::with_prefix(&cb_prefix, num_cpus.max(2)));
 
         Ok(Self {
             backend,
@@ -43,20 +82,25 @@ impl Engine {
         })
     }
 
-    /// Initializes an Engine with custom backend and configurable thread concurrency.
+    /// Initializes an Engine with custom backend, configurable thread concurrency, and optional prefix.
     pub fn with_config(
         backend: Arc<dyn Backend>,
         num_hw_threads: usize,
         num_callback_workers: usize,
+        prefix: Option<&str>,
     ) -> Self {
+        let p = sanitize_thread_prefix(prefix);
+        let hw_prefix = format!("{}/scx-hw", p);
+        let cb_prefix = format!("{}/scx-w", p);
+
         Self {
             backend,
             hw_executor: Arc::new(WorkerPool::with_prefix(
-                "scalix-hw-ctx",
+                &hw_prefix,
                 num_hw_threads.max(1),
             )),
             callback_pool: Arc::new(WorkerPool::with_prefix(
-                "scalix-cb-worker",
+                &cb_prefix,
                 num_callback_workers.max(1),
             )),
         }
