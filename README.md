@@ -123,6 +123,44 @@ scalix_engine_destroy(engine);
 
 ---
 
+## Building & Testing
+
+### Prerequisites
+* **Rust Toolchain:** `rustc` & `cargo` (1.70+ recommended)
+* **C/C++ Toolchain:** `g++` or `clang++` supporting C++20
+
+### 1. Build Rust Core & C ABI Library
+To build the static/shared library (`libscalix.so` / `libscalix.a`):
+```bash
+# Debug build
+cargo build
+
+# Optimized release build (generates target/release/libscalix.so)
+cargo build --release
+```
+
+### 2. Run Test Suite
+To execute all unit, integration, and multi-threaded callback tests:
+```bash
+cargo test
+```
+
+### 3. Build & Run C++ Examples
+Link your C++ application against `include/` and `libscalix.so`:
+```bash
+# Build release library first
+cargo build --release
+
+# Compile and run C++20 example
+g++ -std=c++20 -O2 -Iinclude examples/cpp_basic.cpp \
+  -Ltarget/release -lscalix -Wl,-rpath,$(pwd)/target/release \
+  -o cpp_basic
+
+./cpp_basic
+```
+
+---
+
 ## Project Architecture
 
 For deep-dive architectural specifications, backend traits, pipeline hierarchies, and threading topology, refer to [REFACTOR.md](file:///home/duty/workspace/scalix/REFACTOR.md).
@@ -132,4 +170,5 @@ For deep-dive architectural specifications, backend traits, pipeline hierarchies
 ## License
 
 This project is licensed under the terms of the **MIT License**. See the [LICENSE](file:///home/duty/workspace/scalix/LICENSE) file for details.
+
 

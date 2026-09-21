@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/scalix-core",
+    "crates/scalix-capi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["deokho <duty@live.co.kr>"]
+repository = "https://github.com/phd-eokho/scalix"
+description = "Extensible hardware-accelerated image scaling and resampling engine"
+
+[workspace.dependencies]
+thiserror = "1.0"
+crossbeam-channel = "0.5"
+log = "0.4"
+env_logger = "0.11"

@@ -1,0 +1,15 @@
+[package]
+name = "scalix-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core engine, types, and dispatcher for Scalix"
+
+[dependencies]
+thiserror.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
