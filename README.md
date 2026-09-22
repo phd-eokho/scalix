@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-**Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered exclusively for modern **Linux (x86_64)** and **Android (aarch64)** platforms.
+**Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered exclusively for modern **Linux (x86_64)** and **Android (aarch64 / armv7)** platforms.
 
 Designed with a **headless-first and offscreen-first** architecture, Scalix provides a unified interface across **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, and **Dedicated 2D HW Engines (V4L2 M2M / DRM)**. CPU fallback and host SIMD operations are delegated to third-party image processing libraries (e.g. OpenCV).
 
@@ -14,7 +14,7 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
 * **Vulkan Offscreen Rendering Strategies:**
   * **Hardware Blit (`Blit`):** Fixed-function 2D blitting for maximum raw throughput and zero shader overhead.
   * **Offscreen Raster Graphics (`Raster`):** Complete graphics pipeline with vertex/fragment shaders and hardware bilinear/trilinear samplers.
-  * **Hierarchical LoD Pyramid (`LodPyramid`):** Multi-pass $2\times 2$ box filtering downscaler with configurable `max_mip_levels` to eliminate aliasing and moiré artifacts during extreme downscaling ($>4\times$).
+  * **Hierarchical LoD Pyramid (`LodPyramid`):** Multi-pass 2×2 box filtering downscaler with configurable `max_mip_levels` to eliminate aliasing and moiré artifacts during extreme downscaling (>4×).
 * **Flexible Execution Models:**
   * **Synchronous (Blocking):** Direct execution for CLI tools and deterministic pipelines.
   * **Asynchronous (Future / Task):** Non-blocking polling and timeout waits with hardware timeline semaphores.
@@ -40,7 +40,7 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 ### 1. Hardware Backends & Accelerators
 
-| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64) |
+| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64 / armv7) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
 | **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | ✔ Verified | ✔ Verified | ○ Supported |
 | **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | ○ Supported | ○ Supported | ○ Supported |
@@ -61,7 +61,7 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 ### 3. Memory & Zero-Copy Subsystems
 
-| Feature | Interface / Handle | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64, API 26+) |
+| Feature | Interface / Handle | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64 / armv7, API 26+) |
 | :--- | :--- | :---: | :---: | :---: |
 | **Host Memory Pointers** | Standard contiguous CPU memory buffer (RGB/RGBA) | ✔ Verified | ✔ Verified | ○ Supported |
 | **Staging Ring Pool** | Pinned / mapped host-to-device buffer pool | ✔ Verified | ✔ Verified | ○ Supported |
@@ -155,6 +155,7 @@ scalix_engine_destroy(engine);
 * **GPU Backend Libraries:**
   * **Vulkan (P0):** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
   * **OpenGL / GLES (P1):** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
+* **Android Cross-Compilation (Optional):** Android NDK (r27+ recommended, API Level 26+) and `cargo-ndk`
 
 > [!NOTE]
 > `libopencv-dev` is required for benchmarking workloads (`cpp_benchmark`) to provide side-by-side execution time comparisons between Scalix hardware pipelines and standard OpenCV image processing operations (`cv::resize`, `cv::warpAffine`).
@@ -185,6 +186,9 @@ make -C examples
 # Run all examples (including sample.jpg JPEG processing with libjpeg-turbo)
 make -C examples run
 
+# Run multi-resolution performance benchmark
+make -C examples benchmark
+
 # Clean example build artifacts
 make -C examples clean
 ```
@@ -192,7 +196,7 @@ make -C examples clean
 #### Individual Examples:
 * **`cpp_basic`**: Demonstrates synchronous, asynchronous callback, and zero-copy DMA buffer pre-allocation.
 * **`cpp_jpeg`**: Loads [`assets/sample.jpg`](assets/sample.jpg) using `libjpeg-turbo`, decodes directly into memory-mapped DMA buffers, executes the Scalix pipeline (`blit`, `raster`, or `lod [max_mip_levels]`), and writes the output JPEG.
-* **`cpp_benchmark`**: Micro-benchmarking multi-resolution downscaling workloads across 4K UHD, 1080p, and 720p to $320\times 320$ tensors.
+* **`cpp_benchmark`**: Micro-benchmarking multi-resolution downscaling workloads across 4K UHD, 1080p, and 720p to 320×320 tensors.
 
 ---
 
@@ -211,9 +215,9 @@ Scalix provides unified zero-copy DMA buffer allocation across supported target 
 * **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12 for offscreen rendering.
 * **DMA Allocation Behavior & Limitation:** Linux `dma-buf` is **not yet verified to work** on WSL2. Stock WSL2 kernels do not provide `/dev/dma_heap`, and DRM GEM dumb buffer allocations often fail or lack PRIME hardware export support across the `/dev/dxg` virtual translation layer. Scalix's runtime allocator probing detects this DMA failure automatically and safely falls back to host memory staging buffers. Testing true zero-copy DMA requires bare-metal Linux with native DRM render nodes.
 
-### 3. Android (API Level 26+, `aarch64` only)
+### 3. Android (API Level 26+, `aarch64` / `armv7`)
 * **Allocator:** Native **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`).
-* **Platform Gating:** Exclusively compiled for `aarch64-linux-android` (`-landroid`). Android symbols are never linked or exposed on Linux builds.
+* **Platform Gating:** Compiled for `aarch64-linux-android` and `armv7-linux-androideabi` (`-landroid`) with NDK r27+. Android symbols are never linked or exposed on Linux builds.
 
 ---
 
