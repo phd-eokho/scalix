@@ -3,10 +3,10 @@
 //! Provides drop guards for GPU buffers, device memories, images, views, command buffers,
 //! and query pools to prevent GPU resource leaks on early returns.
 
-use std::sync::Arc;
-use ash::vk;
 use crate::backend::vulkan::context::VulkanContext;
 use crate::types::{Result, ScalixError};
+use ash::vk;
+use std::sync::Arc;
 
 /// RAII Drop guard encapsulating a `vk::Buffer` and its bound `vk::DeviceMemory`.
 pub struct GpuBuffer {
@@ -277,15 +277,16 @@ impl CommandBufferGuard {
         };
 
         let cmd_bufs = unsafe {
-            ctx.device.allocate_command_buffers(&alloc_info).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate command buffer: {e}"))
-            })?
+            ctx.device
+                .allocate_command_buffers(&alloc_info)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to allocate command buffer: {e}"))
+                })?
         };
 
-        let cmd_buf = cmd_bufs
-            .into_iter()
-            .next()
-            .ok_or_else(|| ScalixError::ExecutionFailed("Allocated command buffer is empty".to_string()))?;
+        let cmd_buf = cmd_bufs.into_iter().next().ok_or_else(|| {
+            ScalixError::ExecutionFailed("Allocated command buffer is empty".to_string())
+        })?;
 
         Ok(Self {
             cmd_buf,
@@ -298,7 +299,9 @@ impl CommandBufferGuard {
 impl Drop for CommandBufferGuard {
     fn drop(&mut self) {
         unsafe {
-            self.ctx.device.free_command_buffers(self.pool, &[self.cmd_buf]);
+            self.ctx
+                .device
+                .free_command_buffers(self.pool, &[self.cmd_buf]);
         }
     }
 }

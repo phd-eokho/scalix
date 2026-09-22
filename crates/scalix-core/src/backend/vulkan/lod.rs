@@ -4,14 +4,14 @@
 //! to eliminate aliasing, high-frequency scintillation, and Moire artifacts during extreme
 //! downscaling (e.g., 4K -> 360p / 320x320).
 
-use std::sync::Arc;
-use ash::vk;
 use crate::backend::vulkan::blit::{to_vk_filter, to_vk_format_info};
 use crate::backend::vulkan::context::VulkanContext;
 use crate::backend::vulkan::util::{CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard};
 use crate::backend::vulkan::{VulkanPipeline, VulkanStrategy};
 use crate::profiler::{ProfileMetrics, Profiler};
 use crate::types::{ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError};
+use ash::vk;
+use std::sync::Arc;
 
 pub struct VulkanLodDownscaler {
     ctx: Arc<VulkanContext>,
@@ -25,7 +25,12 @@ impl VulkanLodDownscaler {
         Self { ctx, profiler }
     }
 
-    pub fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()> {
+    pub fn process(
+        &self,
+        src: &ImageDesc,
+        dst: &mut ImageDescMut,
+        options: &ResizeOptions,
+    ) -> Result<()> {
         let (vk_format, src_is_rgb) = to_vk_format_info(src.format)?;
         let (dst_vk_format, dst_is_rgb) = to_vk_format_info(dst.format)?;
 
@@ -37,7 +42,11 @@ impl VulkanLodDownscaler {
         }
 
         let is_profiling = self.profiler.is_enabled();
-        let t0_wall = if is_profiling { Some(std::time::Instant::now()) } else { None };
+        let t0_wall = if is_profiling {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         let vk_filter = to_vk_filter(options.filter);
         let device = &self.ctx.device;
@@ -83,11 +92,16 @@ impl VulkanLodDownscaler {
             let src_staging_mem = src_staging.memory;
 
             // Copy source data into staging memory (unpack RGB -> RGBA if needed)
-            let t_unpack_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
+            let t_unpack_start = if is_profiling {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             let mapped_src = device
                 .map_memory(src_staging_mem, 0, src_size, vk::MemoryMapFlags::empty())
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map src staging memory: {e}")))?
-                as *mut u8;
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to map src staging memory: {e}"))
+                })? as *mut u8;
 
             if src_is_rgb {
                 let pixel_count = (src.width * src.height) as usize;
@@ -104,7 +118,9 @@ impl VulkanLodDownscaler {
                 std::ptr::copy_nonoverlapping(src.data.as_ptr(), mapped_src, src.data.len());
             }
             device.unmap_memory(src_staging_mem);
-            let host_unpack_ms = t_unpack_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
+            let host_unpack_ms = t_unpack_start
+                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
 
             // 2. Create Destination Staging Buffer
             let dst_staging = GpuBuffer::allocate(
@@ -155,7 +171,9 @@ impl VulkanLodDownscaler {
             };
             device
                 .begin_command_buffer(cmd_buf, &begin_info)
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to begin command buffer: {e}")))?;
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to begin command buffer: {e}"))
+                })?;
 
             if let Some(qp) = query_pool {
                 device.cmd_reset_query_pool(cmd_buf, qp, 0, 4);
@@ -286,7 +304,11 @@ impl VulkanLodDownscaler {
                     },
                     src_offsets: [
                         vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D { x: mip_w, y: mip_h, z: 1 },
+                        vk::Offset3D {
+                            x: mip_w,
+                            y: mip_h,
+                            z: 1,
+                        },
                     ],
                     dst_subresource: vk::ImageSubresourceLayers {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -296,7 +318,11 @@ impl VulkanLodDownscaler {
                     },
                     dst_offsets: [
                         vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D { x: next_mip_w, y: next_mip_h, z: 1 },
+                        vk::Offset3D {
+                            x: next_mip_w,
+                            y: next_mip_h,
+                            z: 1,
+                        },
                     ],
                 };
 
@@ -385,7 +411,11 @@ impl VulkanLodDownscaler {
                 },
                 src_offsets: [
                     vk::Offset3D { x: 0, y: 0, z: 0 },
-                    vk::Offset3D { x: src_mip_w, y: src_mip_h, z: 1 },
+                    vk::Offset3D {
+                        x: src_mip_w,
+                        y: src_mip_h,
+                        z: 1,
+                    },
                 ],
                 dst_subresource: vk::ImageSubresourceLayers {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -395,7 +425,11 @@ impl VulkanLodDownscaler {
                 },
                 dst_offsets: [
                     vk::Offset3D { x: 0, y: 0, z: 0 },
-                    vk::Offset3D { x: dst.width as i32, y: dst.height as i32, z: 1 },
+                    vk::Offset3D {
+                        x: dst.width as i32,
+                        y: dst.height as i32,
+                        z: 1,
+                    },
                 ],
             };
 
@@ -471,9 +505,9 @@ impl VulkanLodDownscaler {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::TRANSFER, qp, 3);
             }
 
-            device
-                .end_command_buffer(cmd_buf)
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to end command buffer: {e}")))?;
+            device.end_command_buffer(cmd_buf).map_err(|e| {
+                ScalixError::ExecutionFailed(format!("Failed to end command buffer: {e}"))
+            })?;
 
             // 7. Submit Queue and Synchronize
             let submit_info = vk::SubmitInfo {
@@ -481,15 +515,23 @@ impl VulkanLodDownscaler {
                 p_command_buffers: &cmd_buf,
                 ..Default::default()
             };
-            let t_sync_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
+            let t_sync_start = if is_profiling {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             device
                 .queue_submit(self.ctx.queue, &[submit_info], vk::Fence::null())
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to submit queue: {e}")))?;
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to submit queue: {e}"))
+                })?;
 
-            device
-                .queue_wait_idle(self.ctx.queue)
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Queue wait idle failed: {e}")))?;
-            let driver_sync_ms = t_sync_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
+            device.queue_wait_idle(self.ctx.queue).map_err(|e| {
+                ScalixError::ExecutionFailed(format!("Queue wait idle failed: {e}"))
+            })?;
+            let driver_sync_ms = t_sync_start
+                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
 
             let mut gpu_upload_ms = 0.0;
             let mut gpu_pure_blit_ms = 0.0;
@@ -498,25 +540,35 @@ impl VulkanLodDownscaler {
             // Retrieve GPU timestamp results if query pool active
             if let Some(qp) = query_pool {
                 let mut timestamps = [0u64; 4];
-                if device.get_query_pool_results(
-                    qp,
-                    0,
-                    &mut timestamps,
-                    vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
-                ).is_ok() {
+                if device
+                    .get_query_pool_results(
+                        qp,
+                        0,
+                        &mut timestamps,
+                        vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
+                    )
+                    .is_ok()
+                {
                     let period_ms = (self.ctx.timestamp_period as f64) * 1e-6;
                     gpu_upload_ms = timestamps[1].saturating_sub(timestamps[0]) as f64 * period_ms;
-                    gpu_pure_blit_ms = timestamps[2].saturating_sub(timestamps[1]) as f64 * period_ms;
-                    gpu_download_ms = timestamps[3].saturating_sub(timestamps[2]) as f64 * period_ms;
+                    gpu_pure_blit_ms =
+                        timestamps[2].saturating_sub(timestamps[1]) as f64 * period_ms;
+                    gpu_download_ms =
+                        timestamps[3].saturating_sub(timestamps[2]) as f64 * period_ms;
                 }
             }
 
             // 8. Copy Back from Destination Staging Memory (pack RGBA -> RGB if needed)
-            let t_repack_start = if is_profiling { Some(std::time::Instant::now()) } else { None };
+            let t_repack_start = if is_profiling {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             let mapped_dst = device
                 .map_memory(dst_staging_mem, 0, dst_size, vk::MemoryMapFlags::empty())
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map dst staging memory: {e}")))?
-                as *const u8;
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to map dst staging memory: {e}"))
+                })? as *const u8;
 
             if dst_is_rgb {
                 let pixel_count = (dst.width * dst.height) as usize;
@@ -532,10 +584,14 @@ impl VulkanLodDownscaler {
                 std::ptr::copy_nonoverlapping(mapped_dst, dst.data.as_mut_ptr(), dst.data.len());
             }
             device.unmap_memory(dst_staging_mem);
-            let host_repack_ms = t_repack_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
+            let host_repack_ms = t_repack_start
+                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
 
             if is_profiling {
-                let total_wall_ms = t0_wall.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
+                let total_wall_ms = t0_wall
+                    .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0);
                 self.profiler.record(ProfileMetrics {
                     host_unpack_ms,
                     gpu_upload_ms,
@@ -564,7 +620,12 @@ impl VulkanPipeline for VulkanLodDownscaler {
     }
 
     #[inline]
-    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()> {
+    fn process(
+        &self,
+        src: &ImageDesc,
+        dst: &mut ImageDescMut,
+        options: &ResizeOptions,
+    ) -> Result<()> {
         self.process(src, dst, options)
     }
 }

@@ -32,7 +32,10 @@ fn test_sync_passthrough_memory_transfer() {
         .resize_sync(&src_desc, &mut dst_desc, FilterMode::Passthrough)
         .expect("Resize sync failed");
 
-    assert_eq!(src_data, dst_data, "Destination data must match source data");
+    assert_eq!(
+        src_data, dst_data,
+        "Destination data must match source data"
+    );
 }
 
 #[test]
@@ -53,7 +56,9 @@ fn test_async_task_execution() {
 
     let task = engine.resize_async(src_image, dst_image, FilterMode::Passthrough);
 
-    let result = task.wait(Some(Duration::from_secs(2))).expect("Task failed");
+    let result = task
+        .wait(Some(Duration::from_secs(2)))
+        .expect("Task failed");
     assert_eq!(result.data, expected_data);
 }
 
@@ -81,7 +86,9 @@ fn test_callback_execution() {
         })
         .expect("Callback submission failed");
 
-    let res = rx.recv_timeout(Duration::from_secs(2)).expect("Callback timed out");
+    let res = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Callback timed out");
     let completed_image = res.expect("Execution error in callback");
 
     assert!(called.load(Ordering::Acquire));
@@ -92,7 +99,10 @@ fn test_callback_execution() {
 fn test_buffer_bounds_and_error_handling() {
     // 1. Zero dimension error
     let zero_res = PixelFormat::Rgba8888.min_buffer_size(0, 100, 100);
-    assert!(matches!(zero_res, Err(ScalixError::InvalidDimensions { .. })));
+    assert!(matches!(
+        zero_res,
+        Err(ScalixError::InvalidDimensions { .. })
+    ));
 
     // 2. Undersized stride error
     let stride_res = PixelFormat::Rgba8888.min_buffer_size(100, 100, 100); // 100 < 400
@@ -258,9 +268,7 @@ fn test_dma_buffer_lifecycle_and_probing() {
             assert!(write_res.is_ok());
 
             // Test scoped with_read closure
-            let read_val = dma_buf.with_read(|slice| {
-                (slice[0], slice[1])
-            });
+            let read_val = dma_buf.with_read(|slice| (slice[0], slice[1]));
             assert_eq!(read_val.unwrap(), (0xDE, 0xAD));
 
             // Verify ImageDesc views
@@ -276,7 +284,10 @@ fn test_dma_buffer_lifecycle_and_probing() {
         }
         Err(ScalixError::DmaUnavailable(reason)) => {
             // Expected on virtualized/container environments without DMA-Heap/DRM hardware nodes
-            println!("DMA allocator safely probed as unavailable on this host: {}", reason);
+            println!(
+                "DMA allocator safely probed as unavailable on this host: {}",
+                reason
+            );
         }
         Err(other) => {
             panic!("Unexpected DMA error: {:?}", other);
@@ -296,7 +307,10 @@ fn test_vulkan_backend_blit_resize() {
     let vk_backend = match VulkanBackend::new() {
         Ok(backend) => backend,
         Err(e) => {
-            println!("Vulkan backend not available on this environment ({:?}); skipping test.", e);
+            println!(
+                "Vulkan backend not available on this environment ({:?}); skipping test.",
+                e
+            );
             return;
         }
     };
@@ -317,9 +331,14 @@ fn test_vulkan_backend_blit_resize() {
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
 
-    let options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Blit);
+    let options =
+        ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Blit);
     let process_res = vk_backend.process(&src_desc, &mut dst_desc, &options);
-    assert!(process_res.is_ok(), "Vulkan blit process failed: {:?}", process_res.err());
+    assert!(
+        process_res.is_ok(),
+        "Vulkan blit process failed: {:?}",
+        process_res.err()
+    );
 
     // Verify destination pixels were populated by Vulkan GPU blit
     assert_eq!(dst_data[0], 0xAA);
@@ -334,7 +353,10 @@ fn test_vulkan_backend_raster_resize() {
     let vk_backend = match VulkanBackend::new() {
         Ok(backend) => backend,
         Err(e) => {
-            println!("Vulkan backend not available on this environment ({:?}); skipping test.", e);
+            println!(
+                "Vulkan backend not available on this environment ({:?}); skipping test.",
+                e
+            );
             return;
         }
     };
@@ -355,9 +377,14 @@ fn test_vulkan_backend_raster_resize() {
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
 
-    let options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Raster);
+    let options =
+        ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Raster);
     let process_res = vk_backend.process(&src_desc, &mut dst_desc, &options);
-    assert!(process_res.is_ok(), "Vulkan raster process failed: {:?}", process_res.err());
+    assert!(
+        process_res.is_ok(),
+        "Vulkan raster process failed: {:?}",
+        process_res.err()
+    );
 
     // Verify destination pixels were populated by Vulkan GPU rasterization
     assert_eq!(dst_data[0], 0xBB);
@@ -370,12 +397,19 @@ fn test_vulkan_backend_raster_resize() {
     let rgb_src_data = vec![0xCCu8; rgb_src_stride * (src_h as usize)];
     let mut rgb_dst_data = vec![0x00u8; rgb_dst_stride * (dst_h as usize)];
 
-    let rgb_src_desc = ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_format, &rgb_src_data).unwrap();
-    let mut rgb_dst_desc = ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_format, &mut rgb_dst_data).unwrap();
+    let rgb_src_desc =
+        ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_format, &rgb_src_data).unwrap();
+    let mut rgb_dst_desc =
+        ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_format, &mut rgb_dst_data).unwrap();
 
-    let rgb_options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Raster);
+    let rgb_options =
+        ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Raster);
     let rgb_res = vk_backend.process(&rgb_src_desc, &mut rgb_dst_desc, &rgb_options);
-    assert!(rgb_res.is_ok(), "Vulkan raster RGB888 process failed: {:?}", rgb_res.err());
+    assert!(
+        rgb_res.is_ok(),
+        "Vulkan raster RGB888 process failed: {:?}",
+        rgb_res.err()
+    );
     assert_eq!(rgb_dst_data[0], 0xCC);
     assert_eq!(rgb_dst_data[rgb_dst_data.len() - 1], 0xCC);
 }
@@ -388,7 +422,10 @@ fn test_vulkan_backend_lod_pyramid_resize() {
     let vk_backend = match VulkanBackend::new() {
         Ok(backend) => backend,
         Err(e) => {
-            println!("Vulkan backend not available on this environment ({:?}); skipping test.", e);
+            println!(
+                "Vulkan backend not available on this environment ({:?}); skipping test.",
+                e
+            );
             return;
         }
     };
@@ -408,10 +445,16 @@ fn test_vulkan_backend_lod_pyramid_resize() {
 
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     {
-        let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
-        let options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::LodPyramid);
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options = ResizeOptions::new(FilterMode::Bilinear)
+            .with_vulkan_strategy(VulkanStrategy::LodPyramid);
         let process_res = vk_backend.process(&src_desc, &mut dst_desc, &options);
-        assert!(process_res.is_ok(), "Vulkan LoD pyramid process failed: {:?}", process_res.err());
+        assert!(
+            process_res.is_ok(),
+            "Vulkan LoD pyramid process failed: {:?}",
+            process_res.err()
+        );
     }
 
     // Verify destination pixels were populated by Vulkan GPU LoD downscaler
@@ -425,12 +468,19 @@ fn test_vulkan_backend_lod_pyramid_resize() {
     let rgb_src_data = vec![0xEEu8; rgb_src_stride * (src_h as usize)];
     let mut rgb_dst_data = vec![0x00u8; rgb_dst_stride * (dst_h as usize)];
 
-    let rgb_src_desc = ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_format, &rgb_src_data).unwrap();
+    let rgb_src_desc =
+        ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_format, &rgb_src_data).unwrap();
     {
-        let mut rgb_dst_desc = ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_format, &mut rgb_dst_data).unwrap();
-        let rgb_options = ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::LodPyramid);
+        let mut rgb_dst_desc =
+            ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_format, &mut rgb_dst_data).unwrap();
+        let rgb_options = ResizeOptions::new(FilterMode::Bilinear)
+            .with_vulkan_strategy(VulkanStrategy::LodPyramid);
         let rgb_res = vk_backend.process(&rgb_src_desc, &mut rgb_dst_desc, &rgb_options);
-        assert!(rgb_res.is_ok(), "Vulkan LoD RGB888 process failed: {:?}", rgb_res.err());
+        assert!(
+            rgb_res.is_ok(),
+            "Vulkan LoD RGB888 process failed: {:?}",
+            rgb_res.err()
+        );
     }
     assert_eq!(rgb_dst_data[0], 0xEE);
     assert_eq!(rgb_dst_data[rgb_dst_data.len() - 1], 0xEE);
@@ -438,12 +488,17 @@ fn test_vulkan_backend_lod_pyramid_resize() {
     // 4. Test with explicit max_mip_levels limit (capped at 2 levels)
     let mut capped_dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
     {
-        let mut capped_dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut capped_dst_data).unwrap();
+        let mut capped_dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut capped_dst_data).unwrap();
         let capped_options = ResizeOptions::new(FilterMode::Bilinear)
             .with_vulkan_strategy(VulkanStrategy::LodPyramid)
             .with_max_mip_levels(2);
         let capped_res = vk_backend.process(&src_desc, &mut capped_dst_desc, &capped_options);
-        assert!(capped_res.is_ok(), "Vulkan LoD capped process failed: {:?}", capped_res.err());
+        assert!(
+            capped_res.is_ok(),
+            "Vulkan LoD capped process failed: {:?}",
+            capped_res.err()
+        );
     }
     assert_eq!(capped_dst_data[0], 0xDD);
 }
@@ -476,14 +531,20 @@ fn test_pluggable_profiler_and_gpu_metrics() {
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
 
-    engine.resize_sync(&src_desc, &mut dst_desc, FilterMode::Bilinear).unwrap();
+    engine
+        .resize_sync(&src_desc, &mut dst_desc, FilterMode::Bilinear)
+        .unwrap();
     assert_eq!(engine.last_profile(), None);
 
     // 2. Enable profiling
     engine.set_profiling(true);
-    engine.resize_sync(&src_desc, &mut dst_desc, FilterMode::Bilinear).unwrap();
+    engine
+        .resize_sync(&src_desc, &mut dst_desc, FilterMode::Bilinear)
+        .unwrap();
 
-    let profile = engine.last_profile().expect("Expected profile metrics when enabled");
+    let profile = engine
+        .last_profile()
+        .expect("Expected profile metrics when enabled");
     assert!(profile.total_wall_ms > 0.0);
     assert!(profile.gpu_pure_blit_ms >= 0.0);
 }
@@ -499,7 +560,10 @@ fn test_image_dimensions_and_geometry() {
     assert!(empty_dims.is_empty());
 
     let odd_dims = ImageDimensions::new(63, 48);
-    assert!(matches!(odd_dims.validate_even(), Err(ScalixError::InvalidDimensions { .. })));
+    assert!(matches!(
+        odd_dims.validate_even(),
+        Err(ScalixError::InvalidDimensions { .. })
+    ));
 
     let geom = ImageGeometry::new(dims, PixelFormat::Rgba8888).unwrap();
     assert_eq!(geom.dimensions, dims);
@@ -550,7 +614,8 @@ fn test_engine_config_and_worker_pool() {
     let (tx, rx) = crossbeam_channel::bounded(1);
     pool.submit(move || {
         let _ = tx.send(42);
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), 42);
 }
 
@@ -606,9 +671,3 @@ fn test_vulkan_pipeline_trait_and_dma_allocator() {
     assert_eq!(pipeline.name(), "MockPipeline");
     assert_eq!(pipeline.strategy(), scalix_core::VulkanStrategy::Blit);
 }
-
-
-
-
-
-

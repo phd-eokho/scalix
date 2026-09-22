@@ -1,3 +1,5 @@
+#![allow(clippy::missing_safety_doc)]
+
 use std::ffi::c_void;
 use std::slice;
 use std::time::Duration;
@@ -215,13 +217,7 @@ unsafe fn extract_image_desc<'a>(desc: *const ScalixImageDesc) -> Result<ImageDe
         return Err(ScalixError::NullPointer);
     }
     let slice = slice::from_raw_parts(d.host_ptr, d.data_len);
-    let mut image_desc = ImageDesc::new(
-        d.width,
-        d.height,
-        d.stride_bytes,
-        d.format.into(),
-        slice,
-    )?;
+    let mut image_desc = ImageDesc::new(d.width, d.height, d.stride_bytes, d.format.into(), slice)?;
     if d.dma_buf_fd >= 0 {
         image_desc = image_desc.with_dma_buf(d.dma_buf_fd);
     }
@@ -237,13 +233,8 @@ unsafe fn extract_image_desc_mut<'a>(desc: *mut ScalixImageDesc) -> Result<Image
         return Err(ScalixError::NullPointer);
     }
     let slice = slice::from_raw_parts_mut(d.host_ptr, d.data_len);
-    let mut image_desc = ImageDescMut::new(
-        d.width,
-        d.height,
-        d.stride_bytes,
-        d.format.into(),
-        slice,
-    )?;
+    let mut image_desc =
+        ImageDescMut::new(d.width, d.height, d.stride_bytes, d.format.into(), slice)?;
     if d.dma_buf_fd >= 0 {
         image_desc = image_desc.with_dma_buf(d.dma_buf_fd);
     }
@@ -372,7 +363,10 @@ pub unsafe extern "C" fn scalix_resize_sync_with_options(
         };
 
         let core_options: scalix_core::ResizeOptions = (*options).into();
-        match (*engine).inner.resize_sync(&src_desc, &mut dst_desc, core_options) {
+        match (*engine)
+            .inner
+            .resize_sync(&src_desc, &mut dst_desc, core_options)
+        {
             Ok(()) => SCALIX_SUCCESS,
             Err(e) => map_error_to_code(e),
         }
@@ -438,7 +432,9 @@ pub unsafe extern "C" fn scalix_resize_async_with_options(
         };
 
         let core_options: scalix_core::ResizeOptions = (*options).into();
-        let task = (*engine).inner.resize_async(src_owned, dst_owned, core_options);
+        let task = (*engine)
+            .inner
+            .resize_async(src_owned, dst_owned, core_options);
         Box::into_raw(Box::new(ScalixTask {
             inner: Some(task),
             result: None,
@@ -477,7 +473,7 @@ pub unsafe extern "C" fn scalix_task_is_ready(task: *const ScalixTask) -> bool {
         if task_ref.result.is_some() {
             return true;
         }
-        task_ref.inner.as_ref().map_or(false, |t| t.is_ready())
+        task_ref.inner.as_ref().is_some_and(|t| t.is_ready())
     })
 }
 
@@ -591,23 +587,26 @@ pub unsafe extern "C" fn scalix_resize_submit_with_options(
         };
 
         let core_options: scalix_core::ResizeOptions = (*options).into();
-        let res = (*engine).inner.resize_callback(
-            src_owned,
-            dst_owned,
-            core_options,
-            move |task_res| match task_res {
-                Ok(_img) => {
-                    if let Some(cb) = ctx.callback {
-                        unsafe { cb(SCALIX_SUCCESS, ctx.user_data as *mut c_void) };
-                    }
-                }
-                Err(e) => {
-                    if let Some(cb) = ctx.callback {
-                        unsafe { cb(map_error_to_code(e), ctx.user_data as *mut c_void) };
-                    }
-                }
-            },
-        );
+        let res =
+            (*engine)
+                .inner
+                .resize_callback(
+                    src_owned,
+                    dst_owned,
+                    core_options,
+                    move |task_res| match task_res {
+                        Ok(_img) => {
+                            if let Some(cb) = ctx.callback {
+                                unsafe { cb(SCALIX_SUCCESS, ctx.user_data as *mut c_void) };
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(cb) = ctx.callback {
+                                unsafe { cb(map_error_to_code(e), ctx.user_data as *mut c_void) };
+                            }
+                        }
+                    },
+                );
 
         match res {
             Ok(()) => SCALIX_SUCCESS,

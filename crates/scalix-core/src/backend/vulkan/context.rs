@@ -1,8 +1,8 @@
 //! Headless Vulkan Context Initialization & Device Management
 
-use std::sync::Arc;
-use ash::{vk, Device, Entry, Instance};
 use crate::types::{Result, ScalixError};
+use ash::{vk, Device, Entry, Instance};
+use std::sync::Arc;
 
 pub struct VulkanContext {
     pub entry: Entry,
@@ -23,15 +23,12 @@ impl VulkanContext {
     /// Initializes a new headless Vulkan context.
     pub fn new() -> Result<Arc<Self>> {
         let entry = unsafe {
-            Entry::load().map_err(|_e| {
-                ScalixError::BackendUnavailable(crate::types::BackendType::Vulkan)
-            })?
+            Entry::load()
+                .map_err(|_e| ScalixError::BackendUnavailable(crate::types::BackendType::Vulkan))?
         };
 
-        let app_name = std::ffi::CStr::from_bytes_with_nul(b"Scalix Engine\0")
-            .map_err(|e| ScalixError::ExecutionFailed(format!("Invalid application name: {e}")))?;
-        let engine_name = std::ffi::CStr::from_bytes_with_nul(b"Scalix\0")
-            .map_err(|e| ScalixError::ExecutionFailed(format!("Invalid engine name: {e}")))?;
+        let app_name = c"Scalix Engine";
+        let engine_name = c"Scalix";
 
         let app_info = vk::ApplicationInfo {
             p_application_name: app_name.as_ptr(),
@@ -48,9 +45,11 @@ impl VulkanContext {
         };
 
         let instance = unsafe {
-            entry.create_instance(&instance_create_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create Vulkan instance: {}", e))
-            })?
+            entry
+                .create_instance(&instance_create_info, None)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to create Vulkan instance: {}", e))
+                })?
         };
 
         // 1. Enumerate and pick the best physical device
@@ -61,7 +60,9 @@ impl VulkanContext {
         };
 
         if physical_devices.is_empty() {
-            return Err(ScalixError::BackendUnavailable(crate::types::BackendType::Vulkan));
+            return Err(ScalixError::BackendUnavailable(
+                crate::types::BackendType::Vulkan,
+            ));
         }
 
         // Pick discrete GPU if available, else first supported device
@@ -77,7 +78,9 @@ impl VulkanContext {
                     _ => 0,
                 }
             })
-            .ok_or_else(|| ScalixError::BackendUnavailable(crate::types::BackendType::Vulkan))?;
+            .ok_or(ScalixError::BackendUnavailable(
+                crate::types::BackendType::Vulkan,
+            ))?;
 
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };

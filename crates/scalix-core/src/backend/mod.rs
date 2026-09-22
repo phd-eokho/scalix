@@ -18,5 +18,10 @@ pub trait Backend: Send + Sync {
     fn is_available(&self) -> bool;
 
     /// Executes image processing / resize from source to destination with dynamic options.
-    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()>;
+    fn process(
+        &self,
+        src: &ImageDesc,
+        dst: &mut ImageDescMut,
+        options: &ResizeOptions,
+    ) -> Result<()>;
 }

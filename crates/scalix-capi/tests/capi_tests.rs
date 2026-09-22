@@ -81,12 +81,7 @@ fn test_c_api_async_wait() {
             dma_buf_fd: -1,
         };
 
-        let task = scalix_resize_async(
-            engine,
-            &src_desc,
-            &dst_desc,
-            ScalixFilterMode::Passthrough,
-        );
+        let task = scalix_resize_async(engine, &src_desc, &dst_desc, ScalixFilterMode::Passthrough);
         assert!(!task.is_null());
 
         let status = scalix_task_wait(task, 1000, dst_data.as_mut_ptr(), dst_data.len());
@@ -194,7 +189,10 @@ fn test_c_api_dma_buffer() {
                 data_len: 0,
                 dma_buf_fd: -1,
             };
-            assert_eq!(scalix_dma_buffer_get_desc(dma_buf, &mut desc), SCALIX_SUCCESS);
+            assert_eq!(
+                scalix_dma_buffer_get_desc(dma_buf, &mut desc),
+                SCALIX_SUCCESS
+            );
             assert_eq!(desc.width, 32);
             assert_eq!(desc.height, 32);
 
@@ -218,5 +216,3 @@ fn test_c_api_profiling() {
         scalix_engine_destroy(engine);
     }
 }
-
-

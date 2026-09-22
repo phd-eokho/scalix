@@ -1,8 +1,9 @@
 //! Vulkan Pipeline Strategy Hierarchy
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
 pub enum VulkanStrategy {
+    #[default]
     Auto = 0,
     /// Hardware Blitter (`vkCmdBlitImage`) using fixed-function GPU 2D scaling units.
     Blit = 1,
@@ -12,12 +13,6 @@ pub enum VulkanStrategy {
     LodPyramid = 3,
     /// Compute Shader Kernel (`vkCmdDispatch` with programmable filters).
     Compute = 4,
-}
-
-impl Default for VulkanStrategy {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// Vulkan-specific execution metadata and options.

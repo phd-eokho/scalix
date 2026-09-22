@@ -28,7 +28,7 @@ impl ImageDimensions {
 
     #[inline]
     pub fn validate_even(self) -> Result<()> {
-        if self.width % 2 != 0 || self.height % 2 != 0 {
+        if !self.width.is_multiple_of(2) || !self.height.is_multiple_of(2) {
             Err(ScalixError::InvalidDimensions {
                 width: self.width,
                 height: self.height,
@@ -60,7 +60,8 @@ impl ImageGeometry {
 
     #[inline]
     pub fn min_buffer_size(&self) -> Result<usize> {
-        self.format.min_buffer_size_dims(self.dimensions, self.stride)
+        self.format
+            .min_buffer_size_dims(self.dimensions, self.stride)
     }
 }
 
@@ -101,7 +102,10 @@ impl PixelFormat {
     #[inline]
     pub fn min_stride(self, width: u32) -> Result<usize> {
         if width == 0 {
-            return Err(ScalixError::InvalidDimensions { width: 0, height: 0 });
+            return Err(ScalixError::InvalidDimensions {
+                width: 0,
+                height: 0,
+            });
         }
         if let Some(bpp) = self.bytes_per_pixel() {
             (width as usize)
@@ -144,17 +148,20 @@ impl PixelFormat {
     #[inline]
     fn min_planar_size(self, dims: ImageDimensions, stride: usize) -> Result<usize> {
         dims.validate_even()?;
-        let y_size = stride
-            .checked_mul(dims.height as usize)
+        let y_size =
+            stride
+                .checked_mul(dims.height as usize)
+                .ok_or(ScalixError::InvalidDimensions {
+                    width: dims.width,
+                    height: dims.height,
+                })?;
+        let uv_size = y_size / 2;
+        y_size
+            .checked_add(uv_size)
             .ok_or(ScalixError::InvalidDimensions {
                 width: dims.width,
                 height: dims.height,
-            })?;
-        let uv_size = y_size / 2;
-        y_size.checked_add(uv_size).ok_or(ScalixError::InvalidDimensions {
-            width: dims.width,
-            height: dims.height,
-        })
+            })
     }
 
     #[inline]
@@ -165,10 +172,12 @@ impl PixelFormat {
                 width: dims.width,
                 height: dims.height,
             })?;
-        preceding.checked_add(min_s).ok_or(ScalixError::InvalidDimensions {
-            width: dims.width,
-            height: dims.height,
-        })
+        preceding
+            .checked_add(min_s)
+            .ok_or(ScalixError::InvalidDimensions {
+                width: dims.width,
+                height: dims.height,
+            })
     }
 }
 
@@ -401,7 +410,10 @@ impl ResizeOptions {
 
     #[inline]
     #[must_use]
-    pub fn with_vulkan_strategy(mut self, strategy: crate::backend::vulkan::VulkanStrategy) -> Self {
+    pub fn with_vulkan_strategy(
+        mut self,
+        strategy: crate::backend::vulkan::VulkanStrategy,
+    ) -> Self {
         self.vulkan.strategy = strategy;
         self
     }
