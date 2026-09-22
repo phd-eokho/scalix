@@ -41,7 +41,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   build-linux:
-    name: Build, Benchmark & Package (Linux x86_64)
+    name: Build & Package (Linux x86_64)
     needs: [lint-check]
     runs-on: ubuntu-24.04
     env:
@@ -63,7 +63,6 @@ jobs:
             libgles2-mesa-dev \
             libgl1-mesa-dev \
             libjpeg-dev \
-            libopencv-dev \
             g++ \
             pkg-config
 
@@ -88,10 +87,7 @@ jobs:
         run: cargo test --workspace --doc --verbose
 
       - name: Build Release Binaries and Libraries
-        run: cargo build --release --locked
-
-      - name: Run C++ Performance Benchmark
-        run: make -C examples benchmark
+        run: cargo build --release
 
       - name: Package Release Distribution
         run: |
@@ -121,6 +117,44 @@ jobs:
             ${{ env.DIST_DIR }}/*.tar.gz
             ${{ env.DIST_DIR }}/*.tar.zst
           if-no-files-found: error
+
+  benchmark-linux:
+    name: Performance Benchmark (Linux x86_64)
+    needs: [build-linux]
+    runs-on: ubuntu-24.04
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      LIBGL_ALWAYS_SOFTWARE: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies & OpenCV
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libvulkan-dev \
+            vulkan-tools \
+            mesa-vulkan-drivers \
+            libegl1-mesa-dev \
+            libgles2-mesa-dev \
+            libgl1-mesa-dev \
+            libjpeg-dev \
+            libopencv-dev \
+            g++ \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run C++ Performance Benchmark
+        run: make -C examples benchmark
 
   build-android:
     name: Build & Package (${{ matrix.arch_name }})
@@ -169,7 +203,7 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          cargo ndk --target ${{ matrix.target }} --platform 26 build --release --locked -p scalix-capi
+          cargo ndk --target ${{ matrix.target }} --platform 26 build --release -p scalix-capi
 
       - name: Package Android Distribution
         run: |
@@ -202,7 +236,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: [build-linux, build-android]
+    needs: [build-linux, benchmark-linux, build-android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
