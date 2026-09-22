@@ -1,8 +1,8 @@
 //! Linux DRM Render Node Dumb Buffer Allocator (`/dev/dri/renderD128`, GEM PRIME)
 
+use crate::types::{ImageDimensions, PixelFormat, Result, ScalixError};
 use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use crate::types::{ImageDimensions, PixelFormat, Result, ScalixError};
 
 #[repr(C)]
 struct DrmModeCreateDumb {
@@ -46,7 +46,9 @@ struct DrmDumbGuard {
 impl Drop for DrmDumbGuard {
     fn drop(&mut self) {
         if self.handle != 0 {
-            let mut destroy_dumb = DrmModeDestroyDumb { handle: self.handle };
+            let mut destroy_dumb = DrmModeDestroyDumb {
+                handle: self.handle,
+            };
             unsafe {
                 libc::ioctl(
                     self.fd,
@@ -100,7 +102,7 @@ impl LinuxDrmAllocator {
             height
                 .checked_mul(3)
                 .map(|v| v / 2)
-                .ok_or_else(|| ScalixError::InvalidDimensions { width, height })?
+                .ok_or(ScalixError::InvalidDimensions { width, height })?
         } else {
             height
         };
@@ -148,10 +150,7 @@ impl LinuxDrmAllocator {
             let size = create_dumb.size as usize;
 
             // Guard GEM handle so it is always destroyed even if PRIME export fails or on scope exit
-            let dumb_guard = DrmDumbGuard {
-                fd: drm_fd,
-                handle,
-            };
+            let dumb_guard = DrmDumbGuard { fd: drm_fd, handle };
 
             // 2. Export GEM handle to DMA-BUF PRIME fd
             let mut prime_handle = DrmPrimeHandle {

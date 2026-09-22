@@ -1,8 +1,8 @@
 //! Linux DMA-Heap Allocator (`/dev/dma_heap/system`, `/dev/dma_heap/cma`, Linux 5.6+)
 
+use crate::types::{ImageDimensions, PixelFormat, Result, ScalixError};
 use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use crate::types::{ImageDimensions, PixelFormat, Result, ScalixError};
 
 #[repr(C)]
 struct DmaHeapAllocationData {

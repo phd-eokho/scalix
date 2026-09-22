@@ -6,9 +6,7 @@ use crossbeam_channel::bounded;
 use crate::backend::{Backend, PassthroughBackend};
 use crate::buffer::OwnedImage;
 use crate::profiler::{ActiveProfiler, ProfileMetrics, Profiler};
-use crate::types::{
-    BackendType, ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError,
-};
+use crate::types::{BackendType, ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError};
 use crate::worker::{TaskHandle, WorkerPool, DEFAULT_WORKER_CAPACITY};
 
 pub const MAX_THREAD_PREFIX_LEN: usize = 7;
@@ -138,19 +136,21 @@ impl Engine {
         profiler: Arc<dyn Profiler>,
     ) -> Result<Self> {
         let backend: Arc<dyn Backend> = match backend_type {
-            BackendType::Auto => match crate::backend::VulkanBackend::with_profiler(Arc::clone(&profiler)) {
-                Ok(vk_backend) => Arc::new(vk_backend),
-                Err(e) => {
-                    log::info!(
+            BackendType::Auto => {
+                match crate::backend::VulkanBackend::with_profiler(Arc::clone(&profiler)) {
+                    Ok(vk_backend) => Arc::new(vk_backend),
+                    Err(e) => {
+                        log::info!(
                         "Vulkan auto-initialization skipped ({:?}); falling back to passthrough",
                         e
                     );
-                    Arc::new(PassthroughBackend::new())
+                        Arc::new(PassthroughBackend::new())
+                    }
                 }
-            },
-            BackendType::Vulkan => {
-                Arc::new(crate::backend::VulkanBackend::with_profiler(Arc::clone(&profiler))?)
             }
+            BackendType::Vulkan => Arc::new(crate::backend::VulkanBackend::with_profiler(
+                Arc::clone(&profiler),
+            )?),
             BackendType::Passthrough | BackendType::Cpu => Arc::new(PassthroughBackend::new()),
             other => return Err(ScalixError::BackendUnavailable(other)),
         };
@@ -192,12 +192,8 @@ impl Engine {
                 .expect("Failed to initialize hardware executor worker pool"),
             ),
             callback_pool: Arc::new(
-                WorkerPool::try_with_prefix(
-                    &cb_prefix,
-                    config.num_callback_workers.max(1),
-                    cap,
-                )
-                .expect("Failed to initialize callback worker pool"),
+                WorkerPool::try_with_prefix(&cb_prefix, config.num_callback_workers.max(1), cap)
+                    .expect("Failed to initialize callback worker pool"),
             ),
         }
     }
@@ -243,7 +239,6 @@ impl Engine {
     }
 
     /// 2. Asynchronous execution: queues on dedicated hardware thread and returns TaskHandle.
-    #[must_use]
     pub fn resize_async<O: Into<ResizeOptions>>(
         &self,
         src: OwnedImage,
@@ -275,6 +270,7 @@ impl Engine {
     }
 
     /// 3. Callback-driven execution:
+    ///
     /// Hardware kernel executes on dedicated HW thread, then immediately dispatches
     /// the user callback / post-processing to the multi-worker thread pool.
     pub fn resize_callback<O: Into<ResizeOptions>, F>(

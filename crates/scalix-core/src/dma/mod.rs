@@ -9,7 +9,10 @@ pub mod linux_dma_heap;
 #[cfg(target_os = "linux")]
 pub mod linux_drm;
 
-#[cfg(all(target_os = "android", target_arch = "aarch64"))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "aarch64", target_arch = "arm")
+))]
 pub mod android_ahb;
 
 use std::os::fd::RawFd;
@@ -38,7 +41,7 @@ struct DmaBufSync {
 #[cfg(target_os = "linux")]
 const DMA_BUF_SYNC_READ: u64 = 1 << 0;
 #[cfg(target_os = "linux")]
-const DMA_BUF_SYNC_WRITE: u64 = 2 << 0;
+const DMA_BUF_SYNC_WRITE: u64 = 1 << 1;
 #[cfg(target_os = "linux")]
 const DMA_BUF_SYNC_RW: u64 = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE;
 #[cfg(target_os = "linux")]
@@ -53,7 +56,10 @@ pub struct DmaAllocation {
     #[cfg(target_os = "linux")]
     pub fd: OwnedFd,
 
-    #[cfg(all(target_os = "android", target_arch = "aarch64"))]
+    #[cfg(all(
+        target_os = "android",
+        any(target_arch = "aarch64", target_arch = "arm")
+    ))]
     pub ahb_handle: std::ptr::NonNull<std::ffi::c_void>,
 
     pub host_ptr: std::ptr::NonNull<u8>,
@@ -141,7 +147,10 @@ impl DmaAllocator for linux_drm::LinuxDrmAllocator {
     }
 }
 
-#[cfg(all(target_os = "android", target_arch = "aarch64"))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "aarch64", target_arch = "arm")
+))]
 impl DmaAllocator for android_ahb::AndroidAhbAllocator {
     #[inline]
     fn name(&self) -> &'static str {
@@ -154,12 +163,15 @@ impl DmaAllocator for android_ahb::AndroidAhbAllocator {
     }
 
     fn allocate(&self, dimensions: ImageDimensions, format: PixelFormat) -> Result<DmaAllocation> {
-        let (ahb_ptr, host_ptr, size, stride) =
-            Self::allocate_dimensions(dimensions, format)?;
-        let ahb_handle = std::ptr::NonNull::new(ahb_ptr)
-            .ok_or_else(|| ScalixError::DmaAllocationFailed("Null AHardwareBuffer pointer".to_string()))?;
-        let host_ptr = std::ptr::NonNull::new(host_ptr)
-            .ok_or_else(|| ScalixError::DmaMapFailed("Null virtual address returned from AHardwareBuffer_lock".to_string()))?;
+        let (ahb_ptr, host_ptr, size, stride) = Self::allocate_dimensions(dimensions, format)?;
+        let ahb_handle = std::ptr::NonNull::new(ahb_ptr).ok_or_else(|| {
+            ScalixError::DmaAllocationFailed("Null AHardwareBuffer pointer".to_string())
+        })?;
+        let host_ptr = std::ptr::NonNull::new(host_ptr).ok_or_else(|| {
+            ScalixError::DmaMapFailed(
+                "Null virtual address returned from AHardwareBuffer_lock".to_string(),
+            )
+        })?;
         Ok(DmaAllocation {
             ahb_handle,
             host_ptr,
@@ -174,7 +186,10 @@ pub struct DmaBuffer {
     #[cfg(target_os = "linux")]
     fd: OwnedFd,
 
-    #[cfg(all(target_os = "android", target_arch = "aarch64"))]
+    #[cfg(all(
+        target_os = "android",
+        any(target_arch = "aarch64", target_arch = "arm")
+    ))]
     ahb_handle: *mut std::ffi::c_void,
 
     host_ptr: *mut u8,
@@ -200,7 +215,10 @@ impl DmaBuffer {
         Self {
             #[cfg(target_os = "linux")]
             fd: alloc.fd,
-            #[cfg(all(target_os = "android", target_arch = "aarch64"))]
+            #[cfg(all(
+                target_os = "android",
+                any(target_arch = "aarch64", target_arch = "arm")
+            ))]
             ahb_handle: alloc.ahb_handle.as_ptr(),
             host_ptr: alloc.host_ptr.as_ptr(),
             size: alloc.size,
@@ -213,7 +231,7 @@ impl DmaBuffer {
     /// Allocates a new hardware DMA buffer for the given spatial dimensions and pixel format.
     ///
     /// On Linux: Probes `/dev/dma_heap/*` (DMA-Heap) first, then falls back to `/dev/dri/renderD128` (DRM Dumb).
-    /// On Android: Uses `AHardwareBuffer` (API 26+, aarch64 only).
+    /// On Android: Uses `AHardwareBuffer` (API 26+, aarch64 / armv7).
     pub fn allocate_dimensions(dimensions: ImageDimensions, format: PixelFormat) -> Result<Self> {
         if dimensions.is_empty() {
             return Err(ScalixError::InvalidDimensions {
@@ -228,7 +246,9 @@ impl DmaBuffer {
             match heap_allocator.allocate(dimensions, format) {
                 Ok(alloc) => Ok(Self::from_allocation(alloc, dimensions, format)),
                 Err(heap_err) => {
-                    log::debug!("DMA-Heap allocation skipped or unavailable: {heap_err}, trying DRM...");
+                    log::debug!(
+                        "DMA-Heap allocation skipped or unavailable: {heap_err}, trying DRM..."
+                    );
                     let drm_allocator = linux_drm::LinuxDrmAllocator;
                     drm_allocator
                         .allocate(dimensions, format)
@@ -242,18 +262,27 @@ impl DmaBuffer {
             }
         }
 
-        #[cfg(all(target_os = "android", target_arch = "aarch64"))]
+        #[cfg(all(
+            target_os = "android",
+            any(target_arch = "aarch64", target_arch = "arm")
+        ))]
         {
             let ahb_allocator = android_ahb::AndroidAhbAllocator;
             let alloc = ahb_allocator.allocate(dimensions, format)?;
             Ok(Self::from_allocation(alloc, dimensions, format))
         }
 
-        #[cfg(not(any(target_os = "linux", all(target_os = "android", target_arch = "aarch64"))))]
+        #[cfg(not(any(
+            target_os = "linux",
+            all(
+                target_os = "android",
+                any(target_arch = "aarch64", target_arch = "arm")
+            )
+        )))]
         {
             let _ = (dimensions, format);
             Err(ScalixError::DmaUnavailable(
-                "DMA buffer allocation is only supported on Linux (kernel 5.6+) and Android (aarch64)".to_string(),
+                "DMA buffer allocation is only supported on Linux (kernel 5.6+) and Android (aarch64 / armv7)".to_string(),
             ))
         }
     }
@@ -354,7 +383,9 @@ impl DmaBuffer {
             };
             if ret != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(ScalixError::DmaSyncFailed(format!("DMA_BUF_SYNC_START failed: {err}")));
+                return Err(ScalixError::DmaSyncFailed(format!(
+                    "DMA_BUF_SYNC_START failed: {err}"
+                )));
             }
             Ok(())
         }
@@ -384,7 +415,9 @@ impl DmaBuffer {
             };
             if ret != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(ScalixError::DmaSyncFailed(format!("DMA_BUF_SYNC_END failed: {err}")));
+                return Err(ScalixError::DmaSyncFailed(format!(
+                    "DMA_BUF_SYNC_END failed: {err}"
+                )));
             }
             Ok(())
         }
@@ -448,14 +481,8 @@ impl DmaBuffer {
         let height = self.dimensions.height;
         let stride = self.stride;
         let format = self.format;
-        let mut desc = ImageDescMut::new(
-            width,
-            height,
-            stride,
-            format,
-            self.as_mut_slice(),
-        )
-        .expect("DmaBuffer dimensions and stride are guaranteed valid");
+        let mut desc = ImageDescMut::new(width, height, stride, format, self.as_mut_slice())
+            .expect("DmaBuffer dimensions and stride are guaranteed valid");
 
         if fd_raw >= 0 {
             desc = desc.with_dma_buf(fd_raw);
@@ -477,7 +504,10 @@ impl Drop for DmaBuffer {
             // self.fd is closed automatically by OwnedFd drop
         }
 
-        #[cfg(all(target_os = "android", target_arch = "aarch64"))]
+        #[cfg(all(
+            target_os = "android",
+            any(target_arch = "aarch64", target_arch = "arm")
+        ))]
         {
             if !self.ahb_handle.is_null() {
                 unsafe {

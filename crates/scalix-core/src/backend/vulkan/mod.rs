@@ -22,16 +22,21 @@ pub use raster::VulkanRasterResizer;
 pub use strategy::{VulkanOptions, VulkanStrategy};
 pub use util::{CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard};
 
-use std::sync::Arc;
 use crate::backend::Backend;
 use crate::profiler::{ActiveProfiler, Profiler};
 use crate::types::{BackendType, FilterMode, ImageDesc, ImageDescMut, ResizeOptions, Result};
+use std::sync::Arc;
 
 /// Pluggable interface for Vulkan execution pipelines.
 pub trait VulkanPipeline: Send + Sync {
     fn name(&self) -> &'static str;
     fn strategy(&self) -> VulkanStrategy;
-    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()>;
+    fn process(
+        &self,
+        src: &ImageDesc,
+        dst: &mut ImageDescMut,
+        options: &ResizeOptions,
+    ) -> Result<()>;
 }
 
 pub struct VulkanBackend {
@@ -96,7 +101,12 @@ impl Backend for VulkanBackend {
         true
     }
 
-    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, options: &ResizeOptions) -> Result<()> {
+    fn process(
+        &self,
+        src: &ImageDesc,
+        dst: &mut ImageDescMut,
+        options: &ResizeOptions,
+    ) -> Result<()> {
         if options.filter == FilterMode::Passthrough {
             return crate::backend::PassthroughBackend::new().process(src, dst, options);
         }
@@ -110,18 +120,10 @@ impl Backend for VulkanBackend {
         };
 
         match chosen_strategy {
-            VulkanStrategy::Blit => {
-                self.blitter.process(src, dst, options.filter)
-            }
-            VulkanStrategy::Raster => {
-                self.raster.process(src, dst, options.filter)
-            }
-            VulkanStrategy::LodPyramid => {
-                self.lod.process(src, dst, options)
-            }
-            VulkanStrategy::Compute => {
-                self.compute.process(src, dst, options.filter)
-            }
+            VulkanStrategy::Blit => self.blitter.process(src, dst, options.filter),
+            VulkanStrategy::Raster => self.raster.process(src, dst, options.filter),
+            VulkanStrategy::LodPyramid => self.lod.process(src, dst, options),
+            VulkanStrategy::Compute => self.compute.process(src, dst, options.filter),
             VulkanStrategy::Auto => unreachable!("Auto strategy mapped prior to execution"),
         }
     }

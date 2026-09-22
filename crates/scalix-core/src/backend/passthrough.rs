@@ -32,7 +32,12 @@ impl Backend for PassthroughBackend {
         true
     }
 
-    fn process(&self, src: &ImageDesc, dst: &mut ImageDescMut, _options: &ResizeOptions) -> Result<()> {
+    fn process(
+        &self,
+        src: &ImageDesc,
+        dst: &mut ImageDescMut,
+        _options: &ResizeOptions,
+    ) -> Result<()> {
         if src.format != dst.format {
             return Err(ScalixError::ExecutionFailed(format!(
                 "Format conversion not supported in passthrough mode (src: {:?}, dst: {:?})",
@@ -50,7 +55,7 @@ impl Backend for PassthroughBackend {
         let bpp = src
             .format
             .bytes_per_pixel()
-            .ok_or_else(|| ScalixError::UnsupportedFormat(src.format))?;
+            .ok_or(ScalixError::UnsupportedFormat(src.format))?;
 
         let row_bytes = (copy_dims.width as usize).saturating_mul(bpp);
 

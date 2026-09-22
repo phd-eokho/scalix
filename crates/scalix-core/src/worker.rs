@@ -33,17 +33,13 @@ impl<T> TaskHandle<T> {
 
     /// Waits for task completion up to the specified timeout (or blocks indefinitely if None).
     pub fn wait(&self, timeout: Option<Duration>) -> Result<T> {
-        let res = match timeout {
+        match timeout {
             Some(t) => self.rx.recv_timeout(t).map_err(|e| match e {
                 RecvTimeoutError::Timeout => ScalixError::Timeout,
                 RecvTimeoutError::Disconnected => ScalixError::ChannelClosed,
             }),
-            None => self
-                .rx
-                .recv()
-                .map_err(|_| ScalixError::ChannelClosed),
-        }?;
-        res
+            None => self.rx.recv().map_err(|_| ScalixError::ChannelClosed),
+        }?
     }
 }
 
@@ -79,7 +75,9 @@ impl WorkerPool {
                         job();
                     }
                 })
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to spawn worker thread: {e}")))?;
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to spawn worker thread: {e}"))
+                })?;
 
             workers.push(handle);
         }

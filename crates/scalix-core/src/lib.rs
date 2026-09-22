@@ -17,5 +17,3 @@ pub use types::{
     ResizeOptions, Result, ScalixError,
 };
 pub use worker::{TaskHandle, WorkerPool};
-
-
