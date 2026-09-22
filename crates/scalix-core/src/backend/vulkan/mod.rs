@@ -12,6 +12,7 @@ pub mod context;
 pub mod lod;
 pub mod raster;
 pub mod rgb_compute;
+pub mod ring;
 pub mod strategy;
 pub mod util;
 
@@ -21,6 +22,7 @@ pub use context::VulkanContext;
 pub use lod::VulkanLodDownscaler;
 pub use raster::VulkanRasterResizer;
 pub use rgb_compute::VulkanRgbCompute;
+pub use ring::{StagingSlot, VulkanStagingRing};
 pub use strategy::{VulkanOptions, VulkanStrategy};
 pub use util::{
     cpu_repack_rgb888, cpu_unpack_rgb888, CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard,

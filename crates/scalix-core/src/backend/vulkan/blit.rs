@@ -29,14 +29,17 @@ pub fn to_vk_filter(filter: FilterMode) -> vk::Filter {
 }
 
 use crate::backend::vulkan::rgb_compute::VulkanRgbCompute;
-use crate::backend::vulkan::util::{CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard};
+use crate::backend::vulkan::ring::{VulkanStagingRing, DEFAULT_RING_SLOTS};
+use crate::backend::vulkan::util::GpuImage;
 use crate::backend::vulkan::{VulkanPipeline, VulkanStrategy};
 use crate::profiler::{ProfileMetrics, Profiler};
+use std::sync::Mutex;
 
 pub struct VulkanBlitter {
     ctx: Arc<VulkanContext>,
     profiler: Arc<dyn Profiler>,
     rgb_compute: Option<Arc<VulkanRgbCompute>>,
+    ring: Mutex<VulkanStagingRing>,
 }
 
 impl VulkanBlitter {
@@ -44,10 +47,15 @@ impl VulkanBlitter {
     #[must_use]
     pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Self {
         let rgb_compute = VulkanRgbCompute::new(Arc::clone(&ctx)).map(Arc::new).ok();
+        let ring = Mutex::new(
+            VulkanStagingRing::new(Arc::clone(&ctx), DEFAULT_RING_SLOTS)
+                .expect("Failed to initialize Vulkan staging ring for blitter"),
+        );
         Self {
             ctx,
             profiler,
             rgb_compute,
+            ring,
         }
     }
 
@@ -101,54 +109,44 @@ impl VulkanBlitter {
         };
 
         unsafe {
-            // 1. Create Staging Buffers via RAII guards
+            let mut ring_guard = self.ring.lock().map_err(|_| {
+                ScalixError::ExecutionFailed("Failed to acquire VulkanStagingRing lock".to_string())
+            })?;
+            let (_slot_idx, slot) = ring_guard.acquire_slot()?;
+
+            // 1. Ensure Staging Buffers in slot
             let src_staging_usage = if use_gpu_rgb_unpack {
                 vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER
             } else {
                 vk::BufferUsageFlags::TRANSFER_SRC
             };
-            let src_staging = GpuBuffer::allocate(
-                &self.ctx,
-                src_size,
-                src_staging_usage,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )?;
+            let src_staging = slot.ensure_src_staging(&self.ctx, src_size, src_staging_usage)?;
             let src_staging_buf = src_staging.buffer;
             let src_staging_mem = src_staging.memory;
 
             // Copy source data to staging buffer (direct DMA / memcpy if GPU compute unpack active)
-            let t_unpack_start = if is_profiling {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
             let ptr = device
                 .map_memory(src_staging_mem, 0, src_size, vk::MemoryMapFlags::empty())
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to map src staging memory: {e}"))
                 })? as *mut u8;
-            if src_is_rgb && !use_gpu_rgb_unpack {
+            let host_unpack_ms = if src_is_rgb && !use_gpu_rgb_unpack {
+                let t_unpack_start = std::time::Instant::now();
                 let num_pixels = (src.width * src.height) as usize;
                 crate::backend::vulkan::util::cpu_unpack_rgb888(src.data, ptr, num_pixels);
+                t_unpack_start.elapsed().as_secs_f64() * 1000.0
             } else {
                 std::ptr::copy_nonoverlapping(src.data.as_ptr(), ptr, src.data.len());
-            }
+                0.0
+            };
             device.unmap_memory(src_staging_mem);
-            let host_unpack_ms = t_unpack_start
-                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
-                .unwrap_or(0.0);
 
             let dst_staging_usage = if use_gpu_rgb_repack {
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER
             } else {
                 vk::BufferUsageFlags::TRANSFER_DST
             };
-            let dst_staging = GpuBuffer::allocate(
-                &self.ctx,
-                dst_size,
-                dst_staging_usage,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )?;
+            let dst_staging = slot.ensure_dst_staging(&self.ctx, dst_size, dst_staging_usage)?;
             let dst_staging_buf = dst_staging.buffer;
             let dst_staging_mem = dst_staging.memory;
 
@@ -197,16 +195,9 @@ impl VulkanBlitter {
                 None
             };
 
-            // 3. Allocate and Record Command Buffer via RAII guard
-            let cmd_guard = CommandBufferGuard::allocate(&self.ctx)?;
-            let cmd_buf = cmd_guard.cmd_buf;
-
-            let query_guard = if is_profiling {
-                QueryPoolGuard::new(&self.ctx, 4)
-            } else {
-                None
-            };
-            let query_pool = query_guard.as_ref().map(|q| q.pool);
+            // 3. Record Command Buffer from slot
+            let cmd_buf = slot.cmd_buf;
+            let query_pool = if is_profiling { slot.query_pool } else { None };
 
             let begin_info = vk::CommandBufferBeginInfo {
                 flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
@@ -474,13 +465,20 @@ impl VulkanBlitter {
                 None
             };
             device
-                .queue_submit(self.ctx.queue, &[submit_info], vk::Fence::null())
+                .queue_submit(self.ctx.queue, &[submit_info], slot.fence)
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to submit queue: {e}"))
                 })?;
-            device.queue_wait_idle(self.ctx.queue).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to wait for queue idle: {e}"))
+            slot.in_flight = true;
+            device
+                .wait_for_fences(&[slot.fence], true, u64::MAX)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to wait for slot fence: {e}"))
+                })?;
+            device.reset_fences(&[slot.fence]).map_err(|e| {
+                ScalixError::ExecutionFailed(format!("Failed to reset slot fence: {e}"))
             })?;
+            slot.in_flight = false;
             let driver_sync_ms = t_sync_start
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
@@ -515,27 +513,21 @@ impl VulkanBlitter {
                 }
             }
 
-            // Copy result from staging buffer to destination slice (with RGBA -> RGB repack if necessary)
-            let t_repack_start = if is_profiling {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
             let out_ptr = device
                 .map_memory(dst_staging_mem, 0, dst_size, vk::MemoryMapFlags::empty())
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to map dst staging memory: {e}"))
                 })? as *const u8;
-            if dst_is_rgb && !use_gpu_rgb_repack {
+            let host_repack_ms = if dst_is_rgb && !use_gpu_rgb_repack {
+                let t_repack_start = std::time::Instant::now();
                 let num_pixels = (dst.width * dst.height) as usize;
                 crate::backend::vulkan::util::cpu_repack_rgb888(out_ptr, dst.data, num_pixels);
+                t_repack_start.elapsed().as_secs_f64() * 1000.0
             } else {
                 std::ptr::copy_nonoverlapping(out_ptr, dst.data.as_mut_ptr(), dst.data.len());
-            }
+                0.0
+            };
             device.unmap_memory(dst_staging_mem);
-            let host_repack_ms = t_repack_start
-                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
-                .unwrap_or(0.0);
 
             if is_profiling {
                 let total_wall_ms = t0_wall

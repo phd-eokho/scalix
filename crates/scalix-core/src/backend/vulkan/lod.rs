@@ -117,27 +117,22 @@ impl VulkanLodDownscaler {
             let src_staging_mem = src_staging.memory;
 
             // Copy source data into staging memory (direct DMA / memcpy if GPU compute unpack active)
-            let t_unpack_start = if is_profiling {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
             let mapped_src = device
                 .map_memory(src_staging_mem, 0, src_size, vk::MemoryMapFlags::empty())
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to map src staging memory: {e}"))
                 })? as *mut u8;
 
-            if src_is_rgb && !use_gpu_rgb_unpack {
+            let host_unpack_ms = if src_is_rgb && !use_gpu_rgb_unpack {
+                let t_unpack_start = std::time::Instant::now();
                 let pixel_count = (src.width * src.height) as usize;
                 crate::backend::vulkan::util::cpu_unpack_rgb888(src.data, mapped_src, pixel_count);
+                t_unpack_start.elapsed().as_secs_f64() * 1000.0
             } else {
                 std::ptr::copy_nonoverlapping(src.data.as_ptr(), mapped_src, src.data.len());
-            }
+                0.0
+            };
             device.unmap_memory(src_staging_mem);
-            let host_unpack_ms = t_unpack_start
-                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
-                .unwrap_or(0.0);
 
             // 2. Create Destination Staging Buffer
             let dst_staging_usage = if use_gpu_rgb_repack {
@@ -682,27 +677,22 @@ impl VulkanLodDownscaler {
             }
 
             // 8. Copy Back from Destination Staging Memory (pack RGBA -> RGB if needed)
-            let t_repack_start = if is_profiling {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
             let mapped_dst = device
                 .map_memory(dst_staging_mem, 0, dst_size, vk::MemoryMapFlags::empty())
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to map dst staging memory: {e}"))
                 })? as *const u8;
 
-            if dst_is_rgb && !use_gpu_rgb_repack {
+            let host_repack_ms = if dst_is_rgb && !use_gpu_rgb_repack {
+                let t_repack_start = std::time::Instant::now();
                 let pixel_count = (dst.width * dst.height) as usize;
                 crate::backend::vulkan::util::cpu_repack_rgb888(mapped_dst, dst.data, pixel_count);
+                t_repack_start.elapsed().as_secs_f64() * 1000.0
             } else {
                 std::ptr::copy_nonoverlapping(mapped_dst, dst.data.as_mut_ptr(), dst.data.len());
-            }
+                0.0
+            };
             device.unmap_memory(dst_staging_mem);
-            let host_repack_ms = t_repack_start
-                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
-                .unwrap_or(0.0);
 
             if is_profiling {
                 let total_wall_ms = t0_wall

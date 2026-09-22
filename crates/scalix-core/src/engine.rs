@@ -269,6 +269,38 @@ impl Engine {
         TaskHandle::new(rx, done)
     }
 
+    /// Asynchronous execution with raw pointer descriptors (zero-copy, no buffer cloning).
+    ///
+    /// # Safety
+    /// Caller must ensure that pointers referenced in `src` and `dst` remain valid until the returned `TaskHandle` completes.
+    pub unsafe fn resize_async_raw<O: Into<ResizeOptions>>(
+        &self,
+        src: ImageDesc<'static>,
+        mut dst: ImageDescMut<'static>,
+        options: O,
+    ) -> TaskHandle<()> {
+        let opt = options.into();
+        let (tx, rx) = bounded(1);
+        let done = Arc::new(AtomicBool::new(false));
+        let done_flag = Arc::clone(&done);
+        let backend = Arc::clone(&self.backend);
+
+        let submit_res = self.hw_executor.submit(move || {
+            let res = backend.process(&src, &mut dst, &opt);
+            let _ = tx.send(res);
+            done_flag.store(true, Ordering::Release);
+        });
+
+        if let Err(e) = submit_res {
+            let (err_tx, err_rx) = bounded(1);
+            let _ = err_tx.send(Err(e));
+            done.store(true, Ordering::Release);
+            return TaskHandle::new(err_rx, done);
+        }
+
+        TaskHandle::new(rx, done)
+    }
+
     /// 3. Callback-driven execution:
     ///
     /// Hardware kernel executes on dedicated HW thread, then immediately dispatches

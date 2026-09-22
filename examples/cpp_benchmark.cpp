@@ -457,12 +457,17 @@ int main() {
              << source << endl;
     };
 
-    print_stage("1. CPU Host RGB888 Unpack -> Staging", cpu_unpack_ms, "CPU Memory Bus (RGB->RGBA expansion)");
-    print_stage("2. GPU Staging -> VRAM Image Upload", gpu_upload_ms, "PCIe / Vulkan Buffer-to-Image Copy");
-    print_stage("3. Pure GPU Silicon Blit (vkCmdBlitImage)", gpu_pure_blit_ms, "GPU Hardware Blitter Units (VkQueryPool)");
-    print_stage("4. GPU VRAM -> Staging Image Download", gpu_download_ms, "Vulkan Image-to-Buffer Copy");
-    print_stage("5. CPU Staging Readback -> RGB888 Repack", cpu_repack_ms, "CPU Memory (RGBA->RGB packing)");
-    print_stage("6. Driver Recording & Queue Synchronization", driver_sync_ms, "Vulkan Driver & vkQueueWaitIdle");
+    int stage_num = 1;
+    if (cpu_unpack_ms > 0.0) {
+        print_stage(to_string(stage_num++) + ". CPU Host RGB888 Unpack -> Staging", cpu_unpack_ms, "CPU Memory Bus (RGB->RGBA expansion)");
+    }
+    print_stage(to_string(stage_num++) + ". GPU Staging -> VRAM Image Upload", gpu_upload_ms, "PCIe / Vulkan Buffer-to-Image Copy");
+    print_stage(to_string(stage_num++) + ". Pure GPU Silicon Blit (vkCmdBlitImage)", gpu_pure_blit_ms, "GPU Hardware Blitter Units (VkQueryPool)");
+    print_stage(to_string(stage_num++) + ". GPU VRAM -> Staging Image Download", gpu_download_ms, "Vulkan Image-to-Buffer Copy");
+    if (cpu_repack_ms > 0.0) {
+        print_stage(to_string(stage_num++) + ". CPU Staging Readback -> RGB888 Repack", cpu_repack_ms, "CPU Memory (RGBA->RGB packing)");
+    }
+    print_stage(to_string(stage_num++) + ". Driver Recording & Queue Synchronization", driver_sync_ms, "Vulkan Driver & vkQueueWaitIdle");
     cout << "------------------------------------------------------------------------------------------" << endl;
     cout << left << setw(42) << "Total Measured Host-Memory Latency"
          << setw(16) << (to_string(total_rgb_pipeline_ms).substr(0, 6) + " ms")
@@ -476,7 +481,7 @@ int main() {
          << setw(14) << (to_string((pure_dma_latency_ms / total_rgb_pipeline_ms) * 100.0).substr(0, 5) + " %")
          << "Pure GPU Execution (" + to_string(pure_dma_fps).substr(0, 5) + " FPS)" << endl;
     cout << "------------------------------------------------------------------------------------------" << endl;
-    cout << "  → Zero-Copy DMA (`VK_KHR_external_memory_fd`) bypasses Stages 1, 2, 4, 5 entirely," << endl;
+    cout << "  → Zero-Copy DMA (`VK_KHR_external_memory_fd`) bypasses host staging and transfer stages entirely," << endl;
     cout << "    achieving direct GPU silicon throughput (" << to_string(pure_dma_fps).substr(0, 5) << " FPS)!" << endl;
     cout << "==========================================================================================" << endl;
 

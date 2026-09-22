@@ -218,11 +218,15 @@ int main(int argc, char** argv) {
     auto print_metrics = [&](const scalix::Engine& eng) {
         if (auto p = eng.last_profile()) {
             cout << "  [Latency Breakdown]" << endl;
-            cout << "    Host Unpack (Layout) : " << p->host_unpack_ms << " ms" << endl;
+            if (p->host_unpack_ms > 0.0) {
+                cout << "    Host Unpack (Layout) : " << p->host_unpack_ms << " ms" << endl;
+            }
             cout << "    GPU Staging Upload   : " << p->gpu_upload_ms << " ms" << endl;
             cout << "    GPU Core Scaling     : " << p->gpu_pure_blit_ms << " ms" << endl;
             cout << "    GPU Staging Readback : " << p->gpu_download_ms << " ms" << endl;
-            cout << "    Host Repack (Layout) : " << p->host_repack_ms << " ms" << endl;
+            if (p->host_repack_ms > 0.0) {
+                cout << "    Host Repack (Layout) : " << p->host_repack_ms << " ms" << endl;
+            }
             cout << "    Driver/HW Sync Wait  : " << p->driver_sync_ms << " ms" << endl;
             cout << "    Total Wall-Clock     : " << p->total_wall_ms << " ms" << endl;
         }

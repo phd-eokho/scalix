@@ -206,7 +206,8 @@ pub struct ScalixEngine {
 }
 
 pub struct ScalixTask {
-    inner: Option<TaskHandle<OwnedImage>>,
+    inner_owned: Option<TaskHandle<OwnedImage>>,
+    inner_raw: Option<TaskHandle<()>>,
     result: Option<OwnedImage>,
 }
 
@@ -408,39 +409,67 @@ pub unsafe extern "C" fn scalix_resize_async_with_options(
             return std::ptr::null_mut();
         }
 
-        let src = &*src;
-        let dst = &*dst;
+        let src_ref = &*src;
+        let dst_ref = &*dst;
         let options = &*options;
 
-        if src.host_ptr.is_null() {
+        if src_ref.host_ptr.is_null() {
             return std::ptr::null_mut();
         }
 
-        let src_slice = slice::from_raw_parts(src.host_ptr, src.data_len);
-        let src_owned = match OwnedImage::from_vec(
-            src.width,
-            src.height,
-            src.stride_bytes,
-            src.format.into(),
-            src_slice.to_vec(),
-        ) {
-            Ok(img) => img,
-            Err(_) => return std::ptr::null_mut(),
-        };
-
-        let dst_owned = match OwnedImage::allocate(dst.width, dst.height, dst.format.into()) {
-            Ok(img) => img,
-            Err(_) => return std::ptr::null_mut(),
-        };
-
         let core_options: scalix_core::ResizeOptions = (*options).into();
-        let task = (*engine)
-            .inner
-            .resize_async(src_owned, dst_owned, core_options);
-        Box::into_raw(Box::new(ScalixTask {
-            inner: Some(task),
-            result: None,
-        }))
+
+        if !dst_ref.host_ptr.is_null() {
+            // Direct zero-copy path: both src and dst host pointers are provided upfront
+            let src_desc = match extract_image_desc(src) {
+                Ok(d) => std::mem::transmute::<ImageDesc<'_>, ImageDesc<'static>>(d),
+                Err(_) => return std::ptr::null_mut(),
+            };
+
+            let dst_desc = match extract_image_desc_mut(dst as *mut ScalixImageDesc) {
+                Ok(d) => std::mem::transmute::<ImageDescMut<'_>, ImageDescMut<'static>>(d),
+                Err(_) => return std::ptr::null_mut(),
+            };
+
+            let task = (*engine)
+                .inner
+                .resize_async_raw(src_desc, dst_desc, core_options);
+
+            Box::into_raw(Box::new(ScalixTask {
+                inner_owned: None,
+                inner_raw: Some(task),
+                result: None,
+            }))
+        } else {
+            // Deferred destination path: dst_ref.host_ptr is null, allocate intermediate buffer
+            let src_slice = slice::from_raw_parts(src_ref.host_ptr, src_ref.data_len);
+            let src_owned = match OwnedImage::from_slice(
+                src_ref.width,
+                src_ref.height,
+                src_ref.stride_bytes,
+                src_ref.format.into(),
+                src_slice,
+            ) {
+                Ok(img) => img,
+                Err(_) => return std::ptr::null_mut(),
+            };
+
+            let dst_owned =
+                match OwnedImage::allocate(dst_ref.width, dst_ref.height, dst_ref.format.into()) {
+                    Ok(img) => img,
+                    Err(_) => return std::ptr::null_mut(),
+                };
+
+            let task = (*engine)
+                .inner
+                .resize_async(src_owned, dst_owned, core_options);
+
+            Box::into_raw(Box::new(ScalixTask {
+                inner_owned: Some(task),
+                inner_raw: None,
+                result: None,
+            }))
+        }
     })
 }
 
@@ -475,7 +504,13 @@ pub unsafe extern "C" fn scalix_task_is_ready(task: *const ScalixTask) -> bool {
         if task_ref.result.is_some() {
             return true;
         }
-        task_ref.inner.as_ref().is_some_and(|t| t.is_ready())
+        if let Some(ref inner) = task_ref.inner_raw {
+            return inner.is_ready();
+        }
+        if let Some(ref inner) = task_ref.inner_owned {
+            return inner.is_ready();
+        }
+        false
     })
 }
 
@@ -499,16 +534,27 @@ pub unsafe extern "C" fn scalix_task_wait(
             Some(Duration::from_millis(timeout_ms as u64))
         };
 
+        if let Some(inner) = task_ref.inner_raw.take() {
+            match inner.wait(timeout) {
+                Ok(()) => return SCALIX_SUCCESS,
+                Err(ScalixError::Timeout) => {
+                    task_ref.inner_raw = Some(inner);
+                    return SCALIX_ERR_TIMEOUT;
+                }
+                Err(e) => return map_error_to_code(e),
+            }
+        }
+
         let image = if let Some(ref img) = task_ref.result {
             img
-        } else if let Some(inner) = task_ref.inner.take() {
+        } else if let Some(inner) = task_ref.inner_owned.take() {
             match inner.wait(timeout) {
                 Ok(img) => {
                     task_ref.result = Some(img);
                     task_ref.result.as_ref().unwrap()
                 }
                 Err(ScalixError::Timeout) => {
-                    task_ref.inner = Some(inner);
+                    task_ref.inner_owned = Some(inner);
                     return SCALIX_ERR_TIMEOUT;
                 }
                 Err(e) => return map_error_to_code(e),
@@ -518,10 +564,14 @@ pub unsafe extern "C" fn scalix_task_wait(
         };
 
         if !out_dst_ptr.is_null() {
-            if out_dst_len < image.data().len() {
+            if out_dst_len < image.data.as_slice().len() {
                 return SCALIX_ERR_BUFFER_TOO_SMALL;
             }
-            std::ptr::copy_nonoverlapping(image.data().as_ptr(), out_dst_ptr, image.data().len());
+            std::ptr::copy_nonoverlapping(
+                image.data.as_ptr(),
+                out_dst_ptr,
+                image.data.as_slice().len(),
+            );
         }
         SCALIX_SUCCESS
     })
