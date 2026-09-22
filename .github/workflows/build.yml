@@ -45,8 +45,8 @@ jobs:
     needs: [lint-check]
     runs-on: ubuntu-24.04
     env:
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json:/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json:/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       LIBGL_ALWAYS_SOFTWARE: "1"
     steps:
       - name: Checkout repository
@@ -123,8 +123,8 @@ jobs:
     needs: [build-linux]
     runs-on: ubuntu-24.04
     env:
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json:/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json:/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       LIBGL_ALWAYS_SOFTWARE: "1"
     steps:
       - name: Checkout repository
@@ -144,6 +144,12 @@ jobs:
             libopencv-dev \
             g++ \
             pkg-config
+
+      - name: Verify Mesa Software Vulkan (Lavapipe)
+        run: |
+          echo "=== Vulkan Driver Info ==="
+          ls -la /usr/share/vulkan/icd.d/ || true
+          vulkaninfo --summary || true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -202,6 +208,8 @@ jobs:
       - name: Cross-compile Android Libraries
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           cargo ndk --target ${{ matrix.target }} --platform 26 build --release -p scalix-capi
 
