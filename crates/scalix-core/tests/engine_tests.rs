@@ -745,3 +745,90 @@ fn test_cpu_rgb888_unpack_and_repack_4byte_masked() {
         );
     }
 }
+
+#[test]
+fn test_vulkan_backend_compute_direct_rgb888_resize() {
+    use scalix_core::{ResizeOptions, VulkanBackend, VulkanStrategy};
+
+    let vk_backend = match VulkanBackend::new() {
+        Ok(backend) => backend,
+        Err(e) => {
+            println!(
+                "Vulkan backend not available on this environment ({:?}); skipping test.",
+                e
+            );
+            return;
+        }
+    };
+
+    let src_w = 64;
+    let src_h = 64;
+    let dst_w = 32;
+    let dst_h = 32;
+    let format = PixelFormat::Rgb888;
+
+    let src_stride = format.min_stride(src_w).unwrap();
+    let dst_stride = format.min_stride(dst_w).unwrap();
+
+    let mut src_data = AlignedBuffer::new(src_stride * (src_h as usize)).unwrap();
+    src_data.as_mut_slice().fill(0x77);
+    let mut dst_data = AlignedBuffer::new(dst_stride * (dst_h as usize)).unwrap();
+
+    let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
+
+    // 1. Test Nearest Filter via Direct Compute
+    {
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options =
+            ResizeOptions::new(FilterMode::Nearest).with_vulkan_strategy(VulkanStrategy::Compute);
+        let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+        assert!(res.is_ok(), "Compute Nearest failed: {:?}", res.err());
+    }
+    assert_eq!(dst_data.as_slice()[0], 0x77);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
+
+    // 2. Test Bilinear Filter via Direct Compute
+    {
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options =
+            ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Compute);
+        let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+        assert!(res.is_ok(), "Compute Bilinear failed: {:?}", res.err());
+    }
+    assert_eq!(dst_data.as_slice()[0], 0x77);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
+
+    // 3. Test Auto Strategy routing directly to Compute for RGB888
+    {
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options =
+            ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Auto);
+        let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+        assert!(res.is_ok(), "Auto Strategy (Compute) failed: {:?}", res.err());
+    }
+    assert_eq!(dst_data.as_slice()[0], 0x77);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
+
+    // 4. Test Dynamic Pluggable Shader Registration (e.g. registering custom kernel for Lanczos3)
+    {
+        let pluggable_spv = scalix_core::backend::vulkan::compute::RGB888_RESIZE_NEAREST_COMP_SPV;
+        assert!(!vk_backend.compute_resizer().has_shader(FilterMode::Lanczos3));
+
+        let reg_res = vk_backend.register_compute_shader(FilterMode::Lanczos3, pluggable_spv);
+        assert!(reg_res.is_ok(), "Failed to register custom compute shader: {:?}", reg_res.err());
+        assert!(vk_backend.compute_resizer().has_shader(FilterMode::Lanczos3));
+
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options =
+            ResizeOptions::new(FilterMode::Lanczos3).with_vulkan_strategy(VulkanStrategy::Compute);
+        let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+        assert!(res.is_ok(), "Pluggable custom shader execution failed: {:?}", res.err());
+        assert_eq!(dst_data.as_slice()[0], 0x77);
+    }
+}
+
+
