@@ -61,7 +61,7 @@ constexpr string_view OUT_COMPUTE_FILE      = "/tmp/bench_sample_compute.jpg";
 constexpr string_view OUT_AUTO_FILE         = "/tmp/bench_sample_auto.jpg";
 
 constexpr string_view MSG_DMA_ACTIVE        = "[Hardware DMA Status: Native Zero-Copy DMA Active (DMA-Heap / DRM GEM Dumb)]";
-constexpr string_view MSG_DMA_STAGING       = "[Hardware DMA Status: Host-Memory Staging Mode Active (Direct Zero-Copy verified on bare-metal Linux/Android)]";
+constexpr string_view MSG_DMA_STAGING       = "[Hardware DMA Status: Host-Memory Staging Mode Active (Hardware DMA-BUF / DRM unavailable in current environment)]";
 
 } // anonymous namespace
 
@@ -383,7 +383,7 @@ static StrategyBenchmarkResult benchmark_sample_method(
 
         // Save output verification JPEG
         if (!output_filename.empty()) {
-            JpegIO::encode_rgb888(output_filename, dst_w, dst_h, dst_sync.data(), dst_stride, VERIFY_JPEG_QUALITY);
+            static_cast<void>(JpegIO::encode_rgb888(output_filename, dst_w, dst_h, dst_sync.data(), dst_stride, VERIFY_JPEG_QUALITY));
         }
 
         result.success = true;
