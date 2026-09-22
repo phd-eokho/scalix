@@ -1,0 +1,83 @@
+#version 450
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
+layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
+
+layout(push_constant) uniform PushConsts {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    float scale_x;
+    float scale_y;
+};
+
+// Branchless 24-bit packed RGB fetch to vec3
+vec3 fetch_raw_rgb(uint px, uint py) {
+    uint src_byte_offset = (py * src_w + px) * 3u;
+    uint word_idx = src_byte_offset >> 2u;
+    uint w0 = src_data[word_idx];
+    uint w1 = src_data[word_idx + 1u];
+
+    uint shift = (src_byte_offset & 3u) << 3u;
+    uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
+    return vec3(float(val & 0xFFu), float((val >> 8u) & 0xFFu), float((val >> 16u) & 0xFFu));
+}
+
+uint sample_bilinear(uint p_idx, uint total_dst) {
+    if (p_idx >= total_dst) return 0u;
+    uint dx = p_idx % dst_w;
+    uint dy = p_idx / dst_w;
+
+    float u = (float(dx) + 0.5) * scale_x - 0.5;
+    float v = (float(dy) + 0.5) * scale_y - 0.5;
+
+    float fu = floor(u);
+    float fv = floor(v);
+
+    int max_x = int(src_w) - 1;
+    int max_y = int(src_h) - 1;
+
+    int x0 = clamp(int(fu), 0, max_x);
+    int y0 = clamp(int(fv), 0, max_y);
+    int x1 = clamp(int(fu) + 1, 0, max_x);
+    int y1 = clamp(int(fv) + 1, 0, max_y);
+
+    float fx = u - fu;
+    float fy = v - fv;
+
+    vec3 c00 = fetch_raw_rgb(uint(x0), uint(y0));
+    vec3 c10 = fetch_raw_rgb(uint(x1), uint(y0));
+    vec3 c01 = fetch_raw_rgb(uint(x0), uint(y1));
+    vec3 c11 = fetch_raw_rgb(uint(x1), uint(y1));
+
+    vec3 top = mix(c00, c10, fx);
+    vec3 bot = mix(c01, c11, fx);
+    vec3 col = clamp(mix(top, bot, fy) + 0.5, 0.0, 255.0);
+
+    return uint(col.r) | (uint(col.g) << 8u) | (uint(col.b) << 16u);
+}
+
+void main() {
+    uint chunk_idx = gl_GlobalInvocationID.x;
+    uint total_dst_pixels = dst_w * dst_h;
+    uint base_pixel = chunk_idx * 4u;
+    if (base_pixel >= total_dst_pixels) return;
+
+    // Fetch 4 contiguous bilinear filtered pixels
+    uint p0 = sample_bilinear(base_pixel, total_dst_pixels);
+    uint p1 = sample_bilinear(base_pixel + 1u, total_dst_pixels);
+    uint p2 = sample_bilinear(base_pixel + 2u, total_dst_pixels);
+    uint p3 = sample_bilinear(base_pixel + 3u, total_dst_pixels);
+
+    // Branchless packing into 3x32-bit storage buffer words
+    uint w0 = p0 | (p1 << 24u);
+    uint w1 = (p1 >> 8u) | (p2 << 16u);
+    uint w2 = (p2 >> 16u) | (p3 << 8u);
+    uint out_word_base = chunk_idx * 3u;
+
+    dst_data[out_word_base + 0u] = w0;
+    if (base_pixel + 1u < total_dst_pixels) dst_data[out_word_base + 1u] = w1;
+    if (base_pixel + 2u < total_dst_pixels) dst_data[out_word_base + 2u] = w2;
+}

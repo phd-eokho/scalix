@@ -1,0 +1,56 @@
+#version 450
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
+layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
+
+layout(push_constant) uniform PushConsts {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    float scale_x;
+    float scale_y;
+};
+
+// Branchless 24-bit packed RGB pixel fetch from 32-bit storage buffer words
+uint sample_rgb(uint p_idx, uint total_dst) {
+    if (p_idx >= total_dst) return 0u;
+    uint dx = p_idx % dst_w;
+    uint dy = p_idx / dst_w;
+
+    uint sx = min(uint(floor(float(dx) * scale_x)), src_w - 1u);
+    uint sy = min(uint(floor(float(dy) * scale_y)), src_h - 1u);
+
+    uint src_byte_offset = (sy * src_w + sx) * 3u;
+    uint word_idx = src_byte_offset >> 2u;
+    uint w0 = src_data[word_idx];
+    uint w1 = src_data[word_idx + 1u];
+
+    uint shift = (src_byte_offset & 3u) << 3u;
+    uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
+    return val & 0x00FFFFFFu;
+}
+
+void main() {
+    uint chunk_idx = gl_GlobalInvocationID.x;
+    uint total_dst_pixels = dst_w * dst_h;
+    uint base_pixel = chunk_idx * 4u;
+    if (base_pixel >= total_dst_pixels) return;
+
+    // Fetch 4 contiguous pixels as packed 24-bit words
+    uint p0 = sample_rgb(base_pixel, total_dst_pixels);
+    uint p1 = sample_rgb(base_pixel + 1u, total_dst_pixels);
+    uint p2 = sample_rgb(base_pixel + 2u, total_dst_pixels);
+    uint p3 = sample_rgb(base_pixel + 3u, total_dst_pixels);
+
+    // Branchless packing of 4x24-bit pixels into 3x32-bit storage buffer words
+    uint w0 = p0 | (p1 << 24u);
+    uint w1 = (p1 >> 8u) | (p2 << 16u);
+    uint w2 = (p2 >> 16u) | (p3 << 8u);
+    uint out_word_base = chunk_idx * 3u;
+
+    dst_data[out_word_base + 0u] = w0;
+    if (base_pixel + 1u < total_dst_pixels) dst_data[out_word_base + 1u] = w1;
+    if (base_pixel + 2u < total_dst_pixels) dst_data[out_word_base + 2u] = w2;
+}

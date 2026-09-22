@@ -33,42 +33,23 @@ use std::sync::{Arc, Mutex};
 ///     float scale_y;
 /// };
 ///
-/// void sample_rgb(uint p_idx, uint total_dst, inout uint r, inout uint g, inout uint b) {
-///     if (p_idx >= total_dst) {
-///         r = 0u; g = 0u; b = 0u;
-///         return;
-///     }
+/// // Branchless 24-bit packed RGB pixel fetch from 32-bit storage buffer words
+/// uint sample_rgb(uint p_idx, uint total_dst) {
+///     if (p_idx >= total_dst) return 0u;
 ///     uint dx = p_idx % dst_w;
 ///     uint dy = p_idx / dst_w;
 ///
-///     uint sx = uint(floor(float(dx) * scale_x));
-///     uint sy = uint(floor(float(dy) * scale_y));
-///     if (sx >= src_w) sx = src_w - 1u;
-///     if (sy >= src_h) sy = src_h - 1u;
+///     uint sx = min(uint(floor(float(dx) * scale_x)), src_w - 1u);
+///     uint sy = min(uint(floor(float(dy) * scale_y)), src_h - 1u);
 ///
 ///     uint src_byte_offset = (sy * src_w + sx) * 3u;
 ///     uint word_idx = src_byte_offset >> 2u;
 ///     uint w0 = src_data[word_idx];
 ///     uint w1 = src_data[word_idx + 1u];
 ///
-///     uint b_mod = src_byte_offset & 3u;
-///     if (b_mod == 0u) {
-///         r = w0 & 0xFFu;
-///         g = (w0 >> 8u) & 0xFFu;
-///         b = (w0 >> 16u) & 0xFFu;
-///     } else if (b_mod == 1u) {
-///         r = (w0 >> 8u) & 0xFFu;
-///         g = (w0 >> 16u) & 0xFFu;
-///         b = (w0 >> 24u) & 0xFFu;
-///     } else if (b_mod == 2u) {
-///         r = (w0 >> 16u) & 0xFFu;
-///         g = (w0 >> 24u) & 0xFFu;
-///         b = w1 & 0xFFu;
-///     } else {
-///         r = (w0 >> 24u) & 0xFFu;
-///         g = w1 & 0xFFu;
-///         b = (w1 >> 8u) & 0xFFu;
-///     }
+///     uint shift = (src_byte_offset & 3u) << 3u;
+///     uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
+///     return val & 0x00FFFFFFu;
 /// }
 ///
 /// void main() {
@@ -77,19 +58,16 @@ use std::sync::{Arc, Mutex};
 ///     uint base_pixel = chunk_idx * 4u;
 ///     if (base_pixel >= total_dst_pixels) return;
 ///
-///     uint r0, g0, b0;
-///     uint r1, g1, b1;
-///     uint r2, g2, b2;
-///     uint r3, g3, b3;
+///     // Fetch 4 contiguous pixels as packed 24-bit words
+///     uint p0 = sample_rgb(base_pixel, total_dst_pixels);
+///     uint p1 = sample_rgb(base_pixel + 1u, total_dst_pixels);
+///     uint p2 = sample_rgb(base_pixel + 2u, total_dst_pixels);
+///     uint p3 = sample_rgb(base_pixel + 3u, total_dst_pixels);
 ///
-///     sample_rgb(base_pixel, total_dst_pixels, r0, g0, b0);
-///     sample_rgb(base_pixel + 1u, total_dst_pixels, r1, g1, b1);
-///     sample_rgb(base_pixel + 2u, total_dst_pixels, r2, g2, b2);
-///     sample_rgb(base_pixel + 3u, total_dst_pixels, r3, g3, b3);
-///
-///     uint w0 = r0 | (g0 << 8u) | (b0 << 16u) | (r1 << 24u);
-///     uint w1 = g1 | (b1 << 8u) | (r2 << 16u) | (g2 << 24u);
-///     uint w2 = b2 | (r3 << 8u) | (g3 << 16u) | (b3 << 24u);
+///     // Branchless packing of 4x24-bit pixels into 3x32-bit storage buffer words
+///     uint w0 = p0 | (p1 << 24u);
+///     uint w1 = (p1 >> 8u) | (p2 << 16u);
+///     uint w2 = (p2 >> 16u) | (p3 << 8u);
 ///     uint out_word_base = chunk_idx * 3u;
 ///
 ///     dst_data[out_word_base + 0u] = w0;
@@ -118,39 +96,20 @@ pub const RGB888_RESIZE_NEAREST_COMP_SPV: &[u8] =
 ///     float scale_y;
 /// };
 ///
-/// void fetch_raw_rgb(uint px, uint py, inout vec3 col) {
+/// // Branchless 24-bit packed RGB fetch to vec3
+/// vec3 fetch_raw_rgb(uint px, uint py) {
 ///     uint src_byte_offset = (py * src_w + px) * 3u;
 ///     uint word_idx = src_byte_offset >> 2u;
 ///     uint w0 = src_data[word_idx];
 ///     uint w1 = src_data[word_idx + 1u];
 ///
-///     uint r, g, b;
-///     uint b_mod = src_byte_offset & 3u;
-///     if (b_mod == 0u) {
-///         r = w0 & 0xFFu;
-///         g = (w0 >> 8u) & 0xFFu;
-///         b = (w0 >> 16u) & 0xFFu;
-///     } else if (b_mod == 1u) {
-///         r = (w0 >> 8u) & 0xFFu;
-///         g = (w0 >> 16u) & 0xFFu;
-///         b = (w0 >> 24u) & 0xFFu;
-///     } else if (b_mod == 2u) {
-///         r = (w0 >> 16u) & 0xFFu;
-///         g = (w0 >> 24u) & 0xFFu;
-///         b = w1 & 0xFFu;
-///     } else {
-///         r = (w0 >> 24u) & 0xFFu;
-///         g = w1 & 0xFFu;
-///         b = (w1 >> 8u) & 0xFFu;
-///     }
-///     col = vec3(float(r), float(g), float(b));
+///     uint shift = (src_byte_offset & 3u) << 3u;
+///     uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
+///     return vec3(float(val & 0xFFu), float((val >> 8u) & 0xFFu), float((val >> 16u) & 0xFFu));
 /// }
 ///
-/// void sample_bilinear(uint p_idx, uint total_dst, inout uint out_r, inout uint out_g, inout uint out_b) {
-///     if (p_idx >= total_dst) {
-///         out_r = 0u; out_g = 0u; out_b = 0u;
-///         return;
-///     }
+/// uint sample_bilinear(uint p_idx, uint total_dst) {
+///     if (p_idx >= total_dst) return 0u;
 ///     uint dx = p_idx % dst_w;
 ///     uint dy = p_idx / dst_w;
 ///
@@ -160,40 +119,27 @@ pub const RGB888_RESIZE_NEAREST_COMP_SPV: &[u8] =
 ///     float fu = floor(u);
 ///     float fv = floor(v);
 ///
-///     int x0 = int(fu);
-///     int y0 = int(fv);
-///     int x1 = x0 + 1;
-///     int y1 = y0 + 1;
+///     int max_x = int(src_w) - 1;
+///     int max_y = int(src_h) - 1;
+///
+///     int x0 = clamp(int(fu), 0, max_x);
+///     int y0 = clamp(int(fv), 0, max_y);
+///     int x1 = clamp(int(fu) + 1, 0, max_x);
+///     int y1 = clamp(int(fv) + 1, 0, max_y);
 ///
 ///     float fx = u - fu;
 ///     float fy = v - fv;
 ///
-///     if (x0 < 0) x0 = 0;
-///     if (y0 < 0) y0 = 0;
-///     if (x1 < 0) x1 = 0;
-///     if (y1 < 0) y1 = 0;
-///
-///     int max_x = int(src_w) - 1;
-///     int max_y = int(src_h) - 1;
-///
-///     if (x0 > max_x) x0 = max_x;
-///     if (y0 > max_y) y0 = max_y;
-///     if (x1 > max_x) x1 = max_x;
-///     if (y1 > max_y) y1 = max_y;
-///
-///     vec3 c00, c10, c01, c11;
-///     fetch_raw_rgb(uint(x0), uint(y0), c00);
-///     fetch_raw_rgb(uint(x1), uint(y0), c10);
-///     fetch_raw_rgb(uint(x0), uint(y1), c01);
-///     fetch_raw_rgb(uint(x1), uint(y1), c11);
+///     vec3 c00 = fetch_raw_rgb(uint(x0), uint(y0));
+///     vec3 c10 = fetch_raw_rgb(uint(x1), uint(y0));
+///     vec3 c01 = fetch_raw_rgb(uint(x0), uint(y1));
+///     vec3 c11 = fetch_raw_rgb(uint(x1), uint(y1));
 ///
 ///     vec3 top = mix(c00, c10, fx);
 ///     vec3 bot = mix(c01, c11, fx);
 ///     vec3 col = clamp(mix(top, bot, fy) + 0.5, 0.0, 255.0);
 ///
-///     out_r = uint(col.r);
-///     out_g = uint(col.g);
-///     out_b = uint(col.b);
+///     return uint(col.r) | (uint(col.g) << 8u) | (uint(col.b) << 16u);
 /// }
 ///
 /// void main() {
@@ -202,19 +148,16 @@ pub const RGB888_RESIZE_NEAREST_COMP_SPV: &[u8] =
 ///     uint base_pixel = chunk_idx * 4u;
 ///     if (base_pixel >= total_dst_pixels) return;
 ///
-///     uint r0, g0, b0;
-///     uint r1, g1, b1;
-///     uint r2, g2, b2;
-///     uint r3, g3, b3;
+///     // Fetch 4 contiguous bilinear filtered pixels
+///     uint p0 = sample_bilinear(base_pixel, total_dst_pixels);
+///     uint p1 = sample_bilinear(base_pixel + 1u, total_dst_pixels);
+///     uint p2 = sample_bilinear(base_pixel + 2u, total_dst_pixels);
+///     uint p3 = sample_bilinear(base_pixel + 3u, total_dst_pixels);
 ///
-///     sample_bilinear(base_pixel, total_dst_pixels, r0, g0, b0);
-///     sample_bilinear(base_pixel + 1u, total_dst_pixels, r1, g1, b1);
-///     sample_bilinear(base_pixel + 2u, total_dst_pixels, r2, g2, b2);
-///     sample_bilinear(base_pixel + 3u, total_dst_pixels, r3, g3, b3);
-///
-///     uint w0 = r0 | (g0 << 8u) | (b0 << 16u) | (r1 << 24u);
-///     uint w1 = g1 | (b1 << 8u) | (r2 << 16u) | (g2 << 24u);
-///     uint w2 = b2 | (r3 << 8u) | (g3 << 16u) | (b3 << 24u);
+///     // Branchless packing into 3x32-bit storage buffer words
+///     uint w0 = p0 | (p1 << 24u);
+///     uint w1 = (p1 >> 8u) | (p2 << 16u);
+///     uint w2 = (p2 >> 16u) | (p3 << 8u);
 ///     uint out_word_base = chunk_idx * 3u;
 ///
 ///     dst_data[out_word_base + 0u] = w0;
@@ -225,6 +168,18 @@ pub const RGB888_RESIZE_NEAREST_COMP_SPV: &[u8] =
 pub const RGB888_RESIZE_BILINEAR_COMP_SPV: &[u8] =
     include_bytes!("shaders/rgb888_resize_bilinear.spv");
 
+/// Default local workgroup size along X dimension.
+pub const DEFAULT_WORKGROUP_SIZE_X: u32 = 64;
+
+/// Default packed pixels processed per compute thread.
+pub const DEFAULT_PIXELS_PER_THREAD: u32 = 4;
+
+/// Trailing padding bytes to prevent word-boundary read/write overruns in compute buffers.
+pub const BUFFER_TAIL_PADDING_BYTES: usize = 16;
+
+/// Number of timestamp queries for execution profiling (start and end).
+pub const TIMESTAMP_QUERY_COUNT: u32 = 2;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ComputePushConsts {
@@ -234,6 +189,32 @@ pub struct ComputePushConsts {
     pub dst_h: u32,
     pub scale_x: f32,
     pub scale_y: f32,
+}
+
+/// Scoped RAII guard guaranteeing deterministic destruction of transient VkDescriptorPool.
+struct DescriptorPoolGuard<'a> {
+    device: &'a ash::Device,
+    pool: vk::DescriptorPool,
+}
+
+impl<'a> DescriptorPoolGuard<'a> {
+    #[inline]
+    fn new(device: &'a ash::Device, pool: vk::DescriptorPool) -> Self {
+        Self { device, pool }
+    }
+
+    #[inline]
+    fn pool(&self) -> vk::DescriptorPool {
+        self.pool
+    }
+}
+
+impl<'a> Drop for DescriptorPoolGuard<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_descriptor_pool(self.pool, None);
+        }
+    }
 }
 
 /// Represents an individual compiled compute shader kernel and its GPU pipeline.
@@ -344,15 +325,31 @@ impl VulkanComputeResizer {
         };
 
         // Register default nearest and bilinear shaders
-        resizer.register_shader_with_layout(FilterMode::Nearest, RGB888_RESIZE_NEAREST_COMP_SPV, 64, 4)?;
-        resizer.register_shader_with_layout(FilterMode::Bilinear, RGB888_RESIZE_BILINEAR_COMP_SPV, 64, 4)?;
+        resizer.register_shader_with_layout(
+            FilterMode::Nearest,
+            RGB888_RESIZE_NEAREST_COMP_SPV,
+            DEFAULT_WORKGROUP_SIZE_X,
+            DEFAULT_PIXELS_PER_THREAD,
+        )?;
+        resizer.register_shader_with_layout(
+            FilterMode::Bilinear,
+            RGB888_RESIZE_BILINEAR_COMP_SPV,
+            DEFAULT_WORKGROUP_SIZE_X,
+            DEFAULT_PIXELS_PER_THREAD,
+        )?;
 
         Ok(resizer)
     }
 
     /// Compiles and registers a custom SPIR-V compute shader for a given filter mode.
+    #[inline]
     pub fn register_shader(&self, filter: FilterMode, spv_bytes: &[u8]) -> Result<()> {
-        self.register_shader_with_layout(filter, spv_bytes, 64, 4)
+        self.register_shader_with_layout(
+            filter,
+            spv_bytes,
+            DEFAULT_WORKGROUP_SIZE_X,
+            DEFAULT_PIXELS_PER_THREAD,
+        )
     }
 
     /// Compiles and registers a custom compute shader specifying workgroup and pixel layout.
@@ -371,7 +368,8 @@ impl VulkanComputeResizer {
         Ok(())
     }
 
-    /// Creates and compiles a  instance from SPIR-V bytecode.
+    /// Creates and compiles a `ComputeKernel` instance from SPIR-V bytecode.
+    #[must_use]
     pub fn create_kernel(
         &self,
         spv_bytes: &[u8],
@@ -433,6 +431,7 @@ impl VulkanComputeResizer {
     }
 
     /// Checks if a compute kernel is registered for the specified filter mode.
+    #[inline]
     #[must_use]
     pub fn has_shader(&self, filter: FilterMode) -> bool {
         self.kernels
@@ -448,6 +447,13 @@ impl VulkanComputeResizer {
         dst: &mut ImageDescMut,
         filter: FilterMode,
     ) -> Result<()> {
+        if src.width == 0 || src.height == 0 || dst.width == 0 || dst.height == 0 {
+            return Err(ScalixError::InvalidDimensions {
+                width: if src.width == 0 { src.width } else { dst.width },
+                height: if src.height == 0 { src.height } else { dst.height },
+            });
+        }
+
         if src.format != dst.format {
             return Err(ScalixError::ExecutionFailed(format!(
                 "Compute direct resizer expects identical src and dst formats: {:?} -> {:?}",
@@ -457,6 +463,15 @@ impl VulkanComputeResizer {
 
         if !matches!(src.format, PixelFormat::Rgb888 | PixelFormat::Bgr888) {
             return Err(ScalixError::UnsupportedFormat(src.format));
+        }
+
+        let src_min_stride = (src.width as usize).saturating_mul(3);
+        let dst_min_stride = (dst.width as usize).saturating_mul(3);
+        if src.stride < src_min_stride || dst.stride < dst_min_stride {
+            return Err(ScalixError::InvalidStride {
+                stride: if src.stride < src_min_stride { src.stride } else { dst.stride },
+                min_stride: if src.stride < src_min_stride { src_min_stride } else { dst_min_stride },
+            });
         }
 
         let kernel = {
@@ -490,8 +505,8 @@ impl VulkanComputeResizer {
         };
 
         let device = &self.ctx.device;
-        let src_size = (src.data.len() + 16) as vk::DeviceSize;
-        let dst_size = (dst.data.len() + 16) as vk::DeviceSize;
+        let src_size = src.data.len().saturating_add(BUFFER_TAIL_PADDING_BYTES) as vk::DeviceSize;
+        let dst_size = dst.data.len().saturating_add(BUFFER_TAIL_PADDING_BYTES) as vk::DeviceSize;
 
         unsafe {
             let mut ring_guard = self.ring.lock().map_err(|_| {
@@ -512,6 +527,7 @@ impl VulkanComputeResizer {
                 .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map src memory: {e}")))?
                 as *mut u8;
             std::ptr::copy_nonoverlapping(src.data.as_ptr(), ptr, src.data.len());
+            std::ptr::write_bytes(ptr.add(src.data.len()), 0, BUFFER_TAIL_PADDING_BYTES);
             device.unmap_memory(src_mem);
 
             let dst_staging = slot.ensure_dst_staging(
@@ -522,7 +538,7 @@ impl VulkanComputeResizer {
             let dst_buf = dst_staging.buffer;
             let dst_mem = dst_staging.memory;
 
-            // Transient descriptor pool for binding 0 & 1
+            // Transient descriptor pool for binding 0 & 1 managed via RAII guard
             let pool_sizes = [vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
                 descriptor_count: 2,
@@ -536,16 +552,16 @@ impl VulkanComputeResizer {
             let desc_pool = device.create_descriptor_pool(&pool_info, None).map_err(|e| {
                 ScalixError::ExecutionFailed(format!("Failed to create compute desc pool: {e}"))
             })?;
+            let desc_pool_guard = DescriptorPoolGuard::new(device, desc_pool);
 
             let set_layouts = [self.desc_layout];
             let alloc_info = vk::DescriptorSetAllocateInfo {
-                descriptor_pool: desc_pool,
+                descriptor_pool: desc_pool_guard.pool(),
                 descriptor_set_count: 1,
                 p_set_layouts: set_layouts.as_ptr(),
                 ..Default::default()
             };
             let desc_set = device.allocate_descriptor_sets(&alloc_info).map_err(|e| {
-                device.destroy_descriptor_pool(desc_pool, None);
                 ScalixError::ExecutionFailed(format!("Failed to allocate compute desc set: {e}"))
             })?[0];
 
@@ -587,12 +603,11 @@ impl VulkanComputeResizer {
                 ..Default::default()
             };
             device.begin_command_buffer(cmd_buf, &begin_info).map_err(|e| {
-                device.destroy_descriptor_pool(desc_pool, None);
                 ScalixError::ExecutionFailed(format!("Failed to begin compute cmd buf: {e}"))
             })?;
 
             if let Some(qp) = query_pool {
-                device.cmd_reset_query_pool(cmd_buf, qp, 0, 2);
+                device.cmd_reset_query_pool(cmd_buf, qp, 0, TIMESTAMP_QUERY_COUNT);
                 device.cmd_write_timestamp(
                     cmd_buf,
                     vk::PipelineStageFlags::TOP_OF_PIPE,
@@ -631,9 +646,16 @@ impl VulkanComputeResizer {
                 pc_bytes,
             );
 
-            let total_dst_pixels = dst.width * dst.height;
-            let pixels_per_workgroup = kernel.workgroup_size_x * kernel.pixels_per_thread;
-            let workgroups = (total_dst_pixels + pixels_per_workgroup - 1) / pixels_per_workgroup;
+            let total_dst_pixels = dst.width.saturating_mul(dst.height);
+            let pixels_per_workgroup = kernel
+                .workgroup_size_x
+                .saturating_mul(kernel.pixels_per_thread);
+            if pixels_per_workgroup == 0 {
+                return Err(ScalixError::ExecutionFailed(
+                    "Compute kernel workgroup layout must be non-zero".to_string(),
+                ));
+            }
+            let workgroups = total_dst_pixels.div_ceil(pixels_per_workgroup);
             device.cmd_dispatch(cmd_buf, workgroups.max(1), 1, 1);
 
             let memory_barrier = vk::MemoryBarrier {
@@ -661,7 +683,6 @@ impl VulkanComputeResizer {
             }
 
             device.end_command_buffer(cmd_buf).map_err(|e| {
-                device.destroy_descriptor_pool(desc_pool, None);
                 ScalixError::ExecutionFailed(format!("Failed to end compute cmd buf: {e}"))
             })?;
 
@@ -679,7 +700,6 @@ impl VulkanComputeResizer {
             device
                 .queue_submit(self.ctx.queue, &[submit_info], slot.fence)
                 .map_err(|e| {
-                    device.destroy_descriptor_pool(desc_pool, None);
                     ScalixError::ExecutionFailed(format!("Compute queue submit failed: {e}"))
                 })?;
 
@@ -698,11 +718,11 @@ impl VulkanComputeResizer {
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
 
-            device.destroy_descriptor_pool(desc_pool, None);
+            drop(desc_pool_guard);
 
             let mut gpu_pure_compute_ms = 0.0;
             if let Some(qp) = query_pool {
-                let mut timestamps = [0u64; 2];
+                let mut timestamps = [0u64; TIMESTAMP_QUERY_COUNT as usize];
                 if device
                     .get_query_pool_results(
                         qp,

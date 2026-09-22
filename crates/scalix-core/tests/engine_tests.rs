@@ -829,6 +829,28 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
         assert!(res.is_ok(), "Pluggable custom shader execution failed: {:?}", res.err());
         assert_eq!(dst_data.as_slice()[0], 0x77);
     }
+
+    // 5. Test Non-Uniform Pattern to verify channel ordering and spatial scaling
+    {
+        let mut patterned_src = AlignedBuffer::new(src_stride * (src_h as usize)).unwrap();
+        for y in 0..src_h {
+            for x in 0..src_w {
+                let idx = (y as usize) * src_stride + (x as usize) * 3;
+                patterned_src.as_mut_slice()[idx] = (x * 4) as u8;
+                patterned_src.as_mut_slice()[idx + 1] = (y * 4) as u8;
+                patterned_src.as_mut_slice()[idx + 2] = 0xAA;
+            }
+        }
+        let pattern_src_desc =
+            ImageDesc::new(src_w, src_h, src_stride, format, &patterned_src).unwrap();
+        let mut pattern_dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options =
+            ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Compute);
+        let res = vk_backend.process(&pattern_src_desc, &mut pattern_dst_desc, &options);
+        assert!(res.is_ok(), "Compute Bilinear patterned failed: {:?}", res.err());
+        assert_eq!(dst_data.as_slice()[2], 0xAA, "Blue channel mismatch");
+    }
 }
 
 
