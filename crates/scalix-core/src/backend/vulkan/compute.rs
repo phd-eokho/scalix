@@ -301,18 +301,17 @@ impl VulkanComputeResizer {
             ..Default::default()
         };
         let pipe_layout = unsafe {
-            device
-                .create_pipeline_layout(&pl_info, None)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!(
-                        "Failed to create compute resizer pipeline layout: {e}"
-                    ))
-                })?
+            device.create_pipeline_layout(&pl_info, None).map_err(|e| {
+                ScalixError::ExecutionFailed(format!(
+                    "Failed to create compute resizer pipeline layout: {e}"
+                ))
+            })?
         };
 
         let ring = Mutex::new(
-            VulkanStagingRing::new(Arc::clone(&ctx), DEFAULT_RING_SLOTS)
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create staging ring: {e}")))?,
+            VulkanStagingRing::new(Arc::clone(&ctx), DEFAULT_RING_SLOTS).map_err(|e| {
+                ScalixError::ExecutionFailed(format!("Failed to create staging ring: {e}"))
+            })?,
         );
 
         let resizer = Self {
@@ -369,7 +368,6 @@ impl VulkanComputeResizer {
     }
 
     /// Creates and compiles a `ComputeKernel` instance from SPIR-V bytecode.
-    #[must_use]
     pub fn create_kernel(
         &self,
         spv_bytes: &[u8],
@@ -388,13 +386,11 @@ impl VulkanComputeResizer {
             ..Default::default()
         };
         let shader_module = unsafe {
-            device
-                .create_shader_module(&sm_info, None)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!(
-                        "Failed to create custom compute shader module: {e}"
-                    ))
-                })?
+            device.create_shader_module(&sm_info, None).map_err(|e| {
+                ScalixError::ExecutionFailed(format!(
+                    "Failed to create custom compute shader module: {e}"
+                ))
+            })?
         };
 
         let main_name = c"main";
@@ -450,7 +446,11 @@ impl VulkanComputeResizer {
         if src.width == 0 || src.height == 0 || dst.width == 0 || dst.height == 0 {
             return Err(ScalixError::InvalidDimensions {
                 width: if src.width == 0 { src.width } else { dst.width },
-                height: if src.height == 0 { src.height } else { dst.height },
+                height: if src.height == 0 {
+                    src.height
+                } else {
+                    dst.height
+                },
             });
         }
 
@@ -469,8 +469,16 @@ impl VulkanComputeResizer {
         let dst_min_stride = (dst.width as usize).saturating_mul(3);
         if src.stride < src_min_stride || dst.stride < dst_min_stride {
             return Err(ScalixError::InvalidStride {
-                stride: if src.stride < src_min_stride { src.stride } else { dst.stride },
-                min_stride: if src.stride < src_min_stride { src_min_stride } else { dst_min_stride },
+                stride: if src.stride < src_min_stride {
+                    src.stride
+                } else {
+                    dst.stride
+                },
+                min_stride: if src.stride < src_min_stride {
+                    src_min_stride
+                } else {
+                    dst_min_stride
+                },
             });
         }
 
@@ -483,7 +491,10 @@ impl VulkanComputeResizer {
                 .cloned()
                 .or_else(|| {
                     // Fallback to Bilinear for high-order filters if not explicitly registered
-                    if matches!(filter, FilterMode::Bicubic | FilterMode::Lanczos3 | FilterMode::Area) {
+                    if matches!(
+                        filter,
+                        FilterMode::Bicubic | FilterMode::Lanczos3 | FilterMode::Area
+                    ) {
                         kernels.get(&FilterMode::Bilinear).cloned()
                     } else {
                         None
@@ -524,8 +535,9 @@ impl VulkanComputeResizer {
 
             let ptr = device
                 .map_memory(src_mem, 0, src_size, vk::MemoryMapFlags::empty())
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map src memory: {e}")))?
-                as *mut u8;
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to map src memory: {e}"))
+                })? as *mut u8;
             std::ptr::copy_nonoverlapping(src.data.as_ptr(), ptr, src.data.len());
             std::ptr::write_bytes(ptr.add(src.data.len()), 0, BUFFER_TAIL_PADDING_BYTES);
             device.unmap_memory(src_mem);
@@ -549,9 +561,11 @@ impl VulkanComputeResizer {
                 p_pool_sizes: pool_sizes.as_ptr(),
                 ..Default::default()
             };
-            let desc_pool = device.create_descriptor_pool(&pool_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create compute desc pool: {e}"))
-            })?;
+            let desc_pool = device
+                .create_descriptor_pool(&pool_info, None)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to create compute desc pool: {e}"))
+                })?;
             let desc_pool_guard = DescriptorPoolGuard::new(device, desc_pool);
 
             let set_layouts = [self.desc_layout];
@@ -602,18 +616,15 @@ impl VulkanComputeResizer {
                 flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
                 ..Default::default()
             };
-            device.begin_command_buffer(cmd_buf, &begin_info).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to begin compute cmd buf: {e}"))
-            })?;
+            device
+                .begin_command_buffer(cmd_buf, &begin_info)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to begin compute cmd buf: {e}"))
+                })?;
 
             if let Some(qp) = query_pool {
                 device.cmd_reset_query_pool(cmd_buf, qp, 0, TIMESTAMP_QUERY_COUNT);
-                device.cmd_write_timestamp(
-                    cmd_buf,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
-                    qp,
-                    0,
-                );
+                device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::TOP_OF_PIPE, qp, 0);
             }
 
             device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::COMPUTE, kernel.pipeline);
@@ -674,12 +685,7 @@ impl VulkanComputeResizer {
             );
 
             if let Some(qp) = query_pool {
-                device.cmd_write_timestamp(
-                    cmd_buf,
-                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                    qp,
-                    1,
-                );
+                device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::BOTTOM_OF_PIPE, qp, 1);
             }
 
             device.end_command_buffer(cmd_buf).map_err(|e| {
@@ -707,7 +713,9 @@ impl VulkanComputeResizer {
             device
                 .wait_for_fences(&[slot.fence], true, u64::MAX)
                 .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!("Failed to wait for compute slot fence: {e}"))
+                    ScalixError::ExecutionFailed(format!(
+                        "Failed to wait for compute slot fence: {e}"
+                    ))
                 })?;
             device.reset_fences(&[slot.fence]).map_err(|e| {
                 ScalixError::ExecutionFailed(format!("Failed to reset compute slot fence: {e}"))
@@ -740,8 +748,9 @@ impl VulkanComputeResizer {
 
             let out_ptr = device
                 .map_memory(dst_mem, 0, dst_size, vk::MemoryMapFlags::empty())
-                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to map dst memory: {e}")))?
-                as *const u8;
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to map dst memory: {e}"))
+                })? as *const u8;
             std::ptr::copy_nonoverlapping(out_ptr, dst.data.as_mut_ptr(), dst.data.len());
             device.unmap_memory(dst_mem);
 

@@ -807,7 +807,11 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
         let options =
             ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Auto);
         let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
-        assert!(res.is_ok(), "Auto Strategy (Compute) failed: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "Auto Strategy (Compute) failed: {:?}",
+            res.err()
+        );
     }
     assert_eq!(dst_data.as_slice()[0], 0x77);
     assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
@@ -815,18 +819,30 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
     // 4. Test Dynamic Pluggable Shader Registration (e.g. registering custom kernel for Lanczos3)
     {
         let pluggable_spv = scalix_core::backend::vulkan::compute::RGB888_RESIZE_NEAREST_COMP_SPV;
-        assert!(!vk_backend.compute_resizer().has_shader(FilterMode::Lanczos3));
+        assert!(!vk_backend
+            .compute_resizer()
+            .has_shader(FilterMode::Lanczos3));
 
         let reg_res = vk_backend.register_compute_shader(FilterMode::Lanczos3, pluggable_spv);
-        assert!(reg_res.is_ok(), "Failed to register custom compute shader: {:?}", reg_res.err());
-        assert!(vk_backend.compute_resizer().has_shader(FilterMode::Lanczos3));
+        assert!(
+            reg_res.is_ok(),
+            "Failed to register custom compute shader: {:?}",
+            reg_res.err()
+        );
+        assert!(vk_backend
+            .compute_resizer()
+            .has_shader(FilterMode::Lanczos3));
 
         let mut dst_desc =
             ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
         let options =
             ResizeOptions::new(FilterMode::Lanczos3).with_vulkan_strategy(VulkanStrategy::Compute);
         let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
-        assert!(res.is_ok(), "Pluggable custom shader execution failed: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "Pluggable custom shader execution failed: {:?}",
+            res.err()
+        );
         assert_eq!(dst_data.as_slice()[0], 0x77);
     }
 
@@ -848,9 +864,11 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
         let options =
             ResizeOptions::new(FilterMode::Bilinear).with_vulkan_strategy(VulkanStrategy::Compute);
         let res = vk_backend.process(&pattern_src_desc, &mut pattern_dst_desc, &options);
-        assert!(res.is_ok(), "Compute Bilinear patterned failed: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "Compute Bilinear patterned failed: {:?}",
+            res.err()
+        );
         assert_eq!(dst_data.as_slice()[2], 0xAA, "Blue channel mismatch");
     }
 }
-
-

@@ -133,7 +133,10 @@ impl Backend for VulkanBackend {
             VulkanStrategy::Auto => {
                 // Specialized fast-path: Direct fused compute resizer for identical packed 24-bit formats
                 if src.format == dst.format
-                    && matches!(src.format, crate::types::PixelFormat::Rgb888 | crate::types::PixelFormat::Bgr888)
+                    && matches!(
+                        src.format,
+                        crate::types::PixelFormat::Rgb888 | crate::types::PixelFormat::Bgr888
+                    )
                 {
                     VulkanStrategy::Compute
                 } else {
