@@ -1,19 +1,20 @@
 use crate::types::{
-    ImageDesc, ImageDescMut, ImageDimensions, ImageGeometry, PixelFormat, Result, ScalixError,
+    AlignedBuffer, ImageDesc, ImageDescMut, ImageDimensions, ImageGeometry, PixelFormat, Result,
+    ScalixError,
 };
 
-/// An owned heap-allocated image buffer.
+/// An owned heap-allocated image buffer with guaranteed 64-byte alignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedImage {
     pub width: u32,
     pub height: u32,
     pub stride: usize,
     pub format: PixelFormat,
-    pub data: Vec<u8>,
+    pub data: AlignedBuffer,
 }
 
 impl OwnedImage {
-    /// Allocates a zeroed image buffer for the specified dimensions and format.
+    /// Allocates a zeroed 64-byte aligned image buffer for the specified dimensions and format.
     pub fn allocate(width: u32, height: u32, format: PixelFormat) -> Result<Self> {
         let stride = format.min_stride(width)?;
         let size = format.min_buffer_size(width, height, stride)?;
@@ -22,11 +23,11 @@ impl OwnedImage {
             height,
             stride,
             format,
-            data: vec![0u8; size],
+            data: AlignedBuffer::new(size)?,
         })
     }
 
-    /// Allocates a zeroed image buffer for the specified geometry.
+    /// Allocates a zeroed 64-byte aligned image buffer for the specified geometry.
     pub fn allocate_geometry(geom: ImageGeometry) -> Result<Self> {
         let size = geom.min_buffer_size()?;
         Ok(Self {
@@ -34,7 +35,7 @@ impl OwnedImage {
             height: geom.dimensions.height,
             stride: geom.stride,
             format: geom.format,
-            data: vec![0u8; size],
+            data: AlignedBuffer::new(size)?,
         })
     }
 
@@ -46,13 +47,25 @@ impl OwnedImage {
         format: PixelFormat,
         data: Vec<u8>,
     ) -> Result<Self> {
+        Self::from_slice(width, height, stride, format, &data)
+    }
+
+    /// Creates an OwnedImage from a byte slice with 64-byte alignment.
+    pub fn from_slice(
+        width: u32,
+        height: u32,
+        stride: usize,
+        format: PixelFormat,
+        slice: &[u8],
+    ) -> Result<Self> {
         let min_size = format.min_buffer_size(width, height, stride)?;
-        if data.len() < min_size {
+        if slice.len() < min_size {
             return Err(ScalixError::BufferTooSmall {
                 required: min_size,
-                actual: data.len(),
+                actual: slice.len(),
             });
         }
+        let data = AlignedBuffer::from_slice(slice)?;
         Ok(Self {
             width,
             height,

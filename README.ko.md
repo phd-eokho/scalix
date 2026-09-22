@@ -15,11 +15,13 @@
   * **Hardware Blit (`Blit`):** Shader 오버헤드 없이 최대 처리량을 제공하는 고정 기능(Fixed-Function) 2D Blitter.
   * **Offscreen Raster Graphics (`Raster`):** Vertex/Fragment Shader 및 하드웨어 Bilinear/Trilinear Sampler를 사용하는 완전한 그래픽스 파이프라인.
   * **Hierarchical LoD Pyramid (`LodPyramid`):** 극단적인 다운스케일(>4×) 환경에서 계단 현상(Aliasing)과 모아레(Moiré) 왜곡을 제거하기 위한 2×2 박스 필터링 기반 Multi-Pass 다운스케일러 (조절 가능한 `max_mip_levels` 지원).
+* **GPU Compute Shader 가속:** GPU 상에서 직접 Packed RGB888 Unpack 및 Repack 패스를 수행하는 전용 컴퓨트 파이프라인(`VulkanRgbCompute`)을 제공하여 CPU 메모리 변환 병목을 제거합니다.
+* **Ring-Buffered Staging Allocator:** 슬롯별 `VkFence` 동기화와 히스테리시스 기반 메모리 자동 축소 정책(<50% 용량 기준)을 갖춘 Triple Buffering Staging 링(`VulkanStagingRing`, 3 슬롯)을 통해 CPU/GPU 간 원활한 파이프라이닝을 지원합니다.
 * **유연한 실행 모델:**
   * **동기식 (Synchronous / Blocking):** CLI 도구 및 결정론적 파이프라인을 위한 직접 블로킹 실행.
-  * **비동기식 (Asynchronous / Future / Task):** 하드웨어 Timeline Semaphore 기반의 Non-blocking 폴링 및 타임아웃 대기.
+  * **비동기식 (Zero-Copy Task):** 복사 없는 디스크립터 디스패치(`resize_async_raw`) 및 논블로킹 폴링/타임아웃 대기.
   * **콜백 기반 (Callback-Driven):** 스트리밍, 카메라, UI 파이프라인을 위한 이벤트 기반 프레임 완료 콜백.
-* **In-Process Context Worker:** 가속기 Context Affinity(단일 스레드 EGL / Vulkan Queue 소유권)와 메모리 Staging 파이프라이닝을 관리하는 임베디드 워커 스레드 풀.
+* **엄격한 64바이트 메모리 정렬:** 모든 디스크립터에 64바이트 버퍼 정렬(`SCALIX_REQUIRED_ALIGNMENT_BYTES = 64`)을 강제하여 AVX-512 / ARM Neon SIMD 벡터화 및 DMA-BUF 하드웨어 호환성을 보장합니다.
 * **Zero-Copy 메모리 서브시스템:** GPU, 2D 하드웨어 Blitter, V4L2 간 Linux **DMA-BUF** 및 Android **AHardwareBuffer** 네이티브 지원.
 * **다국어 API 바인딩:** 안정적인 **C ABI** (`libscalix.so` / `scalix.h`), 현대적인 **C++20** 래퍼 (`scalix.hpp`), 네이티브 **Rust** 크레이트 제공.
 * **포괄적인 필터 제품군:** Nearest Neighbor, Bilinear, Bicubic 및 계층형 Mipchain 다운스케일링.
@@ -32,7 +34,7 @@
 
 #### 범례
 * `✔` **Verified & Tested:** 완벽히 구현되었으며 자동화된 테스트 스위트 및 벤치마크로 검증 완료.
-* `◐` **In Progress / Scaffolded:** 핵심 인터페이스 또는 백엔드 구현 진행 중.
+* `◐` **Compiled / In Progress:** CI 상에서 크로스 컴파일 빌드가 완료되었거나 핵심 인터페이스 구현 진행 중 (실제 하드웨어 런타임 테스트 대기).
 * `○` **Planned / Unverified:** 아키텍처 규격상 지원 예정이며 구현 및 검증 대기 중.
 * `—` **Deferred / N/A:** 향후 마일스톤으로 연기되었거나 대상 플랫폼에 해당하지 않음.
 
@@ -42,7 +44,7 @@
 
 | Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64 / armv7) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | ✔ Verified | ✔ Verified | ○ Supported |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (AMD / NVIDIA / Intel / Mesa Lavapipe) | ✔ Verified | ✔ Verified | ◐ Compiled (미검증) |
 | **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | ○ Supported | ○ Supported | ○ Supported |
 | **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | ○ Mock / Loopback | ○ Hardware Req. | — |
 | **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | ○ Mock / CPU | ○ OpenVINO | ○ QNN / NNAPI |
@@ -54,7 +56,7 @@
 | 실행 모드 | 설명 | Rust Core | C ABI | C++20 API |
 | :--- | :--- | :---: | :---: | :---: |
 | **동기식 (`sync`)** | GPU 작업 완료 또는 타임아웃까지 블로킹 호출 | ✔ | ✔ | ✔ |
-| **비동기식 (`async`)** | `TaskHandle` / `std::future` / Rust `Future` 반환 | ✔ | ✔ | ✔ |
+| **비동기식 (`async`)** | Staging Ring 오버랩이 적용된 Zero-Copy `TaskHandle` / `std::future` | ✔ | ✔ | ✔ |
 | **콜백 (`callback`)** | 워커 스레드 풀에서 비동기 완료 콜백 함수 디스패치 | ✔ | ✔ | ✔ |
 
 ---
@@ -63,10 +65,15 @@
 
 | 기능 | 인터페이스 / 핸들 | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64 / armv7, API 26+) |
 | :--- | :--- | :---: | :---: | :---: |
-| **Host Memory Pointers** | 표준 연속형 CPU 메모리 버퍼 (RGB/RGBA) | ✔ Verified | ✔ Verified | ○ Supported |
-| **Staging Ring Pool** | Pinned / Mapped Host-to-Device 버퍼 풀 | ✔ Verified | ✔ Verified | ○ Supported |
+| **64바이트 정렬 Host Memory** | 64바이트 정렬된 연속형 CPU 메모리 버퍼 (RGB/RGBA) | ✔ Verified | ✔ Verified | ◐ Compiled (미검증) |
+| **Triple-Buffered Staging Ring** | 히스테리시스 축소 정책이 적용된 3-슬롯 Staging 버퍼 링 | ✔ Verified | ✔ Verified | ◐ Compiled (미검증) |
 | **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME Zero-Copy) | ○ Supported | ◐ Fallback (미검증) | — |
-| **AHardwareBuffer** | `AHardwareBuffer*` Zero-Copy 연동 | — | — | ○ Supported |
+| **AHardwareBuffer** | `AHardwareBuffer*` Zero-Copy 연동 | — | — | ◐ Compiled (미검증) |
+
+> [!NOTE] 현재 검증 상태 및 타겟 플랫폼 현황
+> - **Linux (x86_64):** 실제 NVIDIA GPU(Vulkan 드라이버) 및 CI 파이프라인(Mesa Lavapipe Vulkan 소프트웨어 래스터라이저)에서 검증되었습니다.
+> - **WSL2 (Windows Subsystem for Linux 2):** NVIDIA GPU 환경의 `/dev/dxg` 브리지를 통한 Vulkan 오프스크린 렌더링이 검증되었습니다. Linux `dma-buf`는 미검증 상태이며 64바이트 정렬 Host Staging 메모리로 자동 Fallback됩니다.
+> - **Android (aarch64 / armv7):** CI 상에서 Android NDK 크로스 컴파일(`cargo-ndk`) 및 동적 라이브러리 빌드가 검증되었습니다. 단, 실제 Android 기기나 에뮬레이터 상에서의 런타임 GPU 실행, Vulkan 드라이버 구동, `AHardwareBuffer` Zero-Copy DMA 동작은 **아직 검증되지 않았습니다 (Unverified)**.
 
 ---
 

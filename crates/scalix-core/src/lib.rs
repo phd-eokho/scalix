@@ -13,7 +13,7 @@ pub use dma::{DmaAllocation, DmaAllocator, DmaBuffer, DmaSyncFlags};
 pub use engine::{Engine, EngineConfig};
 pub use profiler::{ActiveProfiler, NoopProfiler, ProfileMetrics, Profiler};
 pub use types::{
-    BackendType, FilterMode, ImageDesc, ImageDescMut, ImageDimensions, ImageGeometry, PixelFormat,
-    ResizeOptions, Result, ScalixError,
+    AlignedBuffer, BackendType, FilterMode, ImageDesc, ImageDescMut, ImageDimensions,
+    ImageGeometry, PixelFormat, ResizeOptions, Result, ScalixError, REQUIRED_MEMORY_ALIGNMENT,
 };
 pub use worker::{TaskHandle, WorkerPool};

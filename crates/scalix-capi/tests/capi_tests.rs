@@ -13,8 +13,9 @@ fn test_c_api_sync_passthrough() {
         let width = 16;
         let height = 16;
         let stride = width * 4;
-        let mut src_data = vec![42u8; stride * height];
-        let mut dst_data = vec![0u8; stride * height];
+        let mut src_data = scalix_core::AlignedBuffer::new(stride * height).unwrap();
+        src_data.as_mut_slice().fill(42);
+        let mut dst_data = scalix_core::AlignedBuffer::new(stride * height).unwrap();
 
         let src_desc = ScalixImageDesc {
             width: width as u32,
@@ -43,7 +44,7 @@ fn test_c_api_sync_passthrough() {
             ScalixFilterMode::Passthrough,
         );
         assert_eq!(status, SCALIX_SUCCESS);
-        assert_eq!(dst_data, src_data);
+        assert_eq!(dst_data.as_slice(), src_data.as_slice());
 
         scalix_engine_destroy(engine);
     }
@@ -58,8 +59,9 @@ fn test_c_api_async_wait() {
         let width = 8;
         let height = 8;
         let stride = width * 4;
-        let mut src_data = vec![99u8; stride * height];
-        let mut dst_data = vec![0u8; stride * height];
+        let mut src_data = scalix_core::AlignedBuffer::new(stride * height).unwrap();
+        src_data.as_mut_slice().fill(99);
+        let mut dst_data = scalix_core::AlignedBuffer::new(stride * height).unwrap();
 
         let src_desc = ScalixImageDesc {
             width: width as u32,
@@ -86,7 +88,7 @@ fn test_c_api_async_wait() {
 
         let status = scalix_task_wait(task, 1000, dst_data.as_mut_ptr(), dst_data.len());
         assert_eq!(status, SCALIX_SUCCESS);
-        assert_eq!(dst_data, src_data);
+        assert_eq!(dst_data.as_slice(), src_data.as_slice());
 
         scalix_task_release(task);
         scalix_engine_destroy(engine);
@@ -109,7 +111,8 @@ fn test_c_api_callback_submit() {
         let width = 8;
         let height = 8;
         let stride = width * 4;
-        let mut src_data = vec![77u8; stride * height];
+        let mut src_data = scalix_core::AlignedBuffer::new(stride * height).unwrap();
+        src_data.as_mut_slice().fill(77);
 
         let src_desc = ScalixImageDesc {
             width: width as u32,

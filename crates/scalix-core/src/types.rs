@@ -231,6 +231,9 @@ pub enum ScalixError {
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
 
+    #[error("Unaligned memory pointer: address 0x{address:x} is not {alignment}-byte aligned")]
+    UnalignedPointer { address: usize, alignment: usize },
+
     #[error("DMA allocator unavailable: {0}")]
     DmaUnavailable(String),
 
@@ -252,6 +255,121 @@ pub enum ScalixError {
 
 pub type Result<T> = std::result::Result<T, ScalixError>;
 
+/// Required memory alignment (64 bytes / cache-line & AVX-512 vector boundary) for image buffer pointers.
+pub const REQUIRED_MEMORY_ALIGNMENT: usize = 64;
+
+/// RAII heap buffer guaranteed to be 64-byte aligned for cache-line efficiency and SIMD vectorization.
+#[derive(Debug)]
+pub struct AlignedBuffer {
+    ptr: *mut u8,
+    layout: std::alloc::Layout,
+    size: usize,
+}
+
+unsafe impl Send for AlignedBuffer {}
+unsafe impl Sync for AlignedBuffer {}
+
+impl AlignedBuffer {
+    /// Allocates a zeroed 64-byte aligned memory buffer.
+    pub fn new(size: usize) -> Result<Self> {
+        Self::with_alignment(size, REQUIRED_MEMORY_ALIGNMENT)
+    }
+
+    /// Allocates a zeroed memory buffer with custom alignment.
+    pub fn with_alignment(size: usize, alignment: usize) -> Result<Self> {
+        let size = size.max(1);
+        let layout = std::alloc::Layout::from_size_align(size, alignment)
+            .map_err(|e| ScalixError::ExecutionFailed(format!("Invalid layout: {e}")))?;
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            return Err(ScalixError::ExecutionFailed(
+                "Failed to allocate aligned buffer".to_string(),
+            ));
+        }
+        Ok(Self { ptr, layout, size })
+    }
+
+    /// Creates an AlignedBuffer by copying from a byte slice.
+    pub fn from_slice(slice: &[u8]) -> Result<Self> {
+        let mut buf = Self::new(slice.len())?;
+        buf.as_mut_slice().copy_from_slice(slice);
+        Ok(buf)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.size) }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.size) }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.size
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+}
+
+impl Clone for AlignedBuffer {
+    fn clone(&self) -> Self {
+        Self::from_slice(self.as_slice()).expect("Failed to clone AlignedBuffer")
+    }
+}
+
+impl PartialEq for AlignedBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for AlignedBuffer {}
+
+impl Drop for AlignedBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            std::alloc::dealloc(self.ptr, self.layout);
+        }
+    }
+}
+
+impl std::ops::Deref for AlignedBuffer {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl std::ops::DerefMut for AlignedBuffer {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
+
 /// Read-only image descriptor for input sources.
 #[derive(Debug, Clone)]
 pub struct ImageDesc<'a> {
@@ -271,6 +389,13 @@ impl<'a> ImageDesc<'a> {
         format: PixelFormat,
         data: &'a [u8],
     ) -> Result<Self> {
+        let addr = data.as_ptr() as usize;
+        if !addr.is_multiple_of(REQUIRED_MEMORY_ALIGNMENT) {
+            return Err(ScalixError::UnalignedPointer {
+                address: addr,
+                alignment: REQUIRED_MEMORY_ALIGNMENT,
+            });
+        }
         let min_size = format.min_buffer_size(width, height, stride)?;
         if data.len() < min_size {
             return Err(ScalixError::BufferTooSmall {
@@ -331,6 +456,13 @@ impl<'a> ImageDescMut<'a> {
         format: PixelFormat,
         data: &'a mut [u8],
     ) -> Result<Self> {
+        let addr = data.as_ptr() as usize;
+        if !addr.is_multiple_of(REQUIRED_MEMORY_ALIGNMENT) {
+            return Err(ScalixError::UnalignedPointer {
+                address: addr,
+                alignment: REQUIRED_MEMORY_ALIGNMENT,
+            });
+        }
         let min_size = format.min_buffer_size(width, height, stride)?;
         if data.len() < min_size {
             return Err(ScalixError::BufferTooSmall {

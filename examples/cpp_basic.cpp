@@ -7,8 +7,11 @@
 #include <thread>
 #include <scalix/scalix.hpp>
 
+using namespace std;
+using scalix::AlignedVector;
+
 int main() {
-    std::cout << "[Scalix C++20 Interface & Pipeline Validation]" << std::endl;
+    cout << "[Scalix C++20 Interface & Pipeline Validation]" << endl;
 
     // 1. Initialize Engine (Auto selects Vulkan Option A Blit)
     scalix::Engine engine(scalix::Backend::Auto);
@@ -16,8 +19,8 @@ int main() {
     constexpr uint32_t width = 32;
     constexpr uint32_t height = 32;
     constexpr size_t stride = width * 4;
-    std::vector<uint8_t> src_data(stride * height, 0x55);
-    std::vector<uint8_t> dst_data(stride * height, 0x00);
+    AlignedVector<uint8_t> src_data(stride * height, 0x55);
+    AlignedVector<uint8_t> dst_data(stride * height, 0x00);
 
     scalix::ImageDesc src{
         .width = width,
@@ -40,14 +43,14 @@ int main() {
     };
 
     // 2. Test Synchronous Execution
-    std::cout << "1. Testing synchronous resize..." << std::endl;
+    cout << "1. Testing synchronous resize..." << endl;
     engine.resize(src, dst, scalix::Filter::Passthrough);
     assert(dst_data == src_data);
-    std::cout << "  → Synchronous transfer verified successfully." << std::endl;
+    cout << "  → Synchronous transfer verified successfully." << endl;
 
     // 3. Test Asynchronous Task Execution
-    std::cout << "2. Testing asynchronous task resize (resize_async)..." << std::endl;
-    std::vector<uint8_t> dst_async_data(stride * height, 0x00);
+    cout << "2. Testing asynchronous task resize (resize_async)..." << endl;
+    AlignedVector<uint8_t> dst_async_data(stride * height, 0x00);
     scalix::ImageDesc dst_async_desc{
         .width = width,
         .height = height,
@@ -61,12 +64,12 @@ int main() {
     auto task = engine.resize_async(src, dst_async_desc, scalix::Filter::Passthrough);
     task.wait(1000, dst_async_data.data(), dst_async_data.size());
     assert(dst_async_data == src_data);
-    std::cout << "  → Asynchronous task execution verified successfully." << std::endl;
+    cout << "  → Asynchronous task execution verified successfully." << endl;
 
     // 4. Test Callback Execution
-    std::cout << "3. Testing callback-driven resize..." << std::endl;
-    std::atomic<bool> cb_done{false};
-    std::vector<uint8_t> dst_cb_data(stride * height, 0x00);
+    cout << "3. Testing callback-driven resize..." << endl;
+    atomic<bool> cb_done{false};
+    AlignedVector<uint8_t> dst_cb_data(stride * height, 0x00);
     scalix::ImageDesc dst_cb{
         .width = width,
         .height = height,
@@ -82,31 +85,30 @@ int main() {
         dst_cb,
         scalix::Filter::Passthrough,
         [&cb_done](int status) {
-            std::cout << "  → Callback fired with status: " << status << std::endl;
+            cout << "  → Callback fired with status: " << status << endl;
             cb_done.store(true);
+            cb_done.notify_one();
         }
     );
 
-    while (!cb_done.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    cb_done.wait(false);
 
     // 5. Test Zero-Copy DMA Buffer Pre-allocation
-    std::cout << "4. Testing Zero-Copy DMA Buffer pre-allocation..." << std::endl;
+    cout << "4. Testing Zero-Copy DMA Buffer pre-allocation..." << endl;
     try {
         scalix::DmaBuffer dma_src(width, height, scalix::PixelFormat::Rgba8888);
         scalix::DmaBuffer dma_dst(width, height, scalix::PixelFormat::Rgba8888);
 
-        std::cout << "  → Allocated DMA buffers (src_fd=" << dma_src.fd()
-                  << ", dst_fd=" << dma_dst.fd()
-                  << ", size=" << dma_src.size() << " bytes)" << std::endl;
+        cout << "  → Allocated DMA buffers (src_fd=" << dma_src.fd()
+             << ", dst_fd=" << dma_dst.fd()
+             << ", size=" << dma_src.size() << " bytes)" << endl;
 
         dma_src.with_write([](uint8_t* ptr, size_t size) {
-            std::fill_n(ptr, size, 0x77);
+            fill_n(ptr, size, 0x77);
         });
 
         dma_dst.with_write([](uint8_t* ptr, size_t size) {
-            std::fill_n(ptr, size, 0x00);
+            fill_n(ptr, size, 0x00);
         });
 
         auto src_desc = dma_src.as_image_desc();
@@ -118,19 +120,19 @@ int main() {
             assert(ptr[size - 1] == 0x77);
         });
 
-        std::cout << "  → Zero-Copy DMA pre-allocation verified successfully (via with_write/with_read)." << std::endl;
-    } catch (const std::exception& e) {
-        std::cout << "  → [Host Notice] DMA device nodes unavailable on this host (" << e.what() << "); skipped hardware test." << std::endl;
+        cout << "  → Zero-Copy DMA pre-allocation verified successfully (via with_write/with_read)." << endl;
+    } catch (const exception& e) {
+        cout << "  → [Host Notice] DMA device nodes unavailable on this host (" << e.what() << "); skipped hardware test." << endl;
     }
 
     // 6. Test Pluggable Profiler Toggle
-    std::cout << "5. Testing Pluggable Profiling API..." << std::endl;
+    cout << "5. Testing Pluggable Profiling API..." << endl;
     assert(!engine.last_profile().has_value()); // Disabled by default
     engine.set_profiling(true);
     engine.resize(src, dst, scalix::Filter::Passthrough);
     engine.set_profiling(false);
-    std::cout << "  → Pluggable Profiler toggle and metrics query verified." << std::endl;
+    cout << "  → Pluggable Profiler toggle and metrics query verified." << endl;
 
-    std::cout << "\n[All C++20 interface & pipeline validation tests passed!]" << std::endl;
+    cout << "\n[All C++20 interface & pipeline validation tests passed!]" << endl;
     return 0;
 }

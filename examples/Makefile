@@ -22,7 +22,7 @@ cpp_jpeg: cpp_jpeg.cpp
 	@echo "[Compiling $@ with libjpeg-turbo]"
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(LDFLAGS) -o $@
 
-OPENCV_FLAGS ?= $(shell pkg-config --cflags opencv4 2>/dev/null || pkg-config --cflags opencv 2>/dev/null || echo "")
+OPENCV_FLAGS ?= $(shell (pkg-config --cflags opencv4 2>/dev/null || pkg-config --cflags opencv 2>/dev/null || echo "") | sed 's/-I/-isystem /g')
 OPENCV_LIBS ?= $(shell pkg-config --libs opencv4 2>/dev/null || pkg-config --libs opencv 2>/dev/null || echo "")
 
 cpp_benchmark: cpp_benchmark.cpp
