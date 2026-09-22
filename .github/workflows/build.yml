@@ -52,14 +52,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Cache APT Archives
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: apt-deps-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
-          restore-keys: |
-            apt-deps-${{ runner.os }}-
-
       - name: Install System Dependencies & Mesa Vulkan Driver
         run: |
           sudo apt-get update
@@ -147,9 +139,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Android NDK (r27c)
-        uses: ncalexan/setup-ndk@v2
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
         with:
-          ndk-version: 'r27c'
+          ndk-version: r27c
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -173,6 +166,8 @@ jobs:
         run: cargo install cargo-ndk --locked
 
       - name: Cross-compile Android Libraries
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           cargo ndk --target ${{ matrix.target }} --platform 26 build --release --locked -p scalix-capi
 
