@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use scalix_core::{
-    Backend, BackendType, Engine, EngineConfig, FilterMode, ImageDesc, ImageDescMut,
+    AlignedBuffer, Backend, BackendType, Engine, EngineConfig, FilterMode, ImageDesc, ImageDescMut,
     ImageDimensions, ImageGeometry, OwnedImage, PixelFormat, ProfileMetrics, Profiler, ScalixError,
     WorkerPool,
 };
@@ -17,13 +17,13 @@ fn test_sync_passthrough_memory_transfer() {
     let format = PixelFormat::Rgba8888;
     let stride = format.min_stride(width).unwrap();
 
-    let mut src_data = vec![0u8; stride * (height as usize)];
+    let mut src_data = AlignedBuffer::new(stride * (height as usize)).unwrap();
     // Fill with pattern
-    for (i, byte) in src_data.iter_mut().enumerate() {
+    for (i, byte) in src_data.as_mut_slice().iter_mut().enumerate() {
         *byte = (i % 255) as u8;
     }
 
-    let mut dst_data = vec![0u8; stride * (height as usize)];
+    let mut dst_data = AlignedBuffer::new(stride * (height as usize)).unwrap();
 
     let src_desc = ImageDesc::new(width, height, stride, format, &src_data).unwrap();
     let mut dst_desc = ImageDescMut::new(width, height, stride, format, &mut dst_data).unwrap();
@@ -33,7 +33,8 @@ fn test_sync_passthrough_memory_transfer() {
         .expect("Resize sync failed");
 
     assert_eq!(
-        src_data, dst_data,
+        src_data.as_slice(),
+        dst_data.as_slice(),
         "Destination data must match source data"
     );
 }
@@ -109,9 +110,24 @@ fn test_buffer_bounds_and_error_handling() {
     assert!(matches!(stride_res, Err(ScalixError::InvalidStride { .. })));
 
     // 3. Buffer too small error
-    let raw_data = vec![0u8; 10];
+    let raw_data = AlignedBuffer::new(10).unwrap();
     let img_res = ImageDesc::new(100, 100, 400, PixelFormat::Rgba8888, &raw_data);
     assert!(matches!(img_res, Err(ScalixError::BufferTooSmall { .. })));
+
+    // 4. Unaligned pointer error
+    let unaligned_raw = [0u8; 128];
+    // Find unaligned byte offset
+    let unaligned_offset = if (unaligned_raw.as_ptr() as usize).is_multiple_of(64) {
+        1
+    } else {
+        0
+    };
+    let unaligned_slice = &unaligned_raw[unaligned_offset..unaligned_offset + 64];
+    let unaligned_res = ImageDesc::new(4, 4, 16, PixelFormat::Rgba8888, unaligned_slice);
+    assert!(matches!(
+        unaligned_res,
+        Err(ScalixError::UnalignedPointer { alignment: 64, .. })
+    ));
 }
 
 #[test]
@@ -325,8 +341,9 @@ fn test_vulkan_backend_blit_resize() {
     let src_stride = format.min_stride(src_w).unwrap();
     let dst_stride = format.min_stride(dst_w).unwrap();
 
-    let src_data = vec![0xAAu8; src_stride * (src_h as usize)];
-    let mut dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
+    let mut src_data = AlignedBuffer::new(src_stride * (src_h as usize)).unwrap();
+    src_data.as_mut_slice().fill(0xAA);
+    let mut dst_data = AlignedBuffer::new(dst_stride * (dst_h as usize)).unwrap();
 
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
@@ -341,8 +358,8 @@ fn test_vulkan_backend_blit_resize() {
     );
 
     // Verify destination pixels were populated by Vulkan GPU blit
-    assert_eq!(dst_data[0], 0xAA);
-    assert_eq!(dst_data[dst_data.len() - 1], 0xAA);
+    assert_eq!(dst_data.as_slice()[0], 0xAA);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0xAA);
 }
 
 #[test]
@@ -371,8 +388,9 @@ fn test_vulkan_backend_raster_resize() {
     let src_stride = format.min_stride(src_w).unwrap();
     let dst_stride = format.min_stride(dst_w).unwrap();
 
-    let src_data = vec![0xBBu8; src_stride * (src_h as usize)];
-    let mut dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
+    let mut src_data = AlignedBuffer::new(src_stride * (src_h as usize)).unwrap();
+    src_data.as_mut_slice().fill(0xBB);
+    let mut dst_data = AlignedBuffer::new(dst_stride * (dst_h as usize)).unwrap();
 
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
@@ -387,15 +405,16 @@ fn test_vulkan_backend_raster_resize() {
     );
 
     // Verify destination pixels were populated by Vulkan GPU rasterization
-    assert_eq!(dst_data[0], 0xBB);
-    assert_eq!(dst_data[dst_data.len() - 1], 0xBB);
+    assert_eq!(dst_data.as_slice()[0], 0xBB);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0xBB);
 
     // 3. Test Packed RGB888 format with dynamic Raster strategy
     let rgb_format = PixelFormat::Rgb888;
     let rgb_src_stride = rgb_format.min_stride(src_w).unwrap();
     let rgb_dst_stride = rgb_format.min_stride(dst_w).unwrap();
-    let rgb_src_data = vec![0xCCu8; rgb_src_stride * (src_h as usize)];
-    let mut rgb_dst_data = vec![0x00u8; rgb_dst_stride * (dst_h as usize)];
+    let mut rgb_src_data = AlignedBuffer::new(rgb_src_stride * (src_h as usize)).unwrap();
+    rgb_src_data.as_mut_slice().fill(0xCC);
+    let mut rgb_dst_data = AlignedBuffer::new(rgb_dst_stride * (dst_h as usize)).unwrap();
 
     let rgb_src_desc =
         ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_format, &rgb_src_data).unwrap();
@@ -410,8 +429,8 @@ fn test_vulkan_backend_raster_resize() {
         "Vulkan raster RGB888 process failed: {:?}",
         rgb_res.err()
     );
-    assert_eq!(rgb_dst_data[0], 0xCC);
-    assert_eq!(rgb_dst_data[rgb_dst_data.len() - 1], 0xCC);
+    assert_eq!(rgb_dst_data.as_slice()[0], 0xCC);
+    assert_eq!(rgb_dst_data.as_slice()[rgb_dst_data.len() - 1], 0xCC);
 }
 
 #[test]
@@ -440,8 +459,9 @@ fn test_vulkan_backend_lod_pyramid_resize() {
     let src_stride = format.min_stride(src_w).unwrap();
     let dst_stride = format.min_stride(dst_w).unwrap();
 
-    let src_data = vec![0xDDu8; src_stride * (src_h as usize)];
-    let mut dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
+    let mut src_data = AlignedBuffer::new(src_stride * (src_h as usize)).unwrap();
+    src_data.as_mut_slice().fill(0xDD);
+    let mut dst_data = AlignedBuffer::new(dst_stride * (dst_h as usize)).unwrap();
 
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     {
@@ -458,15 +478,16 @@ fn test_vulkan_backend_lod_pyramid_resize() {
     }
 
     // Verify destination pixels were populated by Vulkan GPU LoD downscaler
-    assert_eq!(dst_data[0], 0xDD);
-    assert_eq!(dst_data[dst_data.len() - 1], 0xDD);
+    assert_eq!(dst_data.as_slice()[0], 0xDD);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0xDD);
 
     // 3. Test Packed RGB888 format with LodPyramid strategy
     let rgb_format = PixelFormat::Rgb888;
     let rgb_src_stride = rgb_format.min_stride(src_w).unwrap();
     let rgb_dst_stride = rgb_format.min_stride(dst_w).unwrap();
-    let rgb_src_data = vec![0xEEu8; rgb_src_stride * (src_h as usize)];
-    let mut rgb_dst_data = vec![0x00u8; rgb_dst_stride * (dst_h as usize)];
+    let mut rgb_src_data = AlignedBuffer::new(rgb_src_stride * (src_h as usize)).unwrap();
+    rgb_src_data.as_mut_slice().fill(0xEE);
+    let mut rgb_dst_data = AlignedBuffer::new(rgb_dst_stride * (dst_h as usize)).unwrap();
 
     let rgb_src_desc =
         ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_format, &rgb_src_data).unwrap();
@@ -482,11 +503,11 @@ fn test_vulkan_backend_lod_pyramid_resize() {
             rgb_res.err()
         );
     }
-    assert_eq!(rgb_dst_data[0], 0xEE);
-    assert_eq!(rgb_dst_data[rgb_dst_data.len() - 1], 0xEE);
+    assert_eq!(rgb_dst_data.as_slice()[0], 0xEE);
+    assert_eq!(rgb_dst_data.as_slice()[rgb_dst_data.len() - 1], 0xEE);
 
     // 4. Test with explicit max_mip_levels limit (capped at 2 levels)
-    let mut capped_dst_data = vec![0x00u8; dst_stride * (dst_h as usize)];
+    let mut capped_dst_data = AlignedBuffer::new(dst_stride * (dst_h as usize)).unwrap();
     {
         let mut capped_dst_desc =
             ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut capped_dst_data).unwrap();
@@ -500,7 +521,7 @@ fn test_vulkan_backend_lod_pyramid_resize() {
             capped_res.err()
         );
     }
-    assert_eq!(capped_dst_data[0], 0xDD);
+    assert_eq!(capped_dst_data.as_slice()[0], 0xDD);
 }
 
 #[test]
@@ -525,8 +546,9 @@ fn test_pluggable_profiler_and_gpu_metrics() {
     let src_stride = format.min_stride(src_w).unwrap();
     let dst_stride = format.min_stride(dst_w).unwrap();
 
-    let src_data = vec![128u8; src_stride * (src_h as usize)];
-    let mut dst_data = vec![0u8; dst_stride * (dst_h as usize)];
+    let mut src_data = AlignedBuffer::new(src_stride * (src_h as usize)).unwrap();
+    src_data.as_mut_slice().fill(128);
+    let mut dst_data = AlignedBuffer::new(dst_stride * (dst_h as usize)).unwrap();
 
     let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
     let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
@@ -670,4 +692,44 @@ fn test_vulkan_pipeline_trait_and_dma_allocator() {
     let pipeline: Box<dyn VulkanPipeline> = Box::new(MockPipeline);
     assert_eq!(pipeline.name(), "MockPipeline");
     assert_eq!(pipeline.strategy(), scalix_core::VulkanStrategy::Blit);
+}
+
+#[test]
+fn test_cpu_rgb888_unpack_and_repack_4byte_masked() {
+    use scalix_core::backend::vulkan::{cpu_repack_rgb888, cpu_unpack_rgb888};
+
+    for num_pixels in [1, 2, 3, 4, 5, 7, 8, 15, 16, 33, 1024] {
+        let mut original_rgb = AlignedBuffer::new(num_pixels * 3).unwrap();
+        {
+            let rgb_slice = original_rgb.as_mut_slice();
+            for p in 0..num_pixels {
+                rgb_slice[p * 3] = (p * 7 % 256) as u8;
+                rgb_slice[p * 3 + 1] = (p * 13 % 256) as u8;
+                rgb_slice[p * 3 + 2] = (p * 29 % 256) as u8;
+            }
+        }
+
+        let mut rgba = AlignedBuffer::new(num_pixels * 4).unwrap();
+        cpu_unpack_rgb888(original_rgb.as_slice(), rgba.as_mut_ptr(), num_pixels);
+
+        let rgba_slice = rgba.as_slice();
+        let rgb_slice = original_rgb.as_slice();
+        // Verify unpacked RGBA channels
+        for p in 0..num_pixels {
+            assert_eq!(rgba_slice[p * 4], rgb_slice[p * 3], "R mismatch at pixel {p}");
+            assert_eq!(rgba_slice[p * 4 + 1], rgb_slice[p * 3 + 1], "G mismatch at pixel {p}");
+            assert_eq!(rgba_slice[p * 4 + 2], rgb_slice[p * 3 + 2], "B mismatch at pixel {p}");
+            assert_eq!(rgba_slice[p * 4 + 3], 255, "Alpha mismatch at pixel {p}");
+        }
+
+        // Repack back to RGB
+        let mut repacked_rgb = AlignedBuffer::new(num_pixels * 3).unwrap();
+        cpu_repack_rgb888(rgba.as_ptr(), repacked_rgb.as_mut_slice(), num_pixels);
+
+        assert_eq!(
+            repacked_rgb.as_slice(),
+            original_rgb.as_slice(),
+            "Roundtrip mismatch for {num_pixels} pixels"
+        );
+    }
 }

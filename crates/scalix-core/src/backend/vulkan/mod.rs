@@ -11,6 +11,7 @@ pub mod compute;
 pub mod context;
 pub mod lod;
 pub mod raster;
+pub mod rgb_compute;
 pub mod strategy;
 pub mod util;
 
@@ -19,8 +20,11 @@ pub use compute::VulkanComputeResizer;
 pub use context::VulkanContext;
 pub use lod::VulkanLodDownscaler;
 pub use raster::VulkanRasterResizer;
+pub use rgb_compute::VulkanRgbCompute;
 pub use strategy::{VulkanOptions, VulkanStrategy};
-pub use util::{CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard};
+pub use util::{
+    cpu_repack_rgb888, cpu_unpack_rgb888, CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard,
+};
 
 use crate::backend::Backend;
 use crate::profiler::{ActiveProfiler, Profiler};

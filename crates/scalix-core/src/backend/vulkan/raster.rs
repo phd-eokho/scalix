@@ -111,13 +111,22 @@ impl Drop for RasterPipelineResources {
 pub struct VulkanRasterResizer {
     ctx: Arc<VulkanContext>,
     profiler: Arc<dyn Profiler>,
+    rgb_compute: Option<Arc<crate::backend::vulkan::rgb_compute::VulkanRgbCompute>>,
 }
 
 impl VulkanRasterResizer {
     #[inline]
     #[must_use]
     pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Self {
-        Self { ctx, profiler }
+        let rgb_compute =
+            crate::backend::vulkan::rgb_compute::VulkanRgbCompute::new(Arc::clone(&ctx))
+                .map(Arc::new)
+                .ok();
+        Self {
+            ctx,
+            profiler,
+            rgb_compute,
+        }
     }
 
     pub fn process(
@@ -146,30 +155,46 @@ impl VulkanRasterResizer {
         let vk_filter = to_vk_filter(filter);
         let device = &self.ctx.device;
 
+        let use_gpu_rgb_unpack = src_is_rgb && self.rgb_compute.is_some();
+        let use_gpu_rgb_repack = dst_is_rgb && self.rgb_compute.is_some();
+
         let src_size = if src_is_rgb {
-            (src.width as usize * src.height as usize * 4) as vk::DeviceSize
+            if use_gpu_rgb_unpack {
+                (src.data.len() + 16) as vk::DeviceSize
+            } else {
+                (src.width as usize * src.height as usize * 4) as vk::DeviceSize
+            }
         } else {
             src.data.len() as vk::DeviceSize
         };
 
         let dst_size = if dst_is_rgb {
-            (dst.width as usize * dst.height as usize * 4) as vk::DeviceSize
+            if use_gpu_rgb_repack {
+                (dst.data.len() + 16) as vk::DeviceSize
+            } else {
+                (dst.width as usize * dst.height as usize * 4) as vk::DeviceSize
+            }
         } else {
             dst.data.len() as vk::DeviceSize
         };
 
         unsafe {
             // 1. Create Staging Buffers via RAII guards
+            let src_staging_usage = if use_gpu_rgb_unpack {
+                vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER
+            } else {
+                vk::BufferUsageFlags::TRANSFER_SRC
+            };
             let src_staging = GpuBuffer::allocate(
                 &self.ctx,
                 src_size,
-                vk::BufferUsageFlags::TRANSFER_SRC,
+                src_staging_usage,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
             let src_staging_buf = src_staging.buffer;
             let src_staging_mem = src_staging.memory;
 
-            // Host Unpack RGB888 -> RGBA8888 if needed
+            // Copy source data to staging buffer (direct DMA / memcpy if GPU compute unpack active)
             let t_unpack_start = if is_profiling {
                 Some(std::time::Instant::now())
             } else {
@@ -180,16 +205,9 @@ impl VulkanRasterResizer {
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to map src staging memory: {e}"))
                 })? as *mut u8;
-            if src_is_rgb {
+            if src_is_rgb && !use_gpu_rgb_unpack {
                 let num_pixels = (src.width * src.height) as usize;
-                for p in 0..num_pixels {
-                    let s_idx = p * 3;
-                    let d_idx = p * 4;
-                    *ptr.add(d_idx) = src.data[s_idx];
-                    *ptr.add(d_idx + 1) = src.data[s_idx + 1];
-                    *ptr.add(d_idx + 2) = src.data[s_idx + 2];
-                    *ptr.add(d_idx + 3) = 255;
-                }
+                crate::backend::vulkan::util::cpu_unpack_rgb888(src.data, ptr, num_pixels);
             } else {
                 std::ptr::copy_nonoverlapping(src.data.as_ptr(), ptr, src.data.len());
             }
@@ -198,33 +216,52 @@ impl VulkanRasterResizer {
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
 
+            let dst_staging_usage = if use_gpu_rgb_repack {
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER
+            } else {
+                vk::BufferUsageFlags::TRANSFER_DST
+            };
             let dst_staging = GpuBuffer::allocate(
                 &self.ctx,
                 dst_size,
-                vk::BufferUsageFlags::TRANSFER_DST,
+                dst_staging_usage,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
             let dst_staging_buf = dst_staging.buffer;
             let dst_staging_mem = dst_staging.memory;
 
-            // 2. Create Source Image (SAMPLED | TRANSFER_DST) and Destination Image (COLOR_ATTACHMENT | TRANSFER_SRC)
+            // 2. Create Source Image and Destination Image
+            let src_img_usage = if use_gpu_rgb_unpack {
+                vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::STORAGE
+            } else {
+                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED
+            };
             let mut src_gpu_img = GpuImage::allocate(
                 &self.ctx,
                 vk_format,
                 src.width,
                 src.height,
                 1,
-                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                src_img_usage,
             )?;
             let src_image = src_gpu_img.image;
 
+            let dst_img_usage = if use_gpu_rgb_repack {
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::STORAGE
+            } else {
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC
+            };
             let mut dst_gpu_img = GpuImage::allocate(
                 &self.ctx,
                 vk_format,
                 dst.width,
                 dst.height,
                 1,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
+                dst_img_usage,
             )?;
             let dst_image = dst_gpu_img.image;
 
@@ -538,84 +575,123 @@ impl VulkanRasterResizer {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::TOP_OF_PIPE, qp, 0);
             }
 
-            // Transition src_image UNDEFINED -> TRANSFER_DST_OPTIMAL
-            let barrier_src_upload = vk::ImageMemoryBarrier {
-                old_layout: vk::ImageLayout::UNDEFINED,
-                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                src_access_mask: vk::AccessFlags::empty(),
-                dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                image: src_image,
-                subresource_range,
-                ..Default::default()
-            };
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier_src_upload],
-            );
+            let mut transient_pools = Vec::new();
 
-            // Copy src staging to src_image
-            let buffer_image_copy = vk::BufferImageCopy {
-                buffer_offset: 0,
-                buffer_row_length: 0,
-                buffer_image_height: 0,
-                image_subresource: vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-                image_extent: vk::Extent3D {
-                    width: src.width,
-                    height: src.height,
-                    depth: 1,
-                },
-            };
-            device.cmd_copy_buffer_to_image(
-                cmd_buf,
-                src_staging_buf,
-                src_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[buffer_image_copy],
-            );
+            if use_gpu_rgb_unpack {
+                let rgb_comp = self.rgb_compute.as_ref().unwrap();
+                let pool = rgb_comp.cmd_unpack_rgb888(
+                    cmd_buf,
+                    src_staging_buf,
+                    src_size,
+                    src_image,
+                    src_view,
+                    src.width,
+                    src.height,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    vk::AccessFlags::SHADER_READ,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                )?;
+                transient_pools.push(pool);
 
-            // Transition src_image TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
-            let barrier_src_sample = vk::ImageMemoryBarrier {
-                old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                dst_access_mask: vk::AccessFlags::SHADER_READ,
-                image: src_image,
-                subresource_range,
-                ..Default::default()
-            };
+                // Transition dst_image UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
+                let barrier_dst_render = vk::ImageMemoryBarrier {
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    src_access_mask: vk::AccessFlags::empty(),
+                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    image: dst_image,
+                    subresource_range,
+                    ..Default::default()
+                };
+                device.cmd_pipeline_barrier(
+                    cmd_buf,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier_dst_render],
+                );
+            } else {
+                // Transition src_image UNDEFINED -> TRANSFER_DST_OPTIMAL
+                let barrier_src_upload = vk::ImageMemoryBarrier {
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    src_access_mask: vk::AccessFlags::empty(),
+                    dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                    image: src_image,
+                    subresource_range,
+                    ..Default::default()
+                };
+                device.cmd_pipeline_barrier(
+                    cmd_buf,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier_src_upload],
+                );
 
-            // Transition dst_image UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
-            let barrier_dst_render = vk::ImageMemoryBarrier {
-                old_layout: vk::ImageLayout::UNDEFINED,
-                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                src_access_mask: vk::AccessFlags::empty(),
-                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                image: dst_image,
-                subresource_range,
-                ..Default::default()
-            };
+                // Copy src staging to src_image
+                let buffer_image_copy = vk::BufferImageCopy {
+                    buffer_offset: 0,
+                    buffer_row_length: 0,
+                    buffer_image_height: 0,
+                    image_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+                    image_extent: vk::Extent3D {
+                        width: src.width,
+                        height: src.height,
+                        depth: 1,
+                    },
+                };
+                device.cmd_copy_buffer_to_image(
+                    cmd_buf,
+                    src_staging_buf,
+                    src_image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[buffer_image_copy],
+                );
 
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER
-                    | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier_src_sample, barrier_dst_render],
-            );
+                // Transition src_image TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+                let barrier_src_sample = vk::ImageMemoryBarrier {
+                    old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    image: src_image,
+                    subresource_range,
+                    ..Default::default()
+                };
+
+                // Transition dst_image UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
+                let barrier_dst_render = vk::ImageMemoryBarrier {
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    src_access_mask: vk::AccessFlags::empty(),
+                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    image: dst_image,
+                    subresource_range,
+                    ..Default::default()
+                };
+
+                device.cmd_pipeline_barrier(
+                    cmd_buf,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER
+                        | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier_src_sample, barrier_dst_render],
+                );
+            }
 
             if let Some(qp) = query_pool {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::TOP_OF_PIPE, qp, 1);
@@ -672,51 +748,69 @@ impl VulkanRasterResizer {
                 );
             }
 
-            // Transition dst_image COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL for readback
-            let barrier_dst_readback = vk::ImageMemoryBarrier {
-                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                dst_access_mask: vk::AccessFlags::TRANSFER_READ,
-                image: dst_image,
-                subresource_range,
-                ..Default::default()
-            };
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier_dst_readback],
-            );
+            // Readback / Repack
+            if use_gpu_rgb_repack {
+                let rgb_comp = self.rgb_compute.as_ref().unwrap();
+                let pool = rgb_comp.cmd_repack_rgb888(
+                    cmd_buf,
+                    dst_image,
+                    dst_view,
+                    dst_staging_buf,
+                    dst_size,
+                    dst.width,
+                    dst.height,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                )?;
+                transient_pools.push(pool);
+            } else {
+                // Transition dst_image COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL for readback
+                let barrier_dst_readback = vk::ImageMemoryBarrier {
+                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    dst_access_mask: vk::AccessFlags::TRANSFER_READ,
+                    image: dst_image,
+                    subresource_range,
+                    ..Default::default()
+                };
+                device.cmd_pipeline_barrier(
+                    cmd_buf,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier_dst_readback],
+                );
 
-            // Copy dst_image to dst staging buffer
-            let dst_buffer_image_copy = vk::BufferImageCopy {
-                buffer_offset: 0,
-                buffer_row_length: 0,
-                buffer_image_height: 0,
-                image_subresource: vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-                image_extent: vk::Extent3D {
-                    width: dst.width,
-                    height: dst.height,
-                    depth: 1,
-                },
-            };
-            device.cmd_copy_image_to_buffer(
-                cmd_buf,
-                dst_image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                dst_staging_buf,
-                &[dst_buffer_image_copy],
-            );
+                // Copy dst_image to dst staging buffer
+                let dst_buffer_image_copy = vk::BufferImageCopy {
+                    buffer_offset: 0,
+                    buffer_row_length: 0,
+                    buffer_image_height: 0,
+                    image_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+                    image_extent: vk::Extent3D {
+                        width: dst.width,
+                        height: dst.height,
+                        depth: 1,
+                    },
+                };
+                device.cmd_copy_image_to_buffer(
+                    cmd_buf,
+                    dst_image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    dst_staging_buf,
+                    &[dst_buffer_image_copy],
+                );
+            }
 
             if let Some(qp) = query_pool {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::BOTTOM_OF_PIPE, qp, 3);
@@ -748,6 +842,11 @@ impl VulkanRasterResizer {
             let driver_sync_ms = t_sync_start
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
+
+            // Destroy descriptor pools from compute passes
+            for pool in transient_pools {
+                device.destroy_descriptor_pool(pool, None);
+            }
 
             let mut gpu_upload_ms = 0.0;
             let mut gpu_pure_blit_ms = 0.0;
@@ -784,15 +883,13 @@ impl VulkanRasterResizer {
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to map dst staging memory: {e}"))
                 })? as *const u8;
-            if dst_is_rgb {
+            if dst_is_rgb && !use_gpu_rgb_repack {
                 let num_pixels = (dst.width * dst.height) as usize;
-                for p in 0..num_pixels {
-                    let s_idx = p * 4;
-                    let d_idx = p * 3;
-                    dst.data[d_idx] = *out_ptr.add(s_idx);
-                    dst.data[d_idx + 1] = *out_ptr.add(s_idx + 1);
-                    dst.data[d_idx + 2] = *out_ptr.add(s_idx + 2);
-                }
+                crate::backend::vulkan::util::cpu_repack_rgb888(
+                    out_ptr,
+                    dst.data,
+                    num_pixels,
+                );
             } else {
                 std::ptr::copy_nonoverlapping(out_ptr, dst.data.as_mut_ptr(), dst.data.len());
             }

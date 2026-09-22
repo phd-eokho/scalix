@@ -335,3 +335,65 @@ impl Drop for QueryPoolGuard {
         }
     }
 }
+
+/// Fast host CPU fallback unpack from packed RGB888 (3 bytes/px) to RGBA8888 (4 bytes/px, alpha=255).
+/// Reads a 4-byte 32-bit word for each pixel (unaligned load) and masks out the next pixel's red byte
+/// with alpha 255 (`(w & 0x00FF_FFFF) | 0xFF00_0000`).
+/// Destination pointer `dst` MUST be at least 4-byte aligned (64-byte alignment enforced by Engine).
+#[inline]
+pub fn cpu_unpack_rgb888(src: &[u8], dst: *mut u8, num_pixels: usize) {
+    debug_assert_eq!(
+        dst as usize % 4,
+        0,
+        "Destination buffer pointer must be at least 4-byte aligned"
+    );
+
+    let src_ptr = src.as_ptr();
+    let dst_ptr = dst as *mut u32;
+
+    unsafe {
+        for p in 0..num_pixels {
+            let s_p = src_ptr.add(p * 3);
+            let w = (s_p as *const u32).read_unaligned();
+            let px = (w & 0x00FF_FFFF) | 0xFF00_0000;
+            dst_ptr.add(p).write(px);
+        }
+    }
+}
+
+/// Fast host CPU fallback repack from RGBA8888 (4 bytes/px) to packed RGB888 (3 bytes/px).
+/// Directly writes the 4-byte 32-bit word from aligned `src` into `dst` for each in-order pixel
+/// (the 4th alpha byte is cleanly overwritten by the next pixel's red byte), writing 3 bytes
+/// for the final pixel.
+/// Source pointer `src` MUST be at least 4-byte aligned (64-byte alignment enforced by Engine).
+#[inline]
+pub fn cpu_repack_rgb888(src: *const u8, dst: &mut [u8], num_pixels: usize) {
+    if num_pixels == 0 {
+        return;
+    }
+
+    debug_assert_eq!(
+        src as usize % 4,
+        0,
+        "Source buffer pointer must be at least 4-byte aligned"
+    );
+
+    let src_ptr = src as *const u32;
+    let dst_ptr = dst.as_mut_ptr();
+
+    unsafe {
+        let bulk_pixels = num_pixels - 1;
+        for p in 0..bulk_pixels {
+            let px = *src_ptr.add(p);
+            (dst_ptr.add(p * 3) as *mut u32).write_unaligned(px);
+        }
+
+        // Final pixel: write 3 bytes without overflowing dst buffer
+        let last_p = num_pixels - 1;
+        let px = *src_ptr.add(last_p);
+        let d_p = dst_ptr.add(last_p * 3);
+        *d_p = (px & 0xFF) as u8;
+        *d_p.add(1) = ((px >> 8) & 0xFF) as u8;
+        *d_p.add(2) = ((px >> 16) & 0xFF) as u8;
+    }
+}

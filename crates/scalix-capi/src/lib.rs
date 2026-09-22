@@ -30,6 +30,7 @@ pub const SCALIX_ERR_DMA_UNAVAILABLE: i32 = -8;
 pub const SCALIX_ERR_DMA_ALLOCATION_FAILED: i32 = -9;
 pub const SCALIX_ERR_DMA_MAP_FAILED: i32 = -10;
 pub const SCALIX_ERR_DMA_SYNC_FAILED: i32 = -11;
+pub const SCALIX_ERR_UNALIGNED_POINTER: i32 = -12;
 pub const SCALIX_ERR_FAILED: i32 = -99;
 
 fn map_error_to_code(err: ScalixError) -> i32 {
@@ -45,6 +46,7 @@ fn map_error_to_code(err: ScalixError) -> i32 {
         ScalixError::DmaAllocationFailed(_) => SCALIX_ERR_DMA_ALLOCATION_FAILED,
         ScalixError::DmaMapFailed(_) => SCALIX_ERR_DMA_MAP_FAILED,
         ScalixError::DmaSyncFailed(_) => SCALIX_ERR_DMA_SYNC_FAILED,
+        ScalixError::UnalignedPointer { .. } => SCALIX_ERR_UNALIGNED_POINTER,
         _ => SCALIX_ERR_FAILED,
     }
 }

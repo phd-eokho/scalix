@@ -22,7 +22,10 @@ extern "C" {
 #define SCALIX_ERR_DMA_ALLOCATION_FAILED -9
 #define SCALIX_ERR_DMA_MAP_FAILED      -10
 #define SCALIX_ERR_DMA_SYNC_FAILED     -11
+#define SCALIX_ERR_UNALIGNED_POINTER   -12
 #define SCALIX_ERR_FAILED             -99
+
+#define SCALIX_REQUIRED_ALIGNMENT_BYTES 64
 
 /* Opaque Handle Types */
 typedef struct ScalixEngine ScalixEngine;
@@ -99,38 +102,38 @@ typedef struct ScalixImageDesc {
 /* Completion Callback Signature */
 typedef void (*ScalixCompletionCallback)(int status_code, void* user_data);
 
-/**
- * @brief Creates a new Scalix Engine instance with default PID thread naming (`<pid>/scx-*`).
+/*
+ * Creates a new Scalix Engine instance with default PID thread naming (<pid>/scx-*).
  * 
- * @param backend Hardware accelerator backend type to initialize.
- * @return ScalixEngine* Pointer to created engine handle, or NULL on failure.
+ * backend: Hardware accelerator backend type to initialize.
+ * Returns: ScalixEngine* Pointer to created engine handle, or NULL on failure.
  */
 ScalixEngine* scalix_engine_create(ScalixBackendType backend);
 
-/**
- * @brief Creates a new Scalix Engine instance with a custom thread naming prefix.
+/*
+ * Creates a new Scalix Engine instance with a custom thread naming prefix.
  * 
- * Internal threads are named `<prefix>/scx-hw` (hardware executor) and
- * `<prefix>/scx-w<id>` (callback/worker pool).
+ * Internal threads are named <prefix>/scx-hw (hardware executor) and
+ * <prefix>/scx-w<id> (callback/worker pool).
  * 
- * @param backend Hardware accelerator backend type to initialize.
- * @param thread_prefix Custom prefix string for naming internal engine threads.
- *                      Pass NULL or empty string to default to process ID (`<pid>`).
- * @note Maximum effective length of @p thread_prefix is 7 characters.
- * @warning Prefixes exceeding 7 characters will be automatically truncated to 7 characters
+ * backend: Hardware accelerator backend type to initialize.
+ * thread_prefix: Custom prefix string for naming internal engine threads.
+ *                Pass NULL or empty string to default to process ID (<pid>).
+ * Note: Maximum effective length of thread_prefix is 7 characters.
+ * Warning: Prefixes exceeding 7 characters will be automatically truncated to 7 characters
  *          with a runtime warning log to strictly adhere to the Linux 15-character thread
- *          name (`comm`) limit.
- * @return ScalixEngine* Pointer to created engine handle, or NULL on failure.
+ *          name (comm) limit.
+ * Returns: ScalixEngine* Pointer to created engine handle, or NULL on failure.
  */
 ScalixEngine* scalix_engine_create_with_prefix(
     ScalixBackendType backend,
     const char* thread_prefix
 );
 
-/**
- * @brief Destroys a Scalix Engine instance and releases all associated worker threads.
+/*
+ * Destroys a Scalix Engine instance and releases all associated worker threads.
  * 
- * @param engine Pointer to engine handle to destroy.
+ * engine: Pointer to engine handle to destroy.
  */
 void scalix_engine_destroy(ScalixEngine* engine);
 
@@ -145,21 +148,21 @@ typedef struct ScalixProfileMetrics {
     double total_wall_ms;
 } ScalixProfileMetrics;
 
-/**
- * @brief Enables or disables zero-overhead profiling in the engine.
+/*
+ * Enables or disables zero-overhead profiling in the engine.
  * 
- * @param engine Pointer to engine handle.
- * @param enabled True to enable latency breakdowns and GPU hardware timestamps.
- * @return SCALIX_SUCCESS on success, error code otherwise.
+ * engine: Pointer to engine handle.
+ * enabled: True to enable latency breakdowns and GPU hardware timestamps.
+ * Returns: SCALIX_SUCCESS on success, error code otherwise.
  */
 int scalix_engine_set_profiling(ScalixEngine* engine, bool enabled);
 
-/**
- * @brief Retrieves the most recent profile metrics if profiling was enabled.
+/*
+ * Retrieves the most recent profile metrics if profiling was enabled.
  * 
- * @param engine Pointer to engine handle.
- * @param out_metrics Pointer to metrics structure to populate.
- * @return SCALIX_SUCCESS on success, error code otherwise.
+ * engine: Pointer to engine handle.
+ * out_metrics: Pointer to metrics structure to populate.
+ * Returns: SCALIX_SUCCESS on success, error code otherwise.
  */
 int scalix_engine_get_last_profile(
     const ScalixEngine* engine,
@@ -224,13 +227,13 @@ int scalix_resize_submit(
 );
 
 /* 4. Zero-Copy DMA Buffer Lifecycle & Synchronization */
-/**
- * @brief Allocates a hardware-backed DMA buffer (Linux DMA-Heap/DRM, Android AHardwareBuffer).
+/*
+ * Allocates a hardware-backed DMA buffer (Linux DMA-Heap/DRM, Android AHardwareBuffer).
  * 
- * @param width Image buffer width in pixels.
- * @param height Image buffer height in pixels.
- * @param format Pixel format of the buffer.
- * @return ScalixDmaBuffer* Pointer to created DMA buffer handle, or NULL on failure.
+ * width: Image buffer width in pixels.
+ * height: Image buffer height in pixels.
+ * format: Pixel format of the buffer.
+ * Returns: ScalixDmaBuffer* Pointer to created DMA buffer handle, or NULL on failure.
  */
 ScalixDmaBuffer* scalix_dma_buffer_allocate(
     uint32_t width,
@@ -238,54 +241,44 @@ ScalixDmaBuffer* scalix_dma_buffer_allocate(
     ScalixPixelFormat format
 );
 
-/**
- * @brief Releases a DMA buffer and unmaps its virtual memory.
+/*
+ * Releases a DMA buffer and unmaps its virtual memory.
  * 
- * @param buffer Pointer to DMA buffer handle to release.
+ * buffer: Pointer to DMA buffer handle to release.
  */
 void scalix_dma_buffer_free(ScalixDmaBuffer* buffer);
 
-/**
- * @brief Returns the underlying Linux DMA-BUF file descriptor (or -1 if not applicable).
- */
+/* Returns the underlying Linux DMA-BUF file descriptor (or -1 if not applicable). */
 int scalix_dma_buffer_get_fd(const ScalixDmaBuffer* buffer);
 
-/**
- * @brief Returns the memory-mapped CPU virtual address pointer.
- */
+/* Returns the memory-mapped CPU virtual address pointer. */
 uint8_t* scalix_dma_buffer_get_host_ptr(const ScalixDmaBuffer* buffer);
 
-/**
- * @brief Returns the total allocated byte size of the DMA buffer.
- */
+/* Returns the total allocated byte size of the DMA buffer. */
 size_t scalix_dma_buffer_get_size(const ScalixDmaBuffer* buffer);
 
-/**
- * @brief Returns the row pitch/stride in bytes.
- */
+/* Returns the row pitch/stride in bytes. */
 size_t scalix_dma_buffer_get_stride(const ScalixDmaBuffer* buffer);
 
-/**
- * @brief Populates a ScalixImageDesc referencing this DMA buffer.
- */
+/* Populates a ScalixImageDesc referencing this DMA buffer. */
 int scalix_dma_buffer_get_desc(
     const ScalixDmaBuffer* buffer,
     ScalixImageDesc* out_desc
 );
 
-/**
- * @brief Prepares DMA buffer for CPU read/write access (cache invalidation/clean).
+/*
+ * Prepares DMA buffer for CPU read/write access (cache invalidation/clean).
  * 
- * @param buffer DMA buffer handle.
- * @param is_write True if CPU will write to buffer, False for read-only.
+ * buffer: DMA buffer handle.
+ * is_write: True if CPU will write to buffer, False for read-only.
  */
 int scalix_dma_buffer_sync_start(const ScalixDmaBuffer* buffer, bool is_write);
 
-/**
- * @brief Concludes CPU read/write access to flush caches for hardware accelerators.
+/*
+ * Concludes CPU read/write access to flush caches for hardware accelerators.
  * 
- * @param buffer DMA buffer handle.
- * @param is_write True if CPU wrote to buffer, False for read-only.
+ * buffer: DMA buffer handle.
+ * is_write: True if CPU wrote to buffer, False for read-only.
  */
 int scalix_dma_buffer_sync_end(const ScalixDmaBuffer* buffer, bool is_write);
 
