@@ -695,11 +695,7 @@ impl VulkanLodDownscaler {
 
             if dst_is_rgb && !use_gpu_rgb_repack {
                 let pixel_count = (dst.width * dst.height) as usize;
-                crate::backend::vulkan::util::cpu_repack_rgb888(
-                    mapped_dst,
-                    dst.data,
-                    pixel_count,
-                );
+                crate::backend::vulkan::util::cpu_repack_rgb888(mapped_dst, dst.data, pixel_count);
             } else {
                 std::ptr::copy_nonoverlapping(mapped_dst, dst.data.as_mut_ptr(), dst.data.len());
             }

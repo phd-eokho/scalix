@@ -716,9 +716,21 @@ fn test_cpu_rgb888_unpack_and_repack_4byte_masked() {
         let rgb_slice = original_rgb.as_slice();
         // Verify unpacked RGBA channels
         for p in 0..num_pixels {
-            assert_eq!(rgba_slice[p * 4], rgb_slice[p * 3], "R mismatch at pixel {p}");
-            assert_eq!(rgba_slice[p * 4 + 1], rgb_slice[p * 3 + 1], "G mismatch at pixel {p}");
-            assert_eq!(rgba_slice[p * 4 + 2], rgb_slice[p * 3 + 2], "B mismatch at pixel {p}");
+            assert_eq!(
+                rgba_slice[p * 4],
+                rgb_slice[p * 3],
+                "R mismatch at pixel {p}"
+            );
+            assert_eq!(
+                rgba_slice[p * 4 + 1],
+                rgb_slice[p * 3 + 1],
+                "G mismatch at pixel {p}"
+            );
+            assert_eq!(
+                rgba_slice[p * 4 + 2],
+                rgb_slice[p * 3 + 2],
+                "B mismatch at pixel {p}"
+            );
             assert_eq!(rgba_slice[p * 4 + 3], 255, "Alpha mismatch at pixel {p}");
         }
 

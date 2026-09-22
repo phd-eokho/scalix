@@ -885,11 +885,7 @@ impl VulkanRasterResizer {
                 })? as *const u8;
             if dst_is_rgb && !use_gpu_rgb_repack {
                 let num_pixels = (dst.width * dst.height) as usize;
-                crate::backend::vulkan::util::cpu_repack_rgb888(
-                    out_ptr,
-                    dst.data,
-                    num_pixels,
-                );
+                crate::backend::vulkan::util::cpu_repack_rgb888(out_ptr, dst.data, num_pixels);
             } else {
                 std::ptr::copy_nonoverlapping(out_ptr, dst.data.as_mut_ptr(), dst.data.len());
             }
