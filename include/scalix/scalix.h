@@ -198,13 +198,32 @@ ScalixTask* scalix_resize_async(
     const ScalixImageDesc* dst,
     ScalixFilterMode filter
 );
+/*
+ * Checks whether an asynchronous task has completed without blocking.
+ * Returns true if completed, false otherwise.
+ */
 bool scalix_task_is_ready(const ScalixTask* task);
+
+/*
+ * Waits for an asynchronous task to complete.
+ *
+ * task: Task handle returned by scalix_resize_async*.
+ * timeout_ms: Timeout in milliseconds (0 or UINT32_MAX = wait indefinitely, >0 = timeout limit).
+ * out_dst_ptr: Optional buffer to copy destination image pixels into upon completion (can be NULL).
+ * out_dst_len: Length of out_dst_ptr buffer in bytes.
+ * Returns: SCALIX_SUCCESS on success, SCALIX_ERR_TIMEOUT on timeout, or negative error code.
+ */
 int scalix_task_wait(
     ScalixTask* task,
     uint32_t timeout_ms,
     uint8_t* out_dst_ptr,
     size_t out_dst_len
 );
+
+/*
+ * Releases and deallocates an asynchronous task handle.
+ * Must be called to prevent memory leaks after task wait or when abandoning a task.
+ */
 void scalix_task_release(ScalixTask* task);
 
 /* 3. Callback-driven Execution */

@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <cstring>
+#include <string_view>
 #include <scalix/scalix.hpp>
 
 #if __has_include(<opencv2/opencv.hpp>)
@@ -46,7 +47,7 @@ struct BenchmarkMetrics final {
 
 static BenchmarkMetrics run_resolution_benchmark(
     scalix::Engine& engine,
-    const string& name,
+    string_view name,
     uint32_t src_w,
     uint32_t src_h,
     uint32_t dst_w,
@@ -143,7 +144,7 @@ static BenchmarkMetrics run_resolution_benchmark(
     cout << "  → Efficiency Gain / Speedup: " << speedup << "x" << endl;
 
     return BenchmarkMetrics{
-        .name = name,
+        .name = string(name),
         .src_w = src_w,
         .src_h = src_h,
         .dst_w = dst_w,
@@ -161,7 +162,7 @@ static BenchmarkMetrics run_resolution_benchmark(
 
 static optional<BenchmarkMetrics> run_dma_resolution_benchmark(
     scalix::Engine& engine,
-    const string& name,
+    string_view name,
     uint32_t src_w,
     uint32_t src_h,
     uint32_t dst_w,
@@ -238,7 +239,7 @@ static optional<BenchmarkMetrics> run_dma_resolution_benchmark(
     cout << "  → Efficiency Gain / Speedup: " << speedup << "x" << endl;
 
     return BenchmarkMetrics{
-        .name = name + " [Zero-Copy DMA]",
+        .name = string(name) + " [Zero-Copy DMA]",
         .src_w = src_w,
         .src_h = src_h,
         .dst_w = dst_w,

@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <cstdio>
 #include <csetjmp>
 #include <memory>
@@ -29,8 +30,8 @@ struct JpegHeader final {
     int channels{0};
 };
 
-static bool read_jpeg_dimensions(const string& filename, JpegHeader& out_header) {
-    FILE* infile = fopen(filename.c_str(), "rb");
+static bool read_jpeg_dimensions(string_view filename, JpegHeader& out_header) {
+    FILE* infile = fopen(string(filename).c_str(), "rb");
     if (!infile) {
         cerr << "Failed to open input file: " << filename << endl;
         return false;
@@ -62,14 +63,14 @@ static bool read_jpeg_dimensions(const string& filename, JpegHeader& out_header)
 }
 
 static bool read_jpeg_direct(
-    const string& filename,
+    string_view filename,
     uint8_t* dst_host_ptr,
     uint32_t width,
     uint32_t height,
     size_t stride
 ) {
     (void)width;
-    FILE* infile = fopen(filename.c_str(), "rb");
+    FILE* infile = fopen(string(filename).c_str(), "rb");
     if (!infile) {
         cerr << "Failed to open input file: " << filename << endl;
         return false;
@@ -106,14 +107,14 @@ static bool read_jpeg_direct(
 }
 
 static bool write_jpeg_direct(
-    const string& filename,
+    string_view filename,
     uint32_t width,
     uint32_t height,
     const uint8_t* pixels,
     size_t stride,
     int quality = 90
 ) {
-    FILE* outfile = fopen(filename.c_str(), "wb");
+    FILE* outfile = fopen(string(filename).c_str(), "wb");
     if (!outfile) {
         cerr << "Failed to open output file: " << filename << endl;
         return false;

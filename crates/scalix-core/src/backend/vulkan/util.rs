@@ -13,6 +13,7 @@ pub struct GpuBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub size: vk::DeviceSize,
+    pub usage: vk::BufferUsageFlags,
     ctx: Arc<VulkanContext>,
 }
 
@@ -23,11 +24,13 @@ impl GpuBuffer {
         buffer: vk::Buffer,
         memory: vk::DeviceMemory,
         size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
     ) -> Self {
         Self {
             buffer,
             memory,
             size,
+            usage,
             ctx,
         }
     }
@@ -94,6 +97,7 @@ impl GpuBuffer {
             buffer,
             memory,
             size,
+            usage,
             ctx: Arc::clone(ctx),
         })
     }
@@ -342,6 +346,10 @@ impl Drop for QueryPoolGuard {
 /// Destination pointer `dst` MUST be at least 4-byte aligned (64-byte alignment enforced by Engine).
 #[inline]
 pub fn cpu_unpack_rgb888(src: &[u8], dst: *mut u8, num_pixels: usize) {
+    if num_pixels == 0 {
+        return;
+    }
+
     debug_assert_eq!(
         dst as usize % 4,
         0,
@@ -352,12 +360,22 @@ pub fn cpu_unpack_rgb888(src: &[u8], dst: *mut u8, num_pixels: usize) {
     let dst_ptr = dst as *mut u32;
 
     unsafe {
-        for p in 0..num_pixels {
+        let bulk_pixels = num_pixels - 1;
+        for p in 0..bulk_pixels {
             let s_p = src_ptr.add(p * 3);
             let w = (s_p as *const u32).read_unaligned();
             let px = (w & 0x00FF_FFFF) | 0xFF00_0000;
             dst_ptr.add(p).write(px);
         }
+
+        // Final pixel: read 3 bytes explicitly without reading past src buffer
+        let last_p = num_pixels - 1;
+        let s_last = src_ptr.add(last_p * 3);
+        let r = *s_last as u32;
+        let g = (*s_last.add(1) as u32) << 8;
+        let b = (*s_last.add(2) as u32) << 16;
+        let px = r | g | b | 0xFF00_0000;
+        dst_ptr.add(last_p).write(px);
     }
 }
 

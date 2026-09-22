@@ -528,7 +528,7 @@ pub unsafe extern "C" fn scalix_task_wait(
         }
 
         let task_ref = &mut *task;
-        let timeout = if timeout_ms == 0 {
+        let timeout = if timeout_ms == 0 || timeout_ms == u32::MAX {
             None
         } else {
             Some(Duration::from_millis(timeout_ms as u64))

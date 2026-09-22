@@ -8,12 +8,14 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
 namespace scalix {
 
 /// Custom allocator ensuring 64-byte alignment for cache lines, SIMD, and GPU zero-copy DMA compatibility.
+/// Note: Must not be marked final to allow std::vector Empty Base Optimization (EBO) inheritance.
 template <typename T>
 struct AlignedAllocator {
     using value_type = T;
@@ -257,6 +259,20 @@ public:
         other.buf_ = nullptr;
     }
 
+    ScopedDmaSync& operator=(ScopedDmaSync&& other) noexcept {
+        if (this != &other) {
+            if (buf_) {
+                try {
+                    buf_->sync_end(is_write_);
+                } catch (...) {}
+            }
+            buf_ = other.buf_;
+            is_write_ = other.is_write_;
+            other.buf_ = nullptr;
+        }
+        return *this;
+    }
+
 private:
     DmaBuffer* buf_{nullptr};
     bool is_write_{true};
@@ -298,19 +314,30 @@ public:
     }
 
     /// @brief Waits for the asynchronous task to complete.
-    /// @param timeout_ms Timeout duration in milliseconds (0 = non-blocking poll, UINT64_MAX = infinite).
+    /// @param timeout_ms Timeout duration in milliseconds (0 = wait until completed / infinite, >0 = timeout limit).
     /// @param out_dst_ptr Optional pointer to copy destination image data into upon completion.
     /// @param out_dst_len Length of out_dst_ptr buffer in bytes.
     void wait(uint32_t timeout_ms = 0, uint8_t* out_dst_ptr = nullptr, size_t out_dst_len = 0) {
         if (!task_) {
             throw std::runtime_error("Task handle is null or already consumed");
         }
-        ScalixTask* t = task_;
-        task_ = nullptr; // scalix_task_wait consumes the task
-        int status = scalix_task_wait(t, timeout_ms, out_dst_ptr, out_dst_len);
+        int status = scalix_task_wait(task_, timeout_ms, out_dst_ptr, out_dst_len);
         if (status != SCALIX_SUCCESS) {
             throw std::runtime_error("Scalix task wait failed with status code: " + std::to_string(status));
         }
+    }
+
+    /// @brief Waits for the asynchronous task to complete and copies output to destination span.
+    /// @param timeout_ms Timeout duration in milliseconds.
+    /// @param out_dst Destination memory span.
+    void wait(uint32_t timeout_ms, std::span<uint8_t> out_dst) {
+        wait(timeout_ms, out_dst.data(), out_dst.size());
+    }
+
+    /// @brief Waits indefinitely for the asynchronous task to complete and copies output to destination span.
+    /// @param out_dst Destination memory span.
+    void wait(std::span<uint8_t> out_dst) {
+        wait(0, out_dst.data(), out_dst.size());
     }
 
 private:
@@ -493,7 +520,8 @@ public:
         const ResizeOptions& options,
         std::function<void(int status)> callback
     ) {
-        auto* cb_ptr = new std::function<void(int status)>(std::move(callback));
+        auto cb_holder = std::make_unique<std::function<void(int status)>>(std::move(callback));
+        auto* cb_ptr = cb_holder.get();
         auto c_src = src.to_c();
         auto c_dst = dst.to_c();
         auto c_opt = options.to_c();
@@ -504,19 +532,20 @@ public:
             &c_dst,
             &c_opt,
             [](int code, void* user_data) {
-                auto* cb = static_cast<std::function<void(int status)>*>(user_data);
-                if (cb) {
+                std::unique_ptr<std::function<void(int status)>> cb(
+                    static_cast<std::function<void(int status)>*>(user_data)
+                );
+                if (cb && *cb) {
                     (*cb)(code);
-                    delete cb;
                 }
             },
             cb_ptr
         );
 
         if (status != SCALIX_SUCCESS) {
-            delete cb_ptr;
             throw std::runtime_error("Scalix resize_submit failed with status code: " + std::to_string(status));
         }
+        cb_holder.release();
     }
 
     /// @brief Submits a callback-driven asynchronous image resize task with filter.

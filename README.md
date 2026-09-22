@@ -15,11 +15,13 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
   * **Hardware Blit (`Blit`):** Fixed-function 2D blitting for maximum raw throughput and zero shader overhead.
   * **Offscreen Raster Graphics (`Raster`):** Complete graphics pipeline with vertex/fragment shaders and hardware bilinear/trilinear samplers.
   * **Hierarchical LoD Pyramid (`LodPyramid`):** Multi-pass 2×2 box filtering downscaler with configurable `max_mip_levels` to eliminate aliasing and moiré artifacts during extreme downscaling (>4×).
+* **GPU Compute Shader Acceleration:** Native compute pipeline (`VulkanRgbCompute`) for GPU-side packed RGB888 unpack and repack passes, eliminating CPU host memory bottlenecks.
+* **Ring-Buffered Staging Allocator:** Triple-buffered staging ring (`VulkanStagingRing`, 3 slots) with per-slot `VkFence` synchronization and automatic memory retention with hysteresis shrinking (<50% threshold) for seamless CPU/GPU pipelining.
 * **Flexible Execution Models:**
   * **Synchronous (Blocking):** Direct execution for CLI tools and deterministic pipelines.
-  * **Asynchronous (Future / Task):** Non-blocking polling and timeout waits with hardware timeline semaphores.
+  * **Asynchronous (Zero-Copy Task):** Non-blocking polling and timeout waits with zero-copy descriptor dispatch (`resize_async_raw`).
   * **Callback-Driven:** Event-driven frame completion callbacks for streaming, camera, and UI pipelines.
-* **In-Process Context Worker:** Embedded worker thread pool managing accelerator context affinity (single-threaded EGL / Vulkan queue ownership) and pipelining memory staging.
+* **Strict 64-Byte Memory Alignment:** 64-byte buffer alignment (`SCALIX_REQUIRED_ALIGNMENT_BYTES = 64`) across all descriptors, enabling optimal AVX-512 / ARM Neon SIMD vectorization and DMA-BUF hardware compatibility.
 * **Zero-Copy Memory Subsystem:** First-class support for Linux **DMA-BUF** and Android **AHardwareBuffer** across GPU, 2D hardware blitters, and V4L2.
 * **Multi-Language APIs:** Core engine with stable **C ABI** (`libscalix.so` / `scalix.h`), idiomatic **C++20** wrapper (`scalix.hpp`), and native **Rust** crate.
 * **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic, and hierarchical mipchain downscaling.
@@ -32,7 +34,7 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 #### Legend
 * `✔` **Verified & Tested:** Fully implemented and validated with automated test suite and benchmarks.
-* `◐` **In Progress / Scaffolded:** Core interface or backend under active implementation.
+* `◐` **Compiled / In Progress:** Cross-compiled or validated in CI, pending physical hardware runtime test.
 * `○` **Planned / Unverified:** Supported by architectural specification, pending implementation and test verification.
 * `—` **Deferred / N/A:** Planned for future milestone or not applicable for the target platform.
 
@@ -42,7 +44,7 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 | Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64 / armv7) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | ✔ Verified | ✔ Verified | ○ Supported |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (AMD / NVIDIA / Intel / Mesa Lavapipe) | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
 | **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | ○ Supported | ○ Supported | ○ Supported |
 | **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | ○ Mock / Loopback | ○ Hardware Req. | — |
 | **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | ○ Mock / CPU | ○ OpenVINO | ○ QNN / NNAPI |
@@ -54,7 +56,7 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 | Execution Mode | Description | Rust Core | C ABI | C++20 API |
 | :--- | :--- | :---: | :---: | :---: |
 | **Synchronous (`sync`)** | Blocking call until GPU completion or timeout | ✔ | ✔ | ✔ |
-| **Asynchronous (`async`)** | Returns `TaskHandle` / `std::future` / Rust `Future` | ✔ | ✔ | ✔ |
+| **Asynchronous (`async`)** | Zero-copy `TaskHandle` / `std::future` with staging ring overlap | ✔ | ✔ | ✔ |
 | **Callback (`callback`)** | Dispatches completion function on worker thread pool | ✔ | ✔ | ✔ |
 
 ---
@@ -63,10 +65,15 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 | Feature | Interface / Handle | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64 / armv7, API 26+) |
 | :--- | :--- | :---: | :---: | :---: |
-| **Host Memory Pointers** | Standard contiguous CPU memory buffer (RGB/RGBA) | ✔ Verified | ✔ Verified | ○ Supported |
-| **Staging Ring Pool** | Pinned / mapped host-to-device buffer pool | ✔ Verified | ✔ Verified | ○ Supported |
+| **64-Byte Aligned Host Memory** | Contiguous 64-byte aligned CPU memory (RGB/RGBA) | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
+| **Triple-Buffered Staging Ring** | 3-slot pinned / mapped staging buffer ring with hysteresis | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
 | **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | ○ Supported | ◐ Fallback (Unverified) | — |
-| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | — | — | ○ Supported |
+| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | — | — | ◐ Compiled (Unverified) |
+
+> [!NOTE] Current Verification & Target Platform Status
+> - **Linux (x86_64):** Verified on NVIDIA GPU (via Vulkan driver) and automated CI pipeline with Mesa Lavapipe Vulkan software rasterizer.
+> - **WSL2 (Windows Subsystem for Linux 2):** Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Direct Linux `dma-buf` is unverified and automatically falls back to 64-byte aligned host staging memory.
+> - **Android (aarch64 / armv7):** Android NDK cross-compilation (`cargo-ndk`) and dynamic library generation are validated in CI. However, runtime GPU execution, Vulkan drivers, and `AHardwareBuffer` zero-copy DMA sharing are **not yet verified** on physical Android hardware or emulators.
 
 ---
 

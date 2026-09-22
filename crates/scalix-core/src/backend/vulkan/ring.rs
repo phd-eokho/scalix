@@ -34,7 +34,7 @@ impl StagingSlot {
         usage: vk::BufferUsageFlags,
     ) -> Result<&GpuBuffer> {
         let needs_realloc = match &self.src_staging {
-            Some(b) => b.size < min_size || min_size < b.size / 2,
+            Some(b) => b.size < min_size || min_size < b.size / 2 || !b.usage.contains(usage),
             None => true,
         };
 
@@ -62,7 +62,7 @@ impl StagingSlot {
         usage: vk::BufferUsageFlags,
     ) -> Result<&GpuBuffer> {
         let needs_realloc = match &self.dst_staging {
-            Some(b) => b.size < min_size || min_size < b.size / 2,
+            Some(b) => b.size < min_size || min_size < b.size / 2 || !b.usage.contains(usage),
             None => true,
         };
 

@@ -87,12 +87,11 @@ int main() {
         [&cb_done](int status) {
             cout << "  → Callback fired with status: " << status << endl;
             cb_done.store(true);
+            cb_done.notify_one();
         }
     );
 
-    while (!cb_done.load()) {
-        this_thread::sleep_for(chrono::milliseconds(5));
-    }
+    cb_done.wait(false);
 
     // 5. Test Zero-Copy DMA Buffer Pre-allocation
     cout << "4. Testing Zero-Copy DMA Buffer pre-allocation..." << endl;
