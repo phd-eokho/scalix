@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-**Scalix**는 최신 **Linux (x86_64)** 및 **Android (aarch64)** 플랫폼을 위해 설계된 고성능 하드웨어 가속 이미지 스케일링 및 리샘플링 엔진입니다.
+**Scalix**는 최신 **Linux (x86_64)** 및 **Android (aarch64 / armv7)** 플랫폼을 위해 설계된 고성능 하드웨어 가속 이미지 스케일링 및 리샘플링 엔진입니다.
 
 **Headless 및 Offscreen 전용** 아키텍처로 설계되어 디스플레이 서버 없이도 **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, **2D HW Engines (V4L2 M2M / DRM)** 전반에 걸쳐 통합된 인터페이스를 제공합니다. CPU Fallback 및 Host SIMD 연산은 OpenCV 등 서드파티 이미지 처리 라이브러리로 위임됩니다.
 
@@ -14,7 +14,7 @@
 * **Vulkan Offscreen 렌더링 전략:**
   * **Hardware Blit (`Blit`):** Shader 오버헤드 없이 최대 처리량을 제공하는 고정 기능(Fixed-Function) 2D Blitter.
   * **Offscreen Raster Graphics (`Raster`):** Vertex/Fragment Shader 및 하드웨어 Bilinear/Trilinear Sampler를 사용하는 완전한 그래픽스 파이프라인.
-  * **Hierarchical LoD Pyramid (`LodPyramid`):** 극단적인 다운스케일($>4\times$) 환경에서 계단 현상(Aliasing)과 모아레(Moiré) 왜곡을 제거하기 위한 $2\times 2$ 박스 필터링 기반 Multi-Pass 다운스케일러 (조절 가능한 `max_mip_levels` 지원).
+  * **Hierarchical LoD Pyramid (`LodPyramid`):** 극단적인 다운스케일(>4×) 환경에서 계단 현상(Aliasing)과 모아레(Moiré) 왜곡을 제거하기 위한 2×2 박스 필터링 기반 Multi-Pass 다운스케일러 (조절 가능한 `max_mip_levels` 지원).
 * **유연한 실행 모델:**
   * **동기식 (Synchronous / Blocking):** CLI 도구 및 결정론적 파이프라인을 위한 직접 블로킹 실행.
   * **비동기식 (Asynchronous / Future / Task):** 하드웨어 Timeline Semaphore 기반의 Non-blocking 폴링 및 타임아웃 대기.
@@ -40,7 +40,7 @@
 
 ### 1. 하드웨어 백엔드 및 가속기
 
-| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64) |
+| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64 / armv7) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
 | **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`) | Modern GPU (AMD / NVIDIA / Intel / Mesa LLVMpipe) | ✔ Verified | ✔ Verified | ○ Supported |
 | **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | ○ Supported | ○ Supported | ○ Supported |
@@ -61,7 +61,7 @@
 
 ### 3. 메모리 및 Zero-Copy 서브시스템
 
-| 기능 | 인터페이스 / 핸들 | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64, API 26+) |
+| 기능 | 인터페이스 / 핸들 | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64 / armv7, API 26+) |
 | :--- | :--- | :---: | :---: | :---: |
 | **Host Memory Pointers** | 표준 연속형 CPU 메모리 버퍼 (RGB/RGBA) | ✔ Verified | ✔ Verified | ○ Supported |
 | **Staging Ring Pool** | Pinned / Mapped Host-to-Device 버퍼 풀 | ✔ Verified | ✔ Verified | ○ Supported |
@@ -151,9 +151,11 @@ scalix_engine_destroy(engine);
 * **Rust 툴체인:** `rustc` 및 `cargo` (1.70+ 권장)
 * **C/C++ 툴체인:** C++20을 지원하는 `g++` 또는 `clang++`
 * **이미지 코덱 라이브러리:** `libjpeg-dev` / `libjpeg-turbo8-dev` (JPEG I/O 예제용)
+* **벤치마크 및 비교 라이브러리:** `libopencv-dev` (OpenCV CPU/GPU 연산과 Scalix 하드웨어 파이프라인의 실행 시간 비교 벤치마크에 필요)
 * **GPU 백엔드 라이브러리:**
   * **Vulkan (P0):** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
   * **OpenGL / GLES (P1):** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
+* **Android 크로스 컴파일 (선택 사항):** Android NDK (r27+ 권장, API 레벨 26+) 및 `cargo-ndk`
 
 ### 1. Rust 코어 및 C ABI 라이브러리 빌드
 정적/동적 라이브러리(`libscalix.so` / `libscalix.a`)를 빌드합니다:
@@ -181,6 +183,9 @@ make -C examples
 # 전체 예제 실행 (libjpeg-turbo 기반 sample.jpg JPEG 처리 포함)
 make -C examples run
 
+# 다중 해상도 성능 벤치마크 실행
+make -C examples benchmark
+
 # 예제 빌드 산출물 정리
 make -C examples clean
 ```
@@ -188,7 +193,7 @@ make -C examples clean
 #### 개별 예제 안내:
 * **`cpp_basic`**: 동기식, 비동기 콜백 및 Zero-Copy DMA 버퍼 사전 할당 데모.
 * **`cpp_jpeg`**: `libjpeg-turbo`를 사용하여 [`assets/sample.jpg`](assets/sample.jpg)를 메모리 맵핑된 DMA 버퍼로 직접 디코딩하고, Scalix 파이프라인(`blit`, `raster`, `lod [max_mip_levels]`)을 실행한 후 결과 JPEG를 저장.
-* **`cpp_benchmark`**: 4K UHD, 1080p, 720p 입력을 $320\times 320$ 텐서로 다운스케일링하는 다중 해상도 마이크로 벤치마크.
+* **`cpp_benchmark`**: 4K UHD, 1080p, 720p 입력을 320×320 텐서로 다운스케일링하는 다중 해상도 마이크로 벤치마크.
 
 ---
 
@@ -207,9 +212,9 @@ Scalix는 지원되는 실행 환경 전반에서 통합된 Zero-Copy DMA 버퍼
 * **GPU 가속:** Microsoft DirectX 브리지 (`/dev/dxg`) 및 Mesa Vulkan/D3D12를 통해 오프스크린 렌더링을 완벽 지원.
 * **DMA 할당 동작 및 제약사항:** WSL2 환경에서는 Linux `dma-buf`가 **아직 검증되지 않았습니다**. 기본 WSL2 커널에는 `/dev/dma_heap`이 포함되어 있지 않으며, DRM GEM Dumb 버퍼 할당 역시 `/dev/dxg` 가상화 계층으로 인해 실패하거나 PRIME 하드웨어 내보내기가 지원되지 않는 한계가 있습니다. Scalix의 런타임 탐지 로직은 이러한 DMA 실패를 감지하여 연속형 Host 메모리 Staging 버퍼로 안전하게 자동 Fallback합니다. 실제 Zero-Copy DMA 검증은 네이티브 DRM 렌더 노드를 지원하는 Bare-Metal Linux 환경에서 진행되어야 합니다.
 
-### 3. Android (API Level 26+, `aarch64` 전용)
+### 3. Android (API Level 26+, `aarch64` / `armv7`)
 * **할당자(Allocator):** 네이티브 **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`).
-* **플랫폼 게이팅:** `aarch64-linux-android` (`-landroid`) 전용으로 컴파일됩니다. Android 전용 심볼은 Linux 빌드 시 절대 링크되거나 노출되지 않습니다.
+* **플랫폼 게이팅:** `aarch64-linux-android` 및 `armv7-linux-androideabi` (`-landroid`) 대상으로 컴파일되며 NDK r27+을 사용합니다. Android 전용 심볼은 Linux 빌드 시 절대 링크되거나 노출되지 않습니다.
 
 ---
 
