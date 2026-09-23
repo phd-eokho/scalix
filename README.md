@@ -30,7 +30,7 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
 
 ## Compatibility & Verification Matrix
 
-This matrix tracks the hardware backends, execution paradigms, and platform capabilities supported by Scalix, along with their active verification status.
+This matrix tracks the hardware backends, memory subsystems, and platform capabilities supported by Scalix, along with their active verification status.
 
 #### Legend
 * `✔` **Verified & Tested:** Fully implemented and validated with automated test suite and benchmarks.
@@ -51,17 +51,7 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 ---
 
-### 2. Execution Paradigms
-
-| Execution Mode | Description | Rust Core | C ABI | C++20 API |
-| :--- | :--- | :---: | :---: | :---: |
-| **Synchronous (`sync`)** | Blocking call until GPU completion or timeout | ✔ | ✔ | ✔ |
-| **Asynchronous (`async`)** | Zero-copy `TaskHandle` / `std::future` with staging ring overlap | ✔ | ✔ | ✔ |
-| **Callback (`callback`)** | Dispatches completion function on worker thread pool | ✔ | ✔ | ✔ |
-
----
-
-### 3. Memory & Zero-Copy Subsystems
+### 2. Memory & Zero-Copy Subsystems
 
 | Feature | Interface / Handle | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64 / armv7, API 26+) |
 | :--- | :--- | :---: | :---: | :---: |
@@ -78,7 +68,7 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 ---
 
-### 4. Pixel Format & Filter Strategy Matrix (Vulkan Backend)
+### 3. Pixel Format & Filter Strategy Matrix (Vulkan Backend)
 
 | Pixel Format (In / Out) | `Nearest` | `Bilinear` | `Bicubic` | `Lanczos3` | `Area` | `LodPyramid` (Downscale) | Default `Auto` Strategy |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |

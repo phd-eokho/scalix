@@ -40,6 +40,18 @@ pub const EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT: EGLint = 0x00000001;
 pub const EGL_OPENGL_API: u32 = 0x30A2;
 pub const EGL_OPENGL_ES_API: u32 = 0x30A0;
 
+pub const EGL_PLATFORM_SURFACELESS_MESA: u32 = 0x31DD;
+pub const EGL_PLATFORM_DEVICE_EXT: u32 = 0x313F;
+pub const EGL_PLATFORM_GBM_KHR: u32 = 0x31D7;
+pub const EGL_PLATFORM_GBM_MESA: u32 = 0x31D7;
+pub const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
+pub const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
+pub const EGL_PLATFORM_ANDROID_KHR: u32 = 0x3141;
+
+pub type EGLenum = u32;
+pub type EGLAttrib = isize;
+pub type EGLDeviceEXT = *mut c_void;
+
 // GL Constants
 pub const GL_TEXTURE_2D: u32 = 0x0DE1;
 pub const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
@@ -180,11 +192,19 @@ pub struct GlFunctions {
     pub glUnmapBuffer: Option<unsafe extern "C" fn(u32) -> u8>,
 }
 
+pub type EglMakeCurrentFn =
+    unsafe extern "C" fn(EGLDisplay, EGLSurface, EGLSurface, EGLContext) -> EGLBoolean;
+pub type EglDestroyContextFn = unsafe extern "C" fn(EGLDisplay, EGLContext) -> EGLBoolean;
+pub type EglTerminateFn = unsafe extern "C" fn(EGLDisplay) -> EGLBoolean;
+
 pub struct EglContext {
     egl_lib: *mut c_void,
     gl_lib: *mut c_void,
     display: EGLDisplay,
     context: EGLContext,
+    egl_make_current: EglMakeCurrentFn,
+    egl_destroy_context: Option<EglDestroyContextFn>,
+    egl_terminate: Option<EglTerminateFn>,
     pub gl: GlFunctions,
     pub is_compute_supported: bool,
     pub is_gles: bool,
@@ -201,17 +221,12 @@ pub struct EglContextGuard<'a> {
 impl<'a> Drop for EglContextGuard<'a> {
     fn drop(&mut self) {
         unsafe {
-            type EglMakeCurrentFn =
-                unsafe extern "C" fn(EGLDisplay, EGLSurface, EGLSurface, EGLContext) -> EGLBoolean;
-            if let Some(ptr) = self.ctx.get_proc_address("eglMakeCurrent") {
-                let egl_make_current: EglMakeCurrentFn = std::mem::transmute(ptr);
-                let _ = egl_make_current(
-                    self.ctx.display,
-                    EGL_NO_SURFACE,
-                    EGL_NO_SURFACE,
-                    EGL_NO_CONTEXT,
-                );
-            }
+            let _ = (self.ctx.egl_make_current)(
+                self.ctx.display,
+                EGL_NO_SURFACE,
+                EGL_NO_SURFACE,
+                EGL_NO_CONTEXT,
+            );
         }
     }
 }
@@ -282,6 +297,12 @@ impl EglContext {
             };
 
             type EglGetDisplayFn = unsafe extern "C" fn(EGLDisplay) -> EGLDisplay;
+            type EglGetPlatformDisplayFn =
+                unsafe extern "C" fn(EGLenum, *mut c_void, *const EGLAttrib) -> EGLDisplay;
+            type EglGetPlatformDisplayExtFn =
+                unsafe extern "C" fn(EGLenum, *mut c_void, *const EGLint) -> EGLDisplay;
+            type EglQueryDevicesExtFn =
+                unsafe extern "C" fn(EGLint, *mut EGLDeviceEXT, *mut EGLint) -> EGLBoolean;
             type EglInitializeFn =
                 unsafe extern "C" fn(EGLDisplay, *mut EGLint, *mut EGLint) -> EGLBoolean;
             type EglBindApiFn = unsafe extern "C" fn(u32) -> EGLBoolean;
@@ -301,31 +322,148 @@ impl EglContext {
             type EglMakeCurrentFn =
                 unsafe extern "C" fn(EGLDisplay, EGLSurface, EGLSurface, EGLContext) -> EGLBoolean;
 
-            let egl_get_display: EglGetDisplayFn =
-                std::mem::transmute(load_symbol("eglGetDisplay"));
-            let egl_initialize: EglInitializeFn = std::mem::transmute(load_symbol("eglInitialize"));
-            let egl_bind_api: EglBindApiFn = std::mem::transmute(load_symbol("eglBindAPI"));
-            let egl_choose_config: EglChooseConfigFn =
-                std::mem::transmute(load_symbol("eglChooseConfig"));
-            let egl_create_context: EglCreateContextFn =
-                std::mem::transmute(load_symbol("eglCreateContext"));
-            let egl_make_current: EglMakeCurrentFn =
-                std::mem::transmute(load_symbol("eglMakeCurrent"));
-
-            let display = egl_get_display(EGL_DEFAULT_DISPLAY);
-            if display == EGL_NO_DISPLAY {
-                libc::dlclose(egl_lib);
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
+            let egl_get_display: Option<EglGetDisplayFn> = {
+                let ptr = load_symbol("eglGetDisplay");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglGetDisplayFn>(ptr))
+                } else {
+                    None
                 }
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
+            };
+            let egl_get_platform_display: Option<EglGetPlatformDisplayFn> = {
+                let ptr = load_symbol("eglGetPlatformDisplay");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglGetPlatformDisplayFn>(
+                        ptr,
+                    ))
+                } else {
+                    None
+                }
+            };
+            let egl_get_platform_display_ext: Option<EglGetPlatformDisplayExtFn> = {
+                let ptr = load_symbol("eglGetPlatformDisplayEXT");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglGetPlatformDisplayExtFn>(ptr))
+                } else {
+                    None
+                }
+            };
+            let egl_query_devices_ext: Option<EglQueryDevicesExtFn> = {
+                let ptr = load_symbol("eglQueryDevicesEXT");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglQueryDevicesExtFn>(
+                        ptr,
+                    ))
+                } else {
+                    None
+                }
+            };
 
+            let egl_initialize: EglInitializeFn =
+                std::mem::transmute::<*mut c_void, EglInitializeFn>(load_symbol("eglInitialize"));
+            let egl_bind_api: EglBindApiFn =
+                std::mem::transmute::<*mut c_void, EglBindApiFn>(load_symbol("eglBindAPI"));
+            let egl_choose_config: EglChooseConfigFn =
+                std::mem::transmute::<*mut c_void, EglChooseConfigFn>(load_symbol(
+                    "eglChooseConfig",
+                ));
+            let egl_create_context: EglCreateContextFn =
+                std::mem::transmute::<*mut c_void, EglCreateContextFn>(load_symbol(
+                    "eglCreateContext",
+                ));
+            let egl_make_current: EglMakeCurrentFn =
+                std::mem::transmute::<*mut c_void, EglMakeCurrentFn>(load_symbol("eglMakeCurrent"));
+            let egl_destroy_context: Option<EglDestroyContextFn> = {
+                let ptr = load_symbol("eglDestroyContext");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglDestroyContextFn>(ptr))
+                } else {
+                    None
+                }
+            };
+            let egl_terminate: Option<EglTerminateFn> = {
+                let ptr = load_symbol("eglTerminate");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglTerminateFn>(ptr))
+                } else {
+                    None
+                }
+            };
+
+            let get_platform_display =
+                |platform: EGLenum, native_display: *mut c_void| -> EGLDisplay {
+                    if let Some(f) = egl_get_platform_display_ext {
+                        let d = f(platform, native_display, std::ptr::null());
+                        if d != EGL_NO_DISPLAY {
+                            return d;
+                        }
+                    }
+                    if let Some(f) = egl_get_platform_display {
+                        let d = f(platform, native_display, std::ptr::null());
+                        if d != EGL_NO_DISPLAY {
+                            return d;
+                        }
+                    }
+                    EGL_NO_DISPLAY
+                };
+
+            let mut display = EGL_NO_DISPLAY;
             let mut major: EGLint = 0;
             let mut minor: EGLint = 0;
-            if egl_initialize(display, &mut major, &mut minor) == EGL_FALSE {
+
+            // Strategy 1: Surfaceless MESA (Headless / CI / Servers)
+            let surfaceless_display =
+                get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY);
+            if surfaceless_display != EGL_NO_DISPLAY
+                && egl_initialize(surfaceless_display, &mut major, &mut minor) == EGL_TRUE
+            {
+                display = surfaceless_display;
+            }
+
+            // Strategy 2: EGL Device EXT (Hardware / Software GPUs directly)
+            if display == EGL_NO_DISPLAY {
+                if let Some(query_devices) = egl_query_devices_ext {
+                    let mut devices: [EGLDeviceEXT; 8] = [std::ptr::null_mut(); 8];
+                    let mut num_devices: EGLint = 0;
+                    if query_devices(8, devices.as_mut_ptr(), &mut num_devices) == EGL_TRUE
+                        && num_devices > 0
+                    {
+                        for &device in devices.iter().take(num_devices as usize) {
+                            let dev_display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
+                            if dev_display != EGL_NO_DISPLAY
+                                && egl_initialize(dev_display, &mut major, &mut minor) == EGL_TRUE
+                            {
+                                display = dev_display;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Strategy 3: GBM Platform (Headless DRM / Linux Render Nodes)
+            if display == EGL_NO_DISPLAY {
+                let gbm_display = get_platform_display(EGL_PLATFORM_GBM_KHR, EGL_DEFAULT_DISPLAY);
+                if gbm_display != EGL_NO_DISPLAY
+                    && egl_initialize(gbm_display, &mut major, &mut minor) == EGL_TRUE
+                {
+                    display = gbm_display;
+                }
+            }
+
+            // Strategy 4: Standard default display fallback (X11 / Wayland / Android / Windows)
+            if display == EGL_NO_DISPLAY {
+                if let Some(egl_get_display) = egl_get_display {
+                    let def_display = egl_get_display(EGL_DEFAULT_DISPLAY);
+                    if def_display != EGL_NO_DISPLAY
+                        && egl_initialize(def_display, &mut major, &mut minor) == EGL_TRUE
+                    {
+                        display = def_display;
+                    }
+                }
+            }
+
+            if display == EGL_NO_DISPLAY {
                 libc::dlclose(egl_lib);
                 if !gl_lib.is_null() {
                     libc::dlclose(gl_lib);
@@ -369,6 +507,18 @@ impl EglContext {
                 let _ = egl_choose_config(
                     display,
                     minimal_attribs.as_ptr(),
+                    &mut config,
+                    1,
+                    &mut num_configs,
+                );
+            }
+
+            if num_configs < 1 {
+                // Fallback to any config (e.g. for pure surfaceless)
+                let surfaceless_attribs = [EGL_NONE];
+                let _ = egl_choose_config(
+                    display,
+                    surfaceless_attribs.as_ptr(),
                     &mut config,
                     1,
                     &mut num_configs,
@@ -435,6 +585,9 @@ impl EglContext {
             }
 
             if context == EGL_NO_CONTEXT {
+                if let Some(f) = egl_terminate {
+                    f(display);
+                }
                 libc::dlclose(egl_lib);
                 if !gl_lib.is_null() {
                     libc::dlclose(gl_lib);
@@ -652,6 +805,9 @@ impl EglContext {
                 gl_lib,
                 display,
                 context,
+                egl_make_current,
+                egl_destroy_context,
+                egl_terminate,
                 gl,
                 is_compute_supported,
                 is_gles,
@@ -683,70 +839,30 @@ impl EglContext {
             .lock()
             .map_err(|_| ScalixError::ExecutionFailed("EGL context mutex poisoned".to_string()))?;
         unsafe {
-            type EglMakeCurrentFn =
-                unsafe extern "C" fn(EGLDisplay, EGLSurface, EGLSurface, EGLContext) -> EGLBoolean;
-            if let Some(ptr) = self.get_proc_address("eglMakeCurrent") {
-                let egl_make_current: EglMakeCurrentFn = std::mem::transmute(ptr);
-                let _ =
-                    egl_make_current(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, self.context);
-            }
+            let _ =
+                (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, self.context);
         }
         Ok(EglContextGuard {
             ctx: self,
             _lock_guard: lock_guard,
         })
     }
-
-    fn get_proc_address(&self, name: &str) -> Option<*mut c_void> {
-        unsafe {
-            type EglGetProcAddressFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
-            let get_proc =
-                libc::dlsym(self.egl_lib, c"eglGetProcAddress".as_ptr() as *const c_char);
-            if !get_proc.is_null() {
-                let f: EglGetProcAddressFn = std::mem::transmute(get_proc);
-                let c_name = CString::new(name).unwrap();
-                let ptr = f(c_name.as_ptr());
-                if !ptr.is_null() {
-                    return Some(ptr);
-                }
-            }
-            if !self.gl_lib.is_null() {
-                let c_name = CString::new(name).unwrap();
-                let ptr = libc::dlsym(self.gl_lib, c_name.as_ptr());
-                if !ptr.is_null() {
-                    return Some(ptr);
-                }
-            }
-            let c_name = CString::new(name).unwrap();
-            let ptr = libc::dlsym(self.egl_lib, c_name.as_ptr());
-            if !ptr.is_null() {
-                Some(ptr)
-            } else {
-                None
-            }
-        }
-    }
 }
 
 impl Drop for EglContext {
     fn drop(&mut self) {
         unsafe {
-            type EglDestroyContextFn = unsafe extern "C" fn(EGLDisplay, EGLContext) -> EGLBoolean;
-            type EglTerminateFn = unsafe extern "C" fn(EGLDisplay) -> EGLBoolean;
-            type EglMakeCurrentFn =
-                unsafe extern "C" fn(EGLDisplay, EGLSurface, EGLSurface, EGLContext) -> EGLBoolean;
-
-            if let Some(ptr) = self.get_proc_address("eglMakeCurrent") {
-                let egl_make_current: EglMakeCurrentFn = std::mem::transmute(ptr);
-                egl_make_current(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            let _ = (self.egl_make_current)(
+                self.display,
+                EGL_NO_SURFACE,
+                EGL_NO_SURFACE,
+                EGL_NO_CONTEXT,
+            );
+            if let Some(f) = self.egl_destroy_context {
+                let _ = f(self.display, self.context);
             }
-            if let Some(ptr) = self.get_proc_address("eglDestroyContext") {
-                let egl_destroy_context: EglDestroyContextFn = std::mem::transmute(ptr);
-                egl_destroy_context(self.display, self.context);
-            }
-            if let Some(ptr) = self.get_proc_address("eglTerminate") {
-                let egl_terminate: EglTerminateFn = std::mem::transmute(ptr);
-                egl_terminate(self.display);
+            if let Some(f) = self.egl_terminate {
+                let _ = f(self.display);
             }
 
             if !self.gl_lib.is_null() {
