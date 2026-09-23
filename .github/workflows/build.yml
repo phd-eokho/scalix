@@ -52,7 +52,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install System Dependencies & Mesa Vulkan Driver
+      - name: Install System Dependencies & Mesa Drivers
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -62,6 +62,10 @@ jobs:
             libegl1-mesa-dev \
             libgles2-mesa-dev \
             libgl1-mesa-dev \
+            libgl1-mesa-dri \
+            libgbm-dev \
+            libdrm-dev \
+            mesa-utils \
             libjpeg-dev \
             g++ \
             pkg-config
@@ -140,6 +144,10 @@ jobs:
             libegl1-mesa-dev \
             libgles2-mesa-dev \
             libgl1-mesa-dev \
+            libgl1-mesa-dri \
+            libgbm-dev \
+            libdrm-dev \
+            mesa-utils \
             libjpeg-dev \
             libopencv-dev \
             g++ \

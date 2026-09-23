@@ -80,19 +80,20 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 
 ### 4. Pixel Format & Filter Strategy Matrix (Vulkan Backend)
 
-| Pixel Format (In / Out) | `Nearest` | `Bilinear` | `Bicubic` | `Lanczos3` | `LodPyramid` (Downscale) | Default `Auto` Strategy |
-| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`RGB888` / `BGR888` (24-bit)** | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Raster` / `Compute` (✔) | **`Compute`** (Fused 24-bit pass) |
-| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` (✔) | `Blit` / `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `LodPyramid` (✔) | **`Blit`** (Fast-path) / **`Compute`** (Bicubic/Lanczos3) |
-| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
-| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
-| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` (◐) | `Raster` / `Blit` (◐) | — | — | — | **`Raster`** (Y/UV planar pass) |
+| Pixel Format (In / Out) | `Nearest` | `Bilinear` | `Bicubic` | `Lanczos3` | `Area` | `LodPyramid` (Downscale) | Default `Auto` Strategy |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`RGB888` / `BGR888` (24-bit)** | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Raster` / `Compute` (✔) | **`Compute`** (Fused 24-bit pass) |
+| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` (✔) | `Blit` / `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `LodPyramid` (✔) | **`Blit`** (Fast-path) / **`Compute`** (High-Order) |
+| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
+| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
+| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` (◐) | `Raster` / `Blit` (◐) | — | — | — | — | **`Raster`** (Y/UV planar pass) |
 
 > [!NOTE]
 > **Filter Algorithm Reference Implementations**
 > - **Bicubic (`FilterMode::Bicubic`):** Implements 2D separable Catmull-Rom cubic spline interpolation ($a = -0.5$) across a $4 \times 4$ tap neighborhood ([Keys, 1981](https://doi.org/10.1109/TASSP.1981.1163711)).
 > - **Lanczos3 (`FilterMode::Lanczos3`):** Implements 2D separable 3-lobe sinc-windowed sinc filtering ($a = 3$, $L(x) = \text{sinc}(x)\text{sinc}(x/3)$) across a $6 \times 6$ tap window with dynamic weight normalization to prevent DC energy drift ([Lanczos, 1956](https://archive.org/details/appliedanalysis0000corn); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
-> - **Strategy Routing (`VulkanStrategy::Auto`):** Direct compute kernels are selected for packed 24-bit (`RGB888` / `BGR888`) to avoid CPU-host expansion bottlenecks. For 32-bit `RGBA8888`, hardware fixed-function `Blit` is preferred for `Nearest` and `Bilinear` workloads for maximum raw fill-rate throughput, while `Bicubic` and `Lanczos3` dispatch to GPU `Compute`.
+> - **Area (`FilterMode::Area`):** Implements pixel area relation / box averaging with exact subpixel 2D bounding area overlap integration across source texels, preserving total pixel energy without aliasing ([Crow, 1984](https://doi.org/10.1145/964965.808599); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
+> - **Strategy Routing (`VulkanStrategy::Auto`):** Direct compute kernels are selected for packed 24-bit (`RGB888` / `BGR888`) to avoid CPU-host expansion bottlenecks. For 32-bit `RGBA8888`, hardware fixed-function `Blit` is preferred for `Nearest` and `Bilinear` workloads for maximum raw fill-rate throughput, while `Bicubic`, `Lanczos3`, and `Area` dispatch to GPU `Compute`.
 
 ---
 

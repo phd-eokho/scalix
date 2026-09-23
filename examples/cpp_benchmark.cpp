@@ -58,6 +58,7 @@ constexpr string_view OUT_RASTER_FILE       = "/tmp/bench_sample_raster.jpg";
 constexpr string_view OUT_LOD_AUTO_FILE     = "/tmp/bench_sample_lod_auto.jpg";
 constexpr string_view OUT_LOD_2LVL_FILE     = "/tmp/bench_sample_lod_2lvl.jpg";
 constexpr string_view OUT_COMPUTE_FILE      = "/tmp/bench_sample_compute.jpg";
+constexpr string_view OUT_AREA_FILE         = "/tmp/bench_sample_area.jpg";
 constexpr string_view OUT_AUTO_FILE         = "/tmp/bench_sample_auto.jpg";
 
 constexpr string_view MSG_DMA_ACTIVE        = "[Hardware DMA Status: Native Zero-Copy DMA Active (DMA-Heap / DRM GEM Dumb)]";
@@ -495,7 +496,11 @@ int main(int argc, char** argv) {
                 scalix::Strategy::Compute, 0, scalix::Filter::Bilinear,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_COMPUTE_FILE),
 
-            benchmark_sample_method(engine, "6. Vulkan Auto", "Scalix Engine Adaptive Strategy Fast-Path Selector",
+            benchmark_sample_method(engine, "6. Vulkan Compute (Area)", "Direct Fused 24-bit Area Box Averaging Resizer",
+                scalix::Strategy::Compute, 0, scalix::Filter::Area,
+                sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_AREA_FILE),
+
+            benchmark_sample_method(engine, "7. Vulkan Auto", "Scalix Engine Adaptive Strategy Fast-Path Selector",
                 scalix::Strategy::Auto, 0, scalix::Filter::Bilinear,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_AUTO_FILE),
         };

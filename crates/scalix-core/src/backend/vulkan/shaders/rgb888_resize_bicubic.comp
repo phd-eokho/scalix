@@ -29,19 +29,25 @@ vec3 fetch_raw_rgb(int px, int py) {
     uint w1 = src_data[word_idx + 1u];
 
     uint shift = (src_byte_offset & 3u) << 3u;
-    uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
+    uint shift_hi = (32u - shift) & 31u;
+    uint mask_hi = uint(0) - uint(shift != 0u);
+    uint val = (w0 >> shift) | ((w1 << shift_hi) & mask_hi);
     return vec3(float(val & 0xFFu), float((val >> 8u) & 0xFFu), float((val >> 16u) & 0xFFu));
 }
 
-// Catmull-Rom cubic weighting (a = -0.5)
-float cubic_weight(float x) {
-    float ax = abs(x);
-    if (ax <= 1.0) {
-        return (1.5 * ax - 2.5) * ax * ax + 1.0;
-    } else if (ax < 2.0) {
-        return ((-0.5 * ax + 2.5) * ax - 4.0) * ax + 2.0;
-    }
-    return 0.0;
+// Branchless Catmull-Rom cubic weights evaluation (a = -0.5)
+void eval_bicubic_weights(float f, out float w[4]) {
+    // Exact piecewise polynomials for f in [0, 1):
+    // tap 0 (x = 1 + f in [1, 2]): ((-0.5*(1+f) + 2.5)*(1+f) - 4.0)*(1+f) + 2.0
+    // tap 1 (x = f in [0, 1]):     (1.5*f - 2.5)*f*f + 1.0
+    // tap 2 (x = 1 - f in (0, 1]): (1.5*(1-f) - 2.5)*(1-f)*(1-f) + 1.0
+    // tap 3 (x = 2 - f in (1, 2]): ((-0.5*(2-f) + 2.5)*(2-f) - 4.0)*(2-f) + 2.0
+    float f2 = f * f;
+    float f3 = f2 * f;
+    w[0] = -0.5 * f3 + f2 - 0.5 * f;
+    w[1] = 1.5 * f3 - 2.5 * f2 + 1.0;
+    w[2] = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    w[3] = 0.5 * f3 - 0.5 * f2;
 }
 
 uint sample_bicubic_coord(uint dx, uint dy) {
@@ -55,16 +61,10 @@ uint sample_bicubic_coord(uint dx, uint dy) {
     float fy = v - float(y0);
 
     float wx[4];
-    wx[0] = cubic_weight(1.0 + fx);
-    wx[1] = cubic_weight(fx);
-    wx[2] = cubic_weight(1.0 - fx);
-    wx[3] = cubic_weight(2.0 - fx);
+    eval_bicubic_weights(fx, wx);
 
     float wy[4];
-    wy[0] = cubic_weight(1.0 + fy);
-    wy[1] = cubic_weight(fy);
-    wy[2] = cubic_weight(1.0 - fy);
-    wy[3] = cubic_weight(2.0 - fy);
+    eval_bicubic_weights(fy, wy);
 
     vec3 col = vec3(0.0);
     for (int j = 0; j < 4; ++j) {
@@ -75,8 +75,8 @@ uint sample_bicubic_coord(uint dx, uint dy) {
         col += wy[j] * row_col;
     }
 
-    col = clamp(col + 0.5, 0.0, 255.0);
-    return uint(col.r) | (uint(col.g) << 8u) | (uint(col.b) << 16u);
+    uvec3 ucol = uvec3(clamp(col + 0.5, 0.0, 255.0));
+    return ucol.r | (ucol.g << 8u) | (ucol.b << 16u);
 }
 
 void main() {
@@ -88,25 +88,31 @@ void main() {
     uint dx0 = base_pixel % dst_w;
     uint dy0 = base_pixel / dst_w;
 
-    uint p[4];
-    for (uint i = 0u; i < 4u; ++i) {
-        if (base_pixel + i < total_dst_pixels) {
-            uint dx = dx0 + i;
-            uint dy = dy0;
-            if (dx >= dst_w) {
-                dx -= dst_w;
-                dy += 1u;
-            }
-            p[i] = sample_bicubic_coord(dx, dy);
-        } else {
-            p[i] = 0u;
-        }
-    }
+    // Fully unrolled 4-pixel chunk without dynamic arrays or branch hazards
+    uint p0 = sample_bicubic_coord(dx0, dy0);
+
+    uint dx1 = dx0 + 1u;
+    uint wrap1 = uint(dx1 >= dst_w);
+    dx1 -= wrap1 * dst_w;
+    uint dy1 = dy0 + wrap1;
+    uint p1 = (base_pixel + 1u < total_dst_pixels) ? sample_bicubic_coord(dx1, dy1) : 0u;
+
+    uint dx2 = dx0 + 2u;
+    uint wrap2 = uint(dx2 >= dst_w);
+    dx2 -= wrap2 * dst_w;
+    uint dy2 = dy0 + wrap2;
+    uint p2 = (base_pixel + 2u < total_dst_pixels) ? sample_bicubic_coord(dx2, dy2) : 0u;
+
+    uint dx3 = dx0 + 3u;
+    uint wrap3 = uint(dx3 >= dst_w);
+    dx3 -= wrap3 * dst_w;
+    uint dy3 = dy0 + wrap3;
+    uint p3 = (base_pixel + 3u < total_dst_pixels) ? sample_bicubic_coord(dx3, dy3) : 0u;
 
     // Branchless packing into 3x32-bit storage buffer words
-    uint w0 = p[0] | (p[1] << 24u);
-    uint w1 = (p[1] >> 8u) | (p[2] << 16u);
-    uint w2 = (p[2] >> 16u) | (p[3] << 8u);
+    uint w0 = p0 | (p1 << 24u);
+    uint w1 = (p1 >> 8u) | (p2 << 16u);
+    uint w2 = (p2 >> 16u) | (p3 << 8u);
     uint out_word_base = chunk_idx * 3u;
 
     dst_data[out_word_base + 0u] = w0;

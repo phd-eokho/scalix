@@ -77,6 +77,53 @@ void main() {
 }
 "#;
 
+const FRAGMENT_SHADER_AREA_BODY: &str = r#"
+in vec2 vTexCoord;
+out vec4 FragColor;
+uniform sampler2D uTexture;
+uniform vec2 uTexSize;
+uniform vec2 uDstSize;
+
+vec4 sampleArea(sampler2D tex, vec2 fragCoord) {
+    vec2 scale = uTexSize / uDstSize;
+    vec2 dCoord = floor(fragCoord);
+
+    float x0 = dCoord.x * scale.x;
+    float x1 = (dCoord.x + 1.0) * scale.x;
+    float y0 = dCoord.y * scale.y;
+    float y1 = (dCoord.y + 1.0) * scale.y;
+
+    int sx_min = int(floor(x0));
+    int sx_max = int(floor(x1));
+    sx_max -= int(float(sx_max) == x1 && sx_max > sx_min);
+
+    int sy_min = int(floor(y0));
+    int sy_max = int(floor(y1));
+    sy_max -= int(float(sy_max) == y1 && sy_max > sy_min);
+
+    vec4 sum_col = vec4(0.0);
+    float total_weight = 0.0;
+
+    for (int sy = sy_min; sy <= sy_max; ++sy) {
+        float wy = max(0.0, min(float(sy) + 1.0, y1) - max(float(sy), y0));
+        int cy = clamp(sy, 0, int(uTexSize.y) - 1);
+        for (int sx = sx_min; sx <= sx_max; ++sx) {
+            float wx = max(0.0, min(float(sx) + 1.0, x1) - max(float(sx), x0));
+            float w = wx * wy;
+            int cx = clamp(sx, 0, int(uTexSize.x) - 1);
+            sum_col += texelFetch(tex, ivec2(cx, cy), 0) * w;
+            total_weight += w;
+        }
+    }
+
+    return (total_weight > 0.0) ? (sum_col / total_weight) : texelFetch(tex, ivec2(clamp(sx_min, 0, int(uTexSize.x) - 1), clamp(sy_min, 0, int(uTexSize.y) - 1)), 0);
+}
+
+void main() {
+    FragColor = sampleArea(uTexture, gl_FragCoord.xy);
+}
+"#;
+
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
 
@@ -86,6 +133,7 @@ pub struct GlRasterResizer {
     profiler: Arc<dyn Profiler>,
     prog_bilinear: Mutex<Option<u32>>,
     prog_bicubic: Mutex<Option<u32>>,
+    prog_area: Mutex<Option<u32>>,
     mesh: Mutex<Option<(u32, u32)>>, // (vao, vbo)
 }
 
@@ -101,6 +149,7 @@ impl GlRasterResizer {
             profiler,
             prog_bilinear: Mutex::new(None),
             prog_bicubic: Mutex::new(None),
+            prog_area: Mutex::new(None),
             mesh: Mutex::new(None),
         }
     }
@@ -194,14 +243,12 @@ impl GlRasterResizer {
     }
 
     fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
-        let is_bicubic = matches!(
-            filter,
-            FilterMode::Bicubic | FilterMode::Lanczos3 | FilterMode::Area
-        );
-        let target_lock = if is_bicubic {
-            &self.prog_bicubic
-        } else {
-            &self.prog_bilinear
+        let (target_lock, fs_body) = match filter {
+            FilterMode::Area => (&self.prog_area, FRAGMENT_SHADER_AREA_BODY),
+            FilterMode::Bicubic | FilterMode::Lanczos3 => {
+                (&self.prog_bicubic, FRAGMENT_SHADER_BICUBIC_BODY)
+            }
+            _ => (&self.prog_bilinear, FRAGMENT_SHADER_BILINEAR_BODY),
         };
 
         let mut guard = target_lock.lock().map_err(|_| {
@@ -214,11 +261,6 @@ impl GlRasterResizer {
         let gl = &self.ctx.gl;
         let header = self.ctx.shader_header();
         let vs_src = format!("{header}{VERTEX_SHADER_BODY}");
-        let fs_body = if is_bicubic {
-            FRAGMENT_SHADER_BICUBIC_BODY
-        } else {
-            FRAGMENT_SHADER_BILINEAR_BODY
-        };
         let fs_src = format!("{header}{fs_body}");
 
         let vs = self.compile_shader(GL_VERTEX_SHADER, &vs_src)?;
@@ -331,6 +373,12 @@ impl GlRasterResizer {
                 (gl.glGetUniformLocation)(program, c"uTexSize".as_ptr() as *const c_char);
             if u_tex_size >= 0 {
                 (gl.glUniform2f)(u_tex_size, src.width as f32, src.height as f32);
+            }
+
+            let u_dst_size =
+                (gl.glGetUniformLocation)(program, c"uDstSize".as_ptr() as *const c_char);
+            if u_dst_size >= 0 {
+                (gl.glUniform2f)(u_dst_size, dst.width as f32, dst.height as f32);
             }
 
             (gl.glActiveTexture)(GL_TEXTURE0);

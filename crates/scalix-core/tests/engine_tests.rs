@@ -824,7 +824,19 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
     assert_eq!(dst_data.as_slice()[0], 0x77);
     assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
 
-    // 5. Test Auto Strategy routing directly to Compute for RGB888
+    // 5. Test Area Filter via Direct Compute
+    {
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options =
+            ResizeOptions::new(FilterMode::Area).with_vulkan_strategy(VulkanStrategy::Compute);
+        let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+        assert!(res.is_ok(), "Compute Area failed: {:?}", res.err());
+    }
+    assert_eq!(dst_data.as_slice()[0], 0x77);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
+
+    // 6. Test Auto Strategy routing directly to Compute for RGB888
     {
         let mut dst_desc =
             ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
@@ -840,7 +852,7 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
     assert_eq!(dst_data.as_slice()[0], 0x77);
     assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
 
-    // 6. Test Dynamic Pluggable Shader Registration (e.g. registering custom kernel)
+    // 7. Test Dynamic Pluggable Shader Registration (e.g. registering custom kernel)
     {
         let pluggable_spv = scalix_core::backend::vulkan::compute::RGB888_RESIZE_NEAREST_COMP_SPV;
         assert!(vk_backend
@@ -870,7 +882,7 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
         assert_eq!(dst_data.as_slice()[0], 0x77);
     }
 
-    // 7. Test RGBA8888 Compute Resizing (Nearest, Bilinear, Bicubic, Lanczos3)
+    // 8. Test RGBA8888 Compute Resizing (Nearest, Bilinear, Bicubic, Lanczos3, Area)
     {
         let rgba_fmt = PixelFormat::Rgba8888;
         let rgba_src_stride = rgba_fmt.min_stride(src_w).unwrap();
@@ -887,6 +899,7 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
             FilterMode::Bilinear,
             FilterMode::Bicubic,
             FilterMode::Lanczos3,
+            FilterMode::Area,
         ] {
             let mut rgba_dst_desc =
                 ImageDescMut::new(dst_w, dst_h, rgba_dst_stride, rgba_fmt, &mut rgba_dst_data)
@@ -1049,6 +1062,27 @@ fn test_opengl_backend_strategies() {
         0,
         "GL Auto output must not be black"
     );
+
+    // 6. Area Filter via Raster, Compute, and Auto Strategies (RGBA8888)
+    for strat in [GlStrategy::Raster, GlStrategy::Compute, GlStrategy::Auto] {
+        dst_data.as_mut_slice().fill(0);
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let area_opts = ResizeOptions::new(FilterMode::Area).with_gl_strategy(strat);
+        let res_area = gl_backend.process(&src_desc, &mut dst_desc, &area_opts);
+        assert!(
+            res_area.is_ok(),
+            "GL Area with strategy {:?} failed: {:?}",
+            strat,
+            res_area.err()
+        );
+        assert_ne!(
+            dst_data.as_slice()[0],
+            0,
+            "GL Area output with strategy {:?} must not be black",
+            strat
+        );
+    }
 
     // 6. Test RGB888 across all strategies
     {

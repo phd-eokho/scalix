@@ -156,7 +156,7 @@ impl Backend for VulkanBackend {
                         crate::types::PixelFormat::Rgba8888 | crate::types::PixelFormat::Bgra8888
                     ) && matches!(
                         options.filter,
-                        FilterMode::Bicubic | FilterMode::Lanczos3
+                        FilterMode::Bicubic | FilterMode::Lanczos3 | FilterMode::Area
                     ) {
                         // High-order spatial filters on RGBA dispatch via compute pipeline
                         VulkanStrategy::Compute

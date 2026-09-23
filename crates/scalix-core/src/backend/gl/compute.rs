@@ -27,6 +27,53 @@ void main() {
 }
 "#;
 
+const COMPUTE_SHADER_AREA_BODY: &str = r#"
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0) uniform sampler2D uSrcTexture;
+layout(binding = 1, rgba8) uniform writeonly highp image2D uDstImage;
+uniform vec2 uSrcSize;
+
+void main() {
+    ivec2 dstCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(uDstImage);
+    if (dstCoord.x >= dstSize.x || dstCoord.y >= dstSize.y) {
+        return;
+    }
+
+    vec2 scale = uSrcSize / vec2(dstSize);
+    float x0 = float(dstCoord.x) * scale.x;
+    float x1 = float(dstCoord.x + 1) * scale.x;
+    float y0 = float(dstCoord.y) * scale.y;
+    float y1 = float(dstCoord.y + 1) * scale.y;
+
+    int sx_min = int(floor(x0));
+    int sx_max = int(floor(x1));
+    sx_max -= int(float(sx_max) == x1 && sx_max > sx_min);
+
+    int sy_min = int(floor(y0));
+    int sy_max = int(floor(y1));
+    sy_max -= int(float(sy_max) == y1 && sy_max > sy_min);
+
+    vec4 sum_col = vec4(0.0);
+    float total_weight = 0.0;
+
+    for (int sy = sy_min; sy <= sy_max; ++sy) {
+        float wy = max(0.0, min(float(sy) + 1.0, y1) - max(float(sy), y0));
+        int cy = clamp(sy, 0, int(uSrcSize.y) - 1);
+        for (int sx = sx_min; sx <= sx_max; ++sx) {
+            float wx = max(0.0, min(float(sx) + 1.0, x1) - max(float(sx), x0));
+            float w = wx * wy;
+            int cx = clamp(sx, 0, int(uSrcSize.x) - 1);
+            sum_col += texelFetch(uSrcTexture, ivec2(cx, cy), 0) * w;
+            total_weight += w;
+        }
+    }
+
+    vec4 color = (total_weight > 0.0) ? (sum_col / total_weight) : texelFetch(uSrcTexture, ivec2(clamp(sx_min, 0, int(uSrcSize.x) - 1), clamp(sy_min, 0, int(uSrcSize.y) - 1)), 0);
+    imageStore(uDstImage, dstCoord, color);
+}
+"#;
+
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
 
@@ -34,7 +81,8 @@ pub struct GlComputeResizer {
     ctx: Arc<EglContext>,
     ring: Arc<Mutex<GlStagingRing>>,
     profiler: Arc<dyn Profiler>,
-    program: Mutex<Option<u32>>,
+    prog_bilinear: Mutex<Option<u32>>,
+    prog_area: Mutex<Option<u32>>,
 }
 
 impl GlComputeResizer {
@@ -47,7 +95,8 @@ impl GlComputeResizer {
             ctx,
             ring,
             profiler,
-            program: Mutex::new(None),
+            prog_bilinear: Mutex::new(None),
+            prog_area: Mutex::new(None),
         }
     }
 
@@ -55,22 +104,34 @@ impl GlComputeResizer {
         self.ctx.is_compute_supported
     }
 
-    fn get_or_build_program(&self) -> Result<u32> {
-        let mut prog_lock = self.program.lock().map_err(|_| {
+    fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
+        let is_area = filter == FilterMode::Area;
+        let target_lock = if is_area {
+            &self.prog_area
+        } else {
+            &self.prog_bilinear
+        };
+
+        let mut prog_lock = target_lock.lock().map_err(|_| {
             ScalixError::ExecutionFailed("Failed to acquire compute program lock".to_string())
         })?;
         if let Some(prog) = *prog_lock {
             return Ok(prog);
         }
-        let prog = self.build_program()?;
+        let prog = self.build_program(filter)?;
         *prog_lock = Some(prog);
         Ok(prog)
     }
 
-    fn build_program(&self) -> Result<u32> {
+    fn build_program(&self, filter: FilterMode) -> Result<u32> {
         let gl = &self.ctx.gl;
         let header = self.ctx.compute_shader_header();
-        let src = format!("{header}{COMPUTE_SHADER_BODY}");
+        let body = if filter == FilterMode::Area {
+            COMPUTE_SHADER_AREA_BODY
+        } else {
+            COMPUTE_SHADER_BODY
+        };
+        let src = format!("{header}{body}");
 
         unsafe {
             let shader = (gl.glCreateShader)(GL_COMPUTE_SHADER);
@@ -152,7 +213,7 @@ impl GlComputeResizer {
         let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
         let (_dst_internal, dst_format, dst_type) = get_gl_format_tuple(dst.format)?;
 
-        let program = self.get_or_build_program()?;
+        let program = self.get_or_build_program(filter)?;
         let gl_filter = if filter == FilterMode::Nearest {
             GL_NEAREST
         } else {
@@ -199,6 +260,12 @@ impl GlComputeResizer {
             let u_tex =
                 (gl.glGetUniformLocation)(program, c"uSrcTexture".as_ptr() as *const c_char);
             (gl.glUniform1i)(u_tex, 0);
+
+            let u_src_size =
+                (gl.glGetUniformLocation)(program, c"uSrcSize".as_ptr() as *const c_char);
+            if u_src_size >= 0 {
+                (gl.glUniform2f)(u_src_size, src.width as f32, src.height as f32);
+            }
 
             gl_bind_image(1, dst_tex, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA8);
 

@@ -43,6 +43,14 @@ pub const RGB888_RESIZE_BICUBIC_COMP_SPV: &[u8] =
 pub const RGB888_RESIZE_LANCZOS3_COMP_SPV: &[u8] =
     include_bytes!("shaders/rgb888_resize_lanczos3.spv");
 
+/// Pre-compiled SPIR-V binary bytecode for direct RGB888 Area (Box Average) resize compute kernel.
+///
+/// NOTE (Reference Implementation):
+/// Utilizes continuous subpixel 2D box area-overlap integration over bounding source texel footprints.
+/// Reference: Crow, F. C. (1984). "Summed-area tables for seamless texture mapping", ACM SIGGRAPH, 18(3), 207-212;
+/// Turkowski, K. (1990). "Filters for Common Resampling Tasks", Graphics Gems, Academic Press.
+pub const RGB888_RESIZE_AREA_COMP_SPV: &[u8] = include_bytes!("shaders/rgb888_resize_area.spv");
+
 /// Pre-compiled SPIR-V binary bytecode for direct RGBA8888 nearest resize compute kernel.
 pub const RGBA8888_RESIZE_NEAREST_COMP_SPV: &[u8] =
     include_bytes!("shaders/rgba8888_resize_nearest.spv");
@@ -70,6 +78,15 @@ pub const RGBA8888_RESIZE_BICUBIC_COMP_SPV: &[u8] =
 /// Turkowski, K. (1990). "Filters for Common Resampling Tasks", Graphics Gems.
 pub const RGBA8888_RESIZE_LANCZOS3_COMP_SPV: &[u8] =
     include_bytes!("shaders/rgba8888_resize_lanczos3.spv");
+
+/// Pre-compiled SPIR-V binary bytecode for direct RGBA8888 Area (Box Average) resize compute kernel.
+///
+/// NOTE (Reference Implementation):
+/// Utilizes continuous subpixel 2D box area-overlap integration over bounding source texel footprints
+/// across 4 color and alpha channels.
+/// Reference: Crow, F. C. (1984). "Summed-area tables for seamless texture mapping", ACM SIGGRAPH, 18(3), 207-212;
+/// Turkowski, K. (1990). "Filters for Common Resampling Tasks", Graphics Gems, Academic Press.
+pub const RGBA8888_RESIZE_AREA_COMP_SPV: &[u8] = include_bytes!("shaders/rgba8888_resize_area.spv");
 
 /// Default local workgroup size along X dimension.
 pub const DEFAULT_WORKGROUP_SIZE_X: u32 = 64;
@@ -270,6 +287,13 @@ impl VulkanComputeResizer {
                 DEFAULT_WORKGROUP_SIZE_X,
                 DEFAULT_PIXELS_PER_THREAD,
             )?;
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Area,
+                RGB888_RESIZE_AREA_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
         }
 
         // Register default RGBA8888 / BGRA8888 kernels
@@ -299,6 +323,13 @@ impl VulkanComputeResizer {
                 fmt,
                 FilterMode::Lanczos3,
                 RGBA8888_RESIZE_LANCZOS3_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Area,
+                RGBA8888_RESIZE_AREA_COMP_SPV,
                 DEFAULT_WORKGROUP_SIZE_X,
                 DEFAULT_PIXELS_PER_THREAD,
             )?;

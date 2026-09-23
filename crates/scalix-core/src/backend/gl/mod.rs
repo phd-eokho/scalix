@@ -117,7 +117,10 @@ impl Backend for GlBackend {
         let gl_opts = options.gl_options();
         let chosen_strategy = match gl_opts.strategy {
             GlStrategy::Auto => {
-                if matches!(options.filter, FilterMode::Bicubic | FilterMode::Lanczos3) {
+                if matches!(
+                    options.filter,
+                    FilterMode::Bicubic | FilterMode::Lanczos3 | FilterMode::Area
+                ) {
                     GlStrategy::Raster
                 } else {
                     GlStrategy::Blit

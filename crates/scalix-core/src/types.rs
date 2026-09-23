@@ -185,10 +185,15 @@ impl PixelFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub enum FilterMode {
+    /// Nearest neighbor sampling (0-order hold)
     Nearest = 0,
+    /// Bilinear interpolation (1st-order tensor product)
     Bilinear = 1,
+    /// Bicubic interpolation using 2D Catmull-Rom cubic spline ($a = -0.5$) (Keys, 1981)
     Bicubic = 2,
+    /// Lanczos-3 3-lobe sinc-windowed sinc filtering (Lanczos, 1956; Turkowski, 1990)
     Lanczos3 = 3,
+    /// Pixel area relation / box averaging with exact subpixel 2D bounding area overlap integration (Crow, 1984; Turkowski, 1990)
     Area = 4,
     /// Passthrough mode: copy source region to destination without interpolation
     Passthrough = 100,

@@ -80,19 +80,20 @@
 
 ### 4. 픽셀 포맷 및 필터 전략 실행 매트릭스 (Vulkan Backend)
 
-| 픽셀 포맷 (In / Out) | `Nearest` | `Bilinear` | `Bicubic` | `Lanczos3` | `LodPyramid` (축소) | 기본 `Auto` 전략 매핑 |
-| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`RGB888` / `BGR888` (24-bit)** | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Raster` / `Compute` (✔) | **`Compute`** (Fused 24-bit 전용 패스) |
-| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` (✔) | `Blit` / `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `LodPyramid` (✔) | **`Blit`** (고속 패스) / **`Compute`** (Bicubic/Lanczos3) |
-| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
-| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
-| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` (◐) | `Raster` / `Blit` (◐) | — | — | — | **`Raster`** (Y/UV 평면 분할 패스) |
+| 픽셀 포맷 (In / Out) | `Nearest` | `Bilinear` | `Bicubic` | `Lanczos3` | `Area` | `LodPyramid` (축소) | 기본 `Auto` 전략 매핑 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`RGB888` / `BGR888` (24-bit)** | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Raster` / `Compute` (✔) | **`Compute`** (Fused 24-bit 전용 패스) |
+| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` (✔) | `Blit` / `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `LodPyramid` (✔) | **`Blit`** (고속 패스) / **`Compute`** (고차 필터) |
+| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
+| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
+| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` (◐) | `Raster` / `Blit` (◐) | — | — | — | — | **`Raster`** (Y/UV 평면 분할 패스) |
 
 > [!NOTE]
 > **필터 알고리즘 레퍼런스 구현 (Reference Implementation)**
 > - **Bicubic (`FilterMode::Bicubic`):** $4 \times 4$ 탭 윈도우 기반 2D 분리형 Catmull-Rom 3차 스플라인 보간 ($a = -0.5$) 적용 ([Keys, 1981](https://doi.org/10.1109/TASSP.1981.1163711)).
 > - **Lanczos3 (`FilterMode::Lanczos3`):** 밝기 왜곡을 방지하기 위한 동적 가중치 정규화가 적용된 3-lobe sinc 윈도우 sinc 필터 ($a = 3$, $L(x) = \text{sinc}(x)\text{sinc}(x/3)$) 기반 $6 \times 6$ 탭 윈도우 보간 ([Lanczos, 1956](https://archive.org/details/appliedanalysis0000corn); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
-> - **전략 자동 라우팅 (`VulkanStrategy::Auto`):** CPU 호스트 포맷 변환 병목을 방지하기 위해 24-bit 패킹 포맷(`RGB888` / `BGR888`)은 Fused GPU `Compute`로 직행합니다. 32-bit `RGBA8888`의 `Nearest` 및 `Bilinear`는 최대 필레이트 처리를 위해 하드웨어 `Blit` 명령을 우선 사용하며, `Bicubic` 및 `Lanczos3` 고차 필터는 GPU `Compute` 파이프라인으로 디스패치됩니다.
+> - **Area (`FilterMode::Area`):** 소스 텍셀에 대한 서브픽셀 2D 경계 영역 오버랩 가중치를 정확히 적분하는 픽셀 영역 관계(Box Average) 보간 적용 (에너지 보존 및 에일리어싱 방지) ([Crow, 1984](https://doi.org/10.1145/964965.808599); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
+> - **전략 자동 라우팅 (`VulkanStrategy::Auto`):** CPU 호스트 포맷 변환 병목을 방지하기 위해 24-bit 패킹 포맷(`RGB888` / `BGR888`)은 Fused GPU `Compute`로 직행합니다. 32-bit `RGBA8888`의 `Nearest` 및 `Bilinear`는 최대 필레이트 처리를 위해 하드웨어 `Blit` 명령을 우선 사용하며, `Bicubic`, `Lanczos3`, `Area` 고차 필터는 GPU `Compute` 파이프라인으로 디스패치됩니다.
 
 ---
 

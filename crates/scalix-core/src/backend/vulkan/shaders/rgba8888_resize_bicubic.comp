@@ -25,15 +25,14 @@ vec4 fetch_raw_rgba(int px, int py) {
     return unpackUnorm4x8(src_data[uint(cy) * src_w + uint(cx)]);
 }
 
-// Catmull-Rom cubic weighting (a = -0.5)
-float cubic_weight(float x) {
-    float ax = abs(x);
-    if (ax <= 1.0) {
-        return (1.5 * ax - 2.5) * ax * ax + 1.0;
-    } else if (ax < 2.0) {
-        return ((-0.5 * ax + 2.5) * ax - 4.0) * ax + 2.0;
-    }
-    return 0.0;
+// Branchless Catmull-Rom cubic weights evaluation (a = -0.5)
+void eval_bicubic_weights(float f, out float w[4]) {
+    float f2 = f * f;
+    float f3 = f2 * f;
+    w[0] = -0.5 * f3 + f2 - 0.5 * f;
+    w[1] = 1.5 * f3 - 2.5 * f2 + 1.0;
+    w[2] = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    w[3] = 0.5 * f3 - 0.5 * f2;
 }
 
 uint sample_bicubic_coord(uint dx, uint dy) {
@@ -47,16 +46,10 @@ uint sample_bicubic_coord(uint dx, uint dy) {
     float fy = v - float(y0);
 
     float wx[4];
-    wx[0] = cubic_weight(1.0 + fx);
-    wx[1] = cubic_weight(fx);
-    wx[2] = cubic_weight(1.0 - fx);
-    wx[3] = cubic_weight(2.0 - fx);
+    eval_bicubic_weights(fx, wx);
 
     float wy[4];
-    wy[0] = cubic_weight(1.0 + fy);
-    wy[1] = cubic_weight(fy);
-    wy[2] = cubic_weight(1.0 - fy);
-    wy[3] = cubic_weight(2.0 - fy);
+    eval_bicubic_weights(fy, wy);
 
     vec4 col = vec4(0.0);
     for (int j = 0; j < 4; ++j) {
@@ -79,15 +72,30 @@ void main() {
     uint dx0 = base_pixel % dst_w;
     uint dy0 = base_pixel / dst_w;
 
-    for (uint i = 0u; i < 4u; ++i) {
-        if (base_pixel + i < total_dst_pixels) {
-            uint dx = dx0 + i;
-            uint dy = dy0;
-            if (dx >= dst_w) {
-                dx -= dst_w;
-                dy += 1u;
-            }
-            dst_data[base_pixel + i] = sample_bicubic_coord(dx, dy);
-        }
+    // Fully unrolled 4-pixel chunk
+    dst_data[base_pixel] = sample_bicubic_coord(dx0, dy0);
+
+    uint dx1 = dx0 + 1u;
+    uint wrap1 = uint(dx1 >= dst_w);
+    dx1 -= wrap1 * dst_w;
+    uint dy1 = dy0 + wrap1;
+    if (base_pixel + 1u < total_dst_pixels) {
+        dst_data[base_pixel + 1u] = sample_bicubic_coord(dx1, dy1);
+    }
+
+    uint dx2 = dx0 + 2u;
+    uint wrap2 = uint(dx2 >= dst_w);
+    dx2 -= wrap2 * dst_w;
+    uint dy2 = dy0 + wrap2;
+    if (base_pixel + 2u < total_dst_pixels) {
+        dst_data[base_pixel + 2u] = sample_bicubic_coord(dx2, dy2);
+    }
+
+    uint dx3 = dx0 + 3u;
+    uint wrap3 = uint(dx3 >= dst_w);
+    dx3 -= wrap3 * dst_w;
+    uint dy3 = dy0 + wrap3;
+    if (base_pixel + 3u < total_dst_pixels) {
+        dst_data[base_pixel + 3u] = sample_bicubic_coord(dx3, dy3);
     }
 }
