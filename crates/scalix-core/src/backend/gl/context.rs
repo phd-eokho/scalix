@@ -57,6 +57,8 @@ pub const GL_BGR: u32 = 0x80E0;
 pub const GL_RGBA8: u32 = 0x8058;
 pub const GL_RGB8: u32 = 0x8051;
 pub const GL_UNSIGNED_BYTE: u32 = 0x1401;
+pub const GL_TEXTURE_BASE_LEVEL: u32 = 0x813C;
+pub const GL_TEXTURE_MAX_LEVEL: u32 = 0x813D;
 
 pub const GL_FRAMEBUFFER: u32 = 0x8D40;
 pub const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
