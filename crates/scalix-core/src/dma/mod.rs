@@ -181,10 +181,22 @@ impl DmaAllocator for android_ahb::AndroidAhbAllocator {
     }
 }
 
+/// Selection type for hardware DMA buffer memory allocators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(C)]
+pub enum DmaAllocatorType {
+    #[default]
+    Auto = 0,
+    DmaHeap = 1,
+    DrmDumb = 2,
+    AndroidAhb = 3,
+    HostAligned = 4,
+}
+
 /// Represents an allocated, memory-mapped hardware DMA buffer.
 pub struct DmaBuffer {
     #[cfg(target_os = "linux")]
-    fd: OwnedFd,
+    fd: Option<OwnedFd>,
 
     #[cfg(all(
         target_os = "android",
@@ -197,6 +209,8 @@ pub struct DmaBuffer {
     dimensions: ImageDimensions,
     stride: usize,
     format: PixelFormat,
+    allocator_type: DmaAllocatorType,
+    is_host_aligned: bool,
 }
 
 // DmaBuffer owns the memory mapping and underlying kernel fd/handle
@@ -211,10 +225,11 @@ impl DmaBuffer {
         alloc: DmaAllocation,
         dimensions: ImageDimensions,
         format: PixelFormat,
+        allocator_type: DmaAllocatorType,
     ) -> Self {
         Self {
             #[cfg(target_os = "linux")]
-            fd: alloc.fd,
+            fd: Some(alloc.fd),
             #[cfg(all(
                 target_os = "android",
                 any(target_arch = "aarch64", target_arch = "arm")
@@ -225,14 +240,17 @@ impl DmaBuffer {
             dimensions,
             stride: alloc.stride,
             format,
+            allocator_type,
+            is_host_aligned: false,
         }
     }
 
-    /// Allocates a new hardware DMA buffer for the given spatial dimensions and pixel format.
-    ///
-    /// On Linux: Probes `/dev/dma_heap/*` (DMA-Heap) first, then falls back to `/dev/dri/renderD128` (DRM Dumb).
-    /// On Android: Uses `AHardwareBuffer` (API 26+, aarch64 / armv7).
-    pub fn allocate_dimensions(dimensions: ImageDimensions, format: PixelFormat) -> Result<Self> {
+    /// Allocates a new hardware DMA buffer with a specific allocator selection.
+    pub fn allocate_dimensions_with_type(
+        dimensions: ImageDimensions,
+        format: PixelFormat,
+        alloc_type: DmaAllocatorType,
+    ) -> Result<Self> {
         if dimensions.is_empty() {
             return Err(ScalixError::InvalidDimensions {
                 width: dimensions.width,
@@ -240,57 +258,197 @@ impl DmaBuffer {
             });
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            let heap_allocator = linux_dma_heap::LinuxDmaHeapAllocator;
-            match heap_allocator.allocate(dimensions, format) {
-                Ok(alloc) => Ok(Self::from_allocation(alloc, dimensions, format)),
-                Err(heap_err) => {
-                    log::debug!(
-                        "DMA-Heap allocation skipped or unavailable: {heap_err}, trying DRM..."
-                    );
-                    let drm_allocator = linux_drm::LinuxDrmAllocator;
-                    drm_allocator
-                        .allocate(dimensions, format)
-                        .map(|alloc| Self::from_allocation(alloc, dimensions, format))
-                        .map_err(|drm_err| {
-                            ScalixError::DmaUnavailable(format!(
-                                "All Linux DMA allocators failed. DMA-Heap: [{heap_err}], DRM: [{drm_err}]"
-                            ))
-                        })
+        match alloc_type {
+            DmaAllocatorType::Auto => {
+                #[cfg(target_os = "linux")]
+                {
+                    let heap_allocator = linux_dma_heap::LinuxDmaHeapAllocator;
+                    match heap_allocator.allocate(dimensions, format) {
+                        Ok(alloc) => Ok(Self::from_allocation(
+                            alloc,
+                            dimensions,
+                            format,
+                            DmaAllocatorType::DmaHeap,
+                        )),
+                        Err(heap_err) => {
+                            log::debug!(
+                                "DMA-Heap allocation skipped: {heap_err}, trying DRM Dumb..."
+                            );
+                            let drm_allocator = linux_drm::LinuxDrmAllocator;
+                            match drm_allocator.allocate(dimensions, format) {
+                                Ok(alloc) => Ok(Self::from_allocation(
+                                    alloc,
+                                    dimensions,
+                                    format,
+                                    DmaAllocatorType::DrmDumb,
+                                )),
+                                Err(drm_err) => {
+                                    Err(ScalixError::DmaUnavailable(format!(
+                                        "All Linux DMA allocators failed. DMA-Heap: [{heap_err}], DRM: [{drm_err}]"
+                                    )))
+                                }
+                            }
+                        }
+                    }
+                }
+                #[cfg(all(
+                    target_os = "android",
+                    any(target_arch = "aarch64", target_arch = "arm")
+                ))]
+                {
+                    let ahb_allocator = android_ahb::AndroidAhbAllocator;
+                    let alloc = ahb_allocator.allocate(dimensions, format)?;
+                    Ok(Self::from_allocation(
+                        alloc,
+                        dimensions,
+                        format,
+                        DmaAllocatorType::AndroidAhb,
+                    ))
+                }
+                #[cfg(not(any(
+                    target_os = "linux",
+                    all(
+                        target_os = "android",
+                        any(target_arch = "aarch64", target_arch = "arm")
+                    )
+                )))]
+                {
+                    Err(ScalixError::DmaUnavailable(
+                        "Hardware DMA buffer allocation is only supported on Linux (kernel 5.6+) and Android (API 26+)".to_string(),
+                    ))
                 }
             }
-        }
-
-        #[cfg(all(
-            target_os = "android",
-            any(target_arch = "aarch64", target_arch = "arm")
-        ))]
-        {
-            let ahb_allocator = android_ahb::AndroidAhbAllocator;
-            let alloc = ahb_allocator.allocate(dimensions, format)?;
-            Ok(Self::from_allocation(alloc, dimensions, format))
-        }
-
-        #[cfg(not(any(
-            target_os = "linux",
-            all(
-                target_os = "android",
-                any(target_arch = "aarch64", target_arch = "arm")
-            )
-        )))]
-        {
-            let _ = (dimensions, format);
-            Err(ScalixError::DmaUnavailable(
-                "DMA buffer allocation is only supported on Linux (kernel 5.6+) and Android (aarch64 / armv7)".to_string(),
-            ))
+            DmaAllocatorType::DmaHeap => {
+                #[cfg(target_os = "linux")]
+                {
+                    let heap_allocator = linux_dma_heap::LinuxDmaHeapAllocator;
+                    let alloc = heap_allocator.allocate(dimensions, format)?;
+                    Ok(Self::from_allocation(
+                        alloc,
+                        dimensions,
+                        format,
+                        DmaAllocatorType::DmaHeap,
+                    ))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(ScalixError::DmaUnavailable(
+                        "DMA-Heap allocator is only available on Linux".to_string(),
+                    ))
+                }
+            }
+            DmaAllocatorType::DrmDumb => {
+                #[cfg(target_os = "linux")]
+                {
+                    let drm_allocator = linux_drm::LinuxDrmAllocator;
+                    let alloc = drm_allocator.allocate(dimensions, format)?;
+                    Ok(Self::from_allocation(
+                        alloc,
+                        dimensions,
+                        format,
+                        DmaAllocatorType::DrmDumb,
+                    ))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(ScalixError::DmaUnavailable(
+                        "DRM Dumb allocator is only available on Linux".to_string(),
+                    ))
+                }
+            }
+            DmaAllocatorType::AndroidAhb => {
+                #[cfg(all(
+                    target_os = "android",
+                    any(target_arch = "aarch64", target_arch = "arm")
+                ))]
+                {
+                    let ahb_allocator = android_ahb::AndroidAhbAllocator;
+                    let alloc = ahb_allocator.allocate(dimensions, format)?;
+                    Ok(Self::from_allocation(
+                        alloc,
+                        dimensions,
+                        format,
+                        DmaAllocatorType::AndroidAhb,
+                    ))
+                }
+                #[cfg(not(all(
+                    target_os = "android",
+                    any(target_arch = "aarch64", target_arch = "arm")
+                )))]
+                {
+                    Err(ScalixError::DmaUnavailable(
+                        "Android AHardwareBuffer allocator is only available on Android"
+                            .to_string(),
+                    ))
+                }
+            }
+            DmaAllocatorType::HostAligned => {
+                let stride = format.min_stride(dimensions.width)?;
+                let size = format.min_buffer_size_dims(dimensions, stride)?;
+                let mut aligned_ptr: *mut libc::c_void = std::ptr::null_mut();
+                let ret = unsafe {
+                    libc::posix_memalign(
+                        &mut aligned_ptr,
+                        crate::types::REQUIRED_MEMORY_ALIGNMENT,
+                        size,
+                    )
+                };
+                if ret != 0 || aligned_ptr.is_null() {
+                    return Err(ScalixError::DmaAllocationFailed(
+                        "Failed to allocate 64-byte aligned host memory".to_string(),
+                    ));
+                }
+                unsafe {
+                    std::ptr::write_bytes(aligned_ptr as *mut u8, 0, size);
+                }
+                Ok(Self {
+                    #[cfg(target_os = "linux")]
+                    fd: None,
+                    #[cfg(all(
+                        target_os = "android",
+                        any(target_arch = "aarch64", target_arch = "arm")
+                    ))]
+                    ahb_handle: std::ptr::null_mut(),
+                    host_ptr: aligned_ptr as *mut u8,
+                    size,
+                    dimensions,
+                    stride,
+                    format,
+                    allocator_type: DmaAllocatorType::HostAligned,
+                    is_host_aligned: true,
+                })
+            }
         }
     }
 
-    /// Allocates a new hardware DMA buffer for scalar width and height.
+    /// Allocates a new hardware DMA buffer for the given spatial dimensions and pixel format using Auto discovery.
+    #[inline]
+    pub fn allocate_dimensions(dimensions: ImageDimensions, format: PixelFormat) -> Result<Self> {
+        Self::allocate_dimensions_with_type(dimensions, format, DmaAllocatorType::Auto)
+    }
+
+    /// Allocates a new hardware DMA buffer for scalar width and height using specific allocator type.
+    #[inline]
+    pub fn allocate_with_type(
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        alloc_type: DmaAllocatorType,
+    ) -> Result<Self> {
+        Self::allocate_dimensions_with_type(ImageDimensions::new(width, height), format, alloc_type)
+    }
+
+    /// Allocates a new hardware DMA buffer for scalar width and height using Auto discovery.
     #[inline]
     pub fn allocate(width: u32, height: u32, format: PixelFormat) -> Result<Self> {
         Self::allocate_dimensions(ImageDimensions::new(width, height), format)
+    }
+
+    /// Returns the allocator type used to back this buffer.
+    #[inline]
+    #[must_use]
+    pub const fn allocator_type(&self) -> DmaAllocatorType {
+        self.allocator_type
     }
 
     /// Returns the kernel DMA-BUF file descriptor on Linux, or -1 on platforms without an fd.
@@ -299,7 +457,7 @@ impl DmaBuffer {
     pub fn fd(&self) -> RawFd {
         #[cfg(target_os = "linux")]
         {
-            self.fd.as_raw_fd()
+            self.fd.as_ref().map(|f| f.as_raw_fd()).unwrap_or(-1)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -368,24 +526,26 @@ impl DmaBuffer {
     pub fn sync_start(&self, flags: DmaSyncFlags) -> Result<()> {
         #[cfg(target_os = "linux")]
         {
-            let sync_flags = match flags {
-                DmaSyncFlags::Read => DMA_BUF_SYNC_READ | DMA_BUF_SYNC_START,
-                DmaSyncFlags::Write => DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_START,
-                DmaSyncFlags::ReadWrite => DMA_BUF_SYNC_RW | DMA_BUF_SYNC_START,
-            };
-            let mut sync = DmaBufSync { flags: sync_flags };
-            let ret = unsafe {
-                libc::ioctl(
-                    self.fd.as_raw_fd(),
-                    DMA_BUF_IOCTL_SYNC,
-                    &mut sync as *mut DmaBufSync,
-                )
-            };
-            if ret != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(ScalixError::DmaSyncFailed(format!(
-                    "DMA_BUF_SYNC_START failed: {err}"
-                )));
+            if let Some(ref fd) = self.fd {
+                let sync_flags = match flags {
+                    DmaSyncFlags::Read => DMA_BUF_SYNC_READ | DMA_BUF_SYNC_START,
+                    DmaSyncFlags::Write => DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_START,
+                    DmaSyncFlags::ReadWrite => DMA_BUF_SYNC_RW | DMA_BUF_SYNC_START,
+                };
+                let mut sync = DmaBufSync { flags: sync_flags };
+                let ret = unsafe {
+                    libc::ioctl(
+                        fd.as_raw_fd(),
+                        DMA_BUF_IOCTL_SYNC,
+                        &mut sync as *mut DmaBufSync,
+                    )
+                };
+                if ret != 0 {
+                    let err = std::io::Error::last_os_error();
+                    return Err(ScalixError::DmaSyncFailed(format!(
+                        "DMA_BUF_SYNC_START failed: {err}"
+                    )));
+                }
             }
             Ok(())
         }
@@ -400,24 +560,26 @@ impl DmaBuffer {
     pub fn sync_end(&self, flags: DmaSyncFlags) -> Result<()> {
         #[cfg(target_os = "linux")]
         {
-            let sync_flags = match flags {
-                DmaSyncFlags::Read => DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END,
-                DmaSyncFlags::Write => DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_END,
-                DmaSyncFlags::ReadWrite => DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END,
-            };
-            let mut sync = DmaBufSync { flags: sync_flags };
-            let ret = unsafe {
-                libc::ioctl(
-                    self.fd.as_raw_fd(),
-                    DMA_BUF_IOCTL_SYNC,
-                    &mut sync as *mut DmaBufSync,
-                )
-            };
-            if ret != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(ScalixError::DmaSyncFailed(format!(
-                    "DMA_BUF_SYNC_END failed: {err}"
-                )));
+            if let Some(ref fd) = self.fd {
+                let sync_flags = match flags {
+                    DmaSyncFlags::Read => DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END,
+                    DmaSyncFlags::Write => DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_END,
+                    DmaSyncFlags::ReadWrite => DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END,
+                };
+                let mut sync = DmaBufSync { flags: sync_flags };
+                let ret = unsafe {
+                    libc::ioctl(
+                        fd.as_raw_fd(),
+                        DMA_BUF_IOCTL_SYNC,
+                        &mut sync as *mut DmaBufSync,
+                    )
+                };
+                if ret != 0 {
+                    let err = std::io::Error::last_os_error();
+                    return Err(ScalixError::DmaSyncFailed(format!(
+                        "DMA_BUF_SYNC_END failed: {err}"
+                    )));
+                }
             }
             Ok(())
         }
@@ -493,6 +655,16 @@ impl DmaBuffer {
 
 impl Drop for DmaBuffer {
     fn drop(&mut self) {
+        if self.is_host_aligned {
+            if !self.host_ptr.is_null() {
+                unsafe {
+                    libc::free(self.host_ptr as *mut libc::c_void);
+                }
+                self.host_ptr = std::ptr::null_mut();
+            }
+            return;
+        }
+
         #[cfg(target_os = "linux")]
         {
             if !self.host_ptr.is_null() && self.host_ptr != libc::MAP_FAILED as *mut u8 {

@@ -51,14 +51,15 @@ void TableReporter::print_section(string_view section_title) {
     cout << BANNER_DIVIDER << endl;
 }
 
-void TableReporter::print_vulkan_strategy_table(
+void TableReporter::print_strategy_table(
     string_view title,
-    const vector<StrategyBenchmarkResult>& results
+    const vector<StrategyBenchmarkResult>& results,
+    string_view method_header
 ) {
     cout << "\n" << BANNER_DIVIDER << endl;
     cout << "     " << title << endl;
     cout << BANNER_DIVIDER << endl;
-    cout << left << setw(WIDTH_METHOD_NAME) << "Vulkan Pipeline Method"
+    cout << left << setw(WIDTH_METHOD_NAME) << method_header
          << setw(WIDTH_LATENCY) << "Sync Latency"
          << setw(WIDTH_FPS) << "Sync FPS"
          << setw(WIDTH_LATENCY) << "Async Latency"
@@ -80,12 +81,13 @@ void TableReporter::print_vulkan_strategy_table(
 
 void TableReporter::print_profiling_breakdown_table(
     string_view title,
-    const vector<StrategyBenchmarkResult>& results
+    const vector<StrategyBenchmarkResult>& results,
+    string_view strategy_header
 ) {
     cout << "\n" << BANNER_DIVIDER << endl;
     cout << "          " << title << endl;
     cout << BANNER_DIVIDER << endl;
-    cout << left << setw(WIDTH_STRAT_NAME) << "Vulkan Strategy"
+    cout << left << setw(WIDTH_STRAT_NAME) << strategy_header
          << setw(WIDTH_SHORT_COL) << "Upload"
          << setw(WIDTH_MED_COL) << "GPU Core"
          << setw(WIDTH_SHORT_COL) << "Download"

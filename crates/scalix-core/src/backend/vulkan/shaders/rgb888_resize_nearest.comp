@@ -14,11 +14,7 @@ layout(push_constant) uniform PushConsts {
 };
 
 // Branchless 24-bit packed RGB pixel fetch from 32-bit storage buffer words
-uint sample_rgb(uint p_idx, uint total_dst) {
-    if (p_idx >= total_dst) return 0u;
-    uint dx = p_idx % dst_w;
-    uint dy = p_idx / dst_w;
-
+uint sample_rgb_coord(uint dx, uint dy) {
     uint sx = min(uint(floor(float(dx) * scale_x)), src_w - 1u);
     uint sy = min(uint(floor(float(dy) * scale_y)), src_h - 1u);
 
@@ -28,7 +24,9 @@ uint sample_rgb(uint p_idx, uint total_dst) {
     uint w1 = src_data[word_idx + 1u];
 
     uint shift = (src_byte_offset & 3u) << 3u;
-    uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
+    uint shift_hi = (32u - shift) & 31u;
+    uint mask_hi = uint(0) - uint(shift != 0u);
+    uint val = (w0 >> shift) | ((w1 << shift_hi) & mask_hi);
     return val & 0x00FFFFFFu;
 }
 
@@ -38,11 +36,29 @@ void main() {
     uint base_pixel = chunk_idx * 4u;
     if (base_pixel >= total_dst_pixels) return;
 
-    // Fetch 4 contiguous pixels as packed 24-bit words
-    uint p0 = sample_rgb(base_pixel, total_dst_pixels);
-    uint p1 = sample_rgb(base_pixel + 1u, total_dst_pixels);
-    uint p2 = sample_rgb(base_pixel + 2u, total_dst_pixels);
-    uint p3 = sample_rgb(base_pixel + 3u, total_dst_pixels);
+    uint dx0 = base_pixel % dst_w;
+    uint dy0 = base_pixel / dst_w;
+
+    // Fully unrolled 4-pixel chunk without dynamic arrays or branch hazards
+    uint p0 = sample_rgb_coord(dx0, dy0);
+
+    uint dx1 = dx0 + 1u;
+    uint wrap1 = uint(dx1 >= dst_w);
+    dx1 -= wrap1 * dst_w;
+    uint dy1 = dy0 + wrap1;
+    uint p1 = (base_pixel + 1u < total_dst_pixels) ? sample_rgb_coord(dx1, dy1) : 0u;
+
+    uint dx2 = dx0 + 2u;
+    uint wrap2 = uint(dx2 >= dst_w);
+    dx2 -= wrap2 * dst_w;
+    uint dy2 = dy0 + wrap2;
+    uint p2 = (base_pixel + 2u < total_dst_pixels) ? sample_rgb_coord(dx2, dy2) : 0u;
+
+    uint dx3 = dx0 + 3u;
+    uint wrap3 = uint(dx3 >= dst_w);
+    dx3 -= wrap3 * dst_w;
+    uint dy3 = dy0 + wrap3;
+    uint p3 = (base_pixel + 3u < total_dst_pixels) ? sample_rgb_coord(dx3, dy3) : 0u;
 
     // Branchless packing of 4x24-bit pixels into 3x32-bit storage buffer words
     uint w0 = p0 | (p1 << 24u);

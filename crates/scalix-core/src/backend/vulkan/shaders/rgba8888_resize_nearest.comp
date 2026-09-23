@@ -1,0 +1,61 @@
+#version 450
+layout(local_size_x = 64) in;
+
+// NOTE (Reference Implementation):
+// Direct 32-bit RGBA8888 / BGRA8888 Nearest-Neighbor Resampling Compute Kernel.
+// Direct 1-word-per-pixel indexing without cross-word shifts.
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
+layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
+
+layout(push_constant) uniform PushConsts {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    float scale_x;
+    float scale_y;
+};
+
+uint sample_nearest_coord(uint dx, uint dy) {
+    uint sx = min(uint(floor(float(dx) * scale_x)), src_w - 1u);
+    uint sy = min(uint(floor(float(dy) * scale_y)), src_h - 1u);
+    return src_data[sy * src_w + sx];
+}
+
+void main() {
+    uint chunk_idx = gl_GlobalInvocationID.x;
+    uint total_dst_pixels = dst_w * dst_h;
+    uint base_pixel = chunk_idx * 4u;
+    if (base_pixel >= total_dst_pixels) return;
+
+    uint dx0 = base_pixel % dst_w;
+    uint dy0 = base_pixel / dst_w;
+
+    // Fully unrolled 4-pixel chunk
+    dst_data[base_pixel] = sample_nearest_coord(dx0, dy0);
+
+    uint dx1 = dx0 + 1u;
+    uint wrap1 = uint(dx1 >= dst_w);
+    dx1 -= wrap1 * dst_w;
+    uint dy1 = dy0 + wrap1;
+    if (base_pixel + 1u < total_dst_pixels) {
+        dst_data[base_pixel + 1u] = sample_nearest_coord(dx1, dy1);
+    }
+
+    uint dx2 = dx0 + 2u;
+    uint wrap2 = uint(dx2 >= dst_w);
+    dx2 -= wrap2 * dst_w;
+    uint dy2 = dy0 + wrap2;
+    if (base_pixel + 2u < total_dst_pixels) {
+        dst_data[base_pixel + 2u] = sample_nearest_coord(dx2, dy2);
+    }
+
+    uint dx3 = dx0 + 3u;
+    uint wrap3 = uint(dx3 >= dst_w);
+    dx3 -= wrap3 * dst_w;
+    uint dy3 = dy0 + wrap3;
+    if (base_pixel + 3u < total_dst_pixels) {
+        dst_data[base_pixel + 3u] = sample_nearest_coord(dx3, dy3);
+    }
+}

@@ -1,0 +1,120 @@
+#version 450
+layout(local_size_x = 64) in;
+
+// NOTE (Reference Implementation):
+// Direct 32-bit RGBA8888 / BGRA8888 Lanczos3 Resampling Compute Kernel using 3-lobe sinc-windowed sinc kernel.
+// Reference: Lanczos, C. (1956). "Applied Analysis", Prentice-Hall;
+// Turkowski, K. (1990). "Filters for Common Resampling Tasks", Graphics Gems.
+// Evaluates L(x) across a 6x6 tap window with dynamic weight normalization for all 4 channels.
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
+layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
+
+layout(push_constant) uniform PushConsts {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    float scale_x;
+    float scale_y;
+};
+
+const float PI = 3.14159265358979323846;
+const float INV_3 = 0.33333333333333333;
+
+vec4 fetch_raw_rgba(int px, int py) {
+    int cx = clamp(px, 0, int(src_w) - 1);
+    int cy = clamp(py, 0, int(src_h) - 1);
+    return unpackUnorm4x8(src_data[uint(cy) * src_w + uint(cx)]);
+}
+
+float lanczos3_weight(float x) {
+    float ax = abs(x);
+    if (ax < 1e-5) return 1.0;
+    if (ax >= 3.0) return 0.0;
+    float pix = PI * ax;
+    return (sin(pix) * sin(pix * INV_3) * 3.0) / (pix * pix);
+}
+
+uint sample_lanczos3_coord(uint dx, uint dy) {
+    float u = (float(dx) + 0.5) * scale_x - 0.5;
+    float v = (float(dy) + 0.5) * scale_y - 0.5;
+
+    int x0 = int(floor(u));
+    int y0 = int(floor(v));
+
+    float fx = u - float(x0);
+    float fy = v - float(y0);
+
+    float wx[6];
+    float sum_wx = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        float d = float(i - 2) - fx;
+        wx[i] = lanczos3_weight(d);
+        sum_wx += wx[i];
+    }
+    float inv_sum_wx = 1.0 / max(abs(sum_wx), 1e-5);
+    for (int i = 0; i < 6; ++i) {
+        wx[i] *= inv_sum_wx;
+    }
+
+    float wy[6];
+    float sum_wy = 0.0;
+    for (int j = 0; j < 6; ++j) {
+        float d = float(j - 2) - fy;
+        wy[j] = lanczos3_weight(d);
+        sum_wy += wy[j];
+    }
+    float inv_sum_wy = 1.0 / max(abs(sum_wy), 1e-5);
+    for (int j = 0; j < 6; ++j) {
+        wy[j] *= inv_sum_wy;
+    }
+
+    vec4 col = vec4(0.0);
+    for (int j = 0; j < 6; ++j) {
+        vec4 row_col = vec4(0.0);
+        for (int i = 0; i < 6; ++i) {
+            row_col += wx[i] * fetch_raw_rgba(x0 - 2 + i, y0 - 2 + j);
+        }
+        col += wy[j] * row_col;
+    }
+
+    return packUnorm4x8(clamp(col, 0.0, 1.0));
+}
+
+void main() {
+    uint chunk_idx = gl_GlobalInvocationID.x;
+    uint total_dst_pixels = dst_w * dst_h;
+    uint base_pixel = chunk_idx * 4u;
+    if (base_pixel >= total_dst_pixels) return;
+
+    uint dx0 = base_pixel % dst_w;
+    uint dy0 = base_pixel / dst_w;
+
+    // Fully unrolled 4-pixel chunk
+    dst_data[base_pixel] = sample_lanczos3_coord(dx0, dy0);
+
+    uint dx1 = dx0 + 1u;
+    uint wrap1 = uint(dx1 >= dst_w);
+    dx1 -= wrap1 * dst_w;
+    uint dy1 = dy0 + wrap1;
+    if (base_pixel + 1u < total_dst_pixels) {
+        dst_data[base_pixel + 1u] = sample_lanczos3_coord(dx1, dy1);
+    }
+
+    uint dx2 = dx0 + 2u;
+    uint wrap2 = uint(dx2 >= dst_w);
+    dx2 -= wrap2 * dst_w;
+    uint dy2 = dy0 + wrap2;
+    if (base_pixel + 2u < total_dst_pixels) {
+        dst_data[base_pixel + 2u] = sample_lanczos3_coord(dx2, dy2);
+    }
+
+    uint dx3 = dx0 + 3u;
+    uint wrap3 = uint(dx3 >= dst_w);
+    dx3 -= wrap3 * dst_w;
+    uint dy3 = dy0 + wrap3;
+    if (base_pixel + 3u < total_dst_pixels) {
+        dst_data[base_pixel + 3u] = sample_lanczos3_coord(dx3, dy3);
+    }
+}

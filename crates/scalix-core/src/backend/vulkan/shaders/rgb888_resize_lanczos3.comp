@@ -1,0 +1,136 @@
+#version 450
+layout(local_size_x = 64) in;
+
+// NOTE (Reference Implementation):
+// 2D Separable Lanczos3 Resampling using 3-lobe sinc-windowed sinc kernel.
+// Reference: Lanczos, C. (1956). "Applied Analysis", Prentice-Hall;
+// Turkowski, K. (1990). "Filters for Common Resampling Tasks", Graphics Gems.
+// Kernel: L(x) = sinc(x) * sinc(x / 3) for |x| < 3 (sinc(t) = sin(pi*t)/(pi*t)),
+// evaluated across a 6x6 tap window with dynamic weight normalization.
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
+layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
+
+layout(push_constant) uniform PushConsts {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    float scale_x;
+    float scale_y;
+};
+
+const float PI = 3.14159265358979323846;
+const float INV_3 = 0.33333333333333333;
+
+// Branchless 24-bit packed RGB fetch to vec3
+vec3 fetch_raw_rgb(int px, int py) {
+    int cx = clamp(px, 0, int(src_w) - 1);
+    int cy = clamp(py, 0, int(src_h) - 1);
+    uint src_byte_offset = (uint(cy) * src_w + uint(cx)) * 3u;
+    uint word_idx = src_byte_offset >> 2u;
+    uint w0 = src_data[word_idx];
+    uint w1 = src_data[word_idx + 1u];
+
+    uint shift = (src_byte_offset & 3u) << 3u;
+    uint shift_hi = (32u - shift) & 31u;
+    uint mask_hi = uint(0) - uint(shift != 0u);
+    uint val = (w0 >> shift) | ((w1 << shift_hi) & mask_hi);
+    return vec3(float(val & 0xFFu), float((val >> 8u) & 0xFFu), float((val >> 16u) & 0xFFu));
+}
+
+float lanczos3_weight(float x) {
+    float ax = abs(x);
+    if (ax < 1e-5) return 1.0;
+    if (ax >= 3.0) return 0.0;
+    float pix = PI * ax;
+    return (sin(pix) * sin(pix * INV_3) * 3.0) / (pix * pix);
+}
+
+uint sample_lanczos3_coord(uint dx, uint dy) {
+    float u = (float(dx) + 0.5) * scale_x - 0.5;
+    float v = (float(dy) + 0.5) * scale_y - 0.5;
+
+    int x0 = int(floor(u));
+    int y0 = int(floor(v));
+
+    float fx = u - float(x0);
+    float fy = v - float(y0);
+
+    float wx[6];
+    float sum_wx = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        float d = float(i - 2) - fx;
+        wx[i] = lanczos3_weight(d);
+        sum_wx += wx[i];
+    }
+    float inv_sum_wx = 1.0 / max(abs(sum_wx), 1e-5);
+    for (int i = 0; i < 6; ++i) {
+        wx[i] *= inv_sum_wx;
+    }
+
+    float wy[6];
+    float sum_wy = 0.0;
+    for (int j = 0; j < 6; ++j) {
+        float d = float(j - 2) - fy;
+        wy[j] = lanczos3_weight(d);
+        sum_wy += wy[j];
+    }
+    float inv_sum_wy = 1.0 / max(abs(sum_wy), 1e-5);
+    for (int j = 0; j < 6; ++j) {
+        wy[j] *= inv_sum_wy;
+    }
+
+    vec3 col = vec3(0.0);
+    for (int j = 0; j < 6; ++j) {
+        vec3 row_col = vec3(0.0);
+        for (int i = 0; i < 6; ++i) {
+            row_col += wx[i] * fetch_raw_rgb(x0 - 2 + i, y0 - 2 + j);
+        }
+        col += wy[j] * row_col;
+    }
+
+    uvec3 ucol = uvec3(clamp(col + 0.5, 0.0, 255.0));
+    return ucol.r | (ucol.g << 8u) | (ucol.b << 16u);
+}
+
+void main() {
+    uint chunk_idx = gl_GlobalInvocationID.x;
+    uint total_dst_pixels = dst_w * dst_h;
+    uint base_pixel = chunk_idx * 4u;
+    if (base_pixel >= total_dst_pixels) return;
+
+    uint dx0 = base_pixel % dst_w;
+    uint dy0 = base_pixel / dst_w;
+
+    // Fully unrolled 4-pixel chunk without dynamic arrays or branch hazards
+    uint p0 = sample_lanczos3_coord(dx0, dy0);
+
+    uint dx1 = dx0 + 1u;
+    uint wrap1 = uint(dx1 >= dst_w);
+    dx1 -= wrap1 * dst_w;
+    uint dy1 = dy0 + wrap1;
+    uint p1 = (base_pixel + 1u < total_dst_pixels) ? sample_lanczos3_coord(dx1, dy1) : 0u;
+
+    uint dx2 = dx0 + 2u;
+    uint wrap2 = uint(dx2 >= dst_w);
+    dx2 -= wrap2 * dst_w;
+    uint dy2 = dy0 + wrap2;
+    uint p2 = (base_pixel + 2u < total_dst_pixels) ? sample_lanczos3_coord(dx2, dy2) : 0u;
+
+    uint dx3 = dx0 + 3u;
+    uint wrap3 = uint(dx3 >= dst_w);
+    dx3 -= wrap3 * dst_w;
+    uint dy3 = dy0 + wrap3;
+    uint p3 = (base_pixel + 3u < total_dst_pixels) ? sample_lanczos3_coord(dx3, dy3) : 0u;
+
+    // Branchless packing into 3x32-bit storage buffer words
+    uint w0 = p0 | (p1 << 24u);
+    uint w1 = (p1 >> 8u) | (p2 << 16u);
+    uint w2 = (p2 >> 16u) | (p3 << 8u);
+    uint out_word_base = chunk_idx * 3u;
+
+    dst_data[out_word_base + 0u] = w0;
+    if (base_pixel + 1u < total_dst_pixels) dst_data[out_word_base + 1u] = w1;
+    if (base_pixel + 2u < total_dst_pixels) dst_data[out_word_base + 2u] = w2;
+}

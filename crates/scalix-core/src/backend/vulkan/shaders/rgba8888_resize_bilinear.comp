@@ -1,0 +1,86 @@
+#version 450
+layout(local_size_x = 64) in;
+
+// NOTE (Reference Implementation):
+// Direct 32-bit RGBA8888 / BGRA8888 Bilinear Resampling Compute Kernel.
+// Uses hardware-accelerated unpackUnorm4x8 / packUnorm4x8 for 1-cycle conversion and normalization.
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
+layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
+
+layout(push_constant) uniform PushConsts {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    float scale_x;
+    float scale_y;
+};
+
+vec4 fetch_raw_rgba(int px, int py) {
+    int cx = clamp(px, 0, int(src_w) - 1);
+    int cy = clamp(py, 0, int(src_h) - 1);
+    return unpackUnorm4x8(src_data[uint(cy) * src_w + uint(cx)]);
+}
+
+uint sample_bilinear_coord(uint dx, uint dy) {
+    float u = (float(dx) + 0.5) * scale_x - 0.5;
+    float v = (float(dy) + 0.5) * scale_y - 0.5;
+
+    float fu = floor(u);
+    float fv = floor(v);
+
+    int x0 = int(fu);
+    int y0 = int(fv);
+
+    float fx = u - fu;
+    float fy = v - fv;
+
+    vec4 c00 = fetch_raw_rgba(x0, y0);
+    vec4 c10 = fetch_raw_rgba(x0 + 1, y0);
+    vec4 c01 = fetch_raw_rgba(x0, y0 + 1);
+    vec4 c11 = fetch_raw_rgba(x0 + 1, y0 + 1);
+
+    vec4 top = mix(c00, c10, fx);
+    vec4 bot = mix(c01, c11, fx);
+    vec4 col = mix(top, bot, fy);
+
+    return packUnorm4x8(clamp(col, 0.0, 1.0));
+}
+
+void main() {
+    uint chunk_idx = gl_GlobalInvocationID.x;
+    uint total_dst_pixels = dst_w * dst_h;
+    uint base_pixel = chunk_idx * 4u;
+    if (base_pixel >= total_dst_pixels) return;
+
+    uint dx0 = base_pixel % dst_w;
+    uint dy0 = base_pixel / dst_w;
+
+    // Fully unrolled 4-pixel chunk
+    dst_data[base_pixel] = sample_bilinear_coord(dx0, dy0);
+
+    uint dx1 = dx0 + 1u;
+    uint wrap1 = uint(dx1 >= dst_w);
+    dx1 -= wrap1 * dst_w;
+    uint dy1 = dy0 + wrap1;
+    if (base_pixel + 1u < total_dst_pixels) {
+        dst_data[base_pixel + 1u] = sample_bilinear_coord(dx1, dy1);
+    }
+
+    uint dx2 = dx0 + 2u;
+    uint wrap2 = uint(dx2 >= dst_w);
+    dx2 -= wrap2 * dst_w;
+    uint dy2 = dy0 + wrap2;
+    if (base_pixel + 2u < total_dst_pixels) {
+        dst_data[base_pixel + 2u] = sample_bilinear_coord(dx2, dy2);
+    }
+
+    uint dx3 = dx0 + 3u;
+    uint wrap3 = uint(dx3 >= dst_w);
+    dx3 -= wrap3 * dst_w;
+    uint dy3 = dy0 + wrap3;
+    if (base_pixel + 3u < total_dst_pixels) {
+        dst_data[base_pixel + 3u] = sample_bilinear_coord(dx3, dy3);
+    }
+}

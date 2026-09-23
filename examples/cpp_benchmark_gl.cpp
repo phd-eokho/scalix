@@ -35,7 +35,7 @@ namespace {
 constexpr string_view DEFAULT_SAMPLE_PATH   = "assets/sample.jpg";
 constexpr string_view FALLBACK_SAMPLE_PATH  = "../assets/sample.jpg";
 
-constexpr string_view PREFIX_BENCH          = "bench";
+constexpr string_view PREFIX_BENCH          = "bench_gl";
 constexpr string_view UNIT_MS               = " ms";
 constexpr string_view UNIT_FPS              = " FPS";
 constexpr string_view UNIT_X                = "x";
@@ -53,13 +53,13 @@ constexpr uint32_t SYNTH_FHD_H              = 1080;
 constexpr uint32_t SYNTH_HD_W               = 1280;
 constexpr uint32_t SYNTH_HD_H               = 720;
 
-constexpr string_view OUT_BLIT_FILE         = "/tmp/bench_sample_blit.jpg";
-constexpr string_view OUT_RASTER_FILE       = "/tmp/bench_sample_raster.jpg";
-constexpr string_view OUT_LOD_AUTO_FILE     = "/tmp/bench_sample_lod_auto.jpg";
-constexpr string_view OUT_LOD_2LVL_FILE     = "/tmp/bench_sample_lod_2lvl.jpg";
-constexpr string_view OUT_COMPUTE_FILE      = "/tmp/bench_sample_compute.jpg";
-constexpr string_view OUT_AREA_FILE         = "/tmp/bench_sample_area.jpg";
-constexpr string_view OUT_AUTO_FILE         = "/tmp/bench_sample_auto.jpg";
+constexpr string_view OUT_BLIT_FILE         = "/tmp/bench_gl_sample_blit.jpg";
+constexpr string_view OUT_RASTER_FILE       = "/tmp/bench_gl_sample_raster.jpg";
+constexpr string_view OUT_LOD_AUTO_FILE     = "/tmp/bench_gl_sample_lod_auto.jpg";
+constexpr string_view OUT_LOD_2LVL_FILE     = "/tmp/bench_gl_sample_lod_2lvl.jpg";
+constexpr string_view OUT_COMPUTE_FILE      = "/tmp/bench_gl_sample_compute.jpg";
+constexpr string_view OUT_AREA_FILE         = "/tmp/bench_gl_sample_area.jpg";
+constexpr string_view OUT_AUTO_FILE         = "/tmp/bench_gl_sample_auto.jpg";
 
 constexpr string_view MSG_DMA_ACTIVE        = "[Hardware DMA Status: Native Zero-Copy DMA Active (DMA-Heap / DRM GEM Dumb)]";
 constexpr string_view MSG_DMA_STAGING       = "[Hardware DMA Status: Host-Memory Staging Mode Active (Hardware DMA-BUF / DRM unavailable in current environment)]";
@@ -195,14 +195,14 @@ static optional<ResolutionBenchmarkResult> run_dma_resolution_benchmark(
 
     try {
         for (size_t i = 0; i < num_frames; ++i) {
-            auto src_buf = make_unique<scalix::DmaBuffer>(src_w, src_h, scalix::PixelFormat::Rgba8888);
+            auto src_buf = make_unique<scalix::DmaBuffer>(src_w, src_h, scalix::PixelFormat::Rgba8888, scalix::AllocatorType::Auto);
             const uint8_t pattern = static_cast<uint8_t>((i * 17 + 0x33) & 0xFF);
             src_buf->with_write([pattern](uint8_t* ptr, size_t size) {
                 if (ptr && size > 0) memset(ptr, pattern, size);
             });
             src_buffers.push_back(move(src_buf));
-            dst_sync_buffers.push_back(make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888));
-            dst_async_buffers.push_back(make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888));
+            dst_sync_buffers.push_back(make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888, scalix::AllocatorType::Auto));
+            dst_async_buffers.push_back(make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888, scalix::AllocatorType::Auto));
         }
     } catch (const exception& e) {
         cout << "  [DMA Allocation Not Supported on Host]: " << e.what() << endl;
@@ -251,10 +251,10 @@ static optional<ResolutionBenchmarkResult> run_dma_resolution_benchmark(
 }
 
 // ============================================================================
-// Dedicated Sample Image (assets/sample.jpg) Vulkan Methods Benchmark
+// Dedicated Sample Image OpenGL Methods Benchmark
 // ============================================================================
 
-static StrategyBenchmarkResult benchmark_sample_method(
+static StrategyBenchmarkResult benchmark_sample_method_gl(
     scalix::Engine& engine,
     string_view method_name,
     string_view description,
@@ -288,7 +288,7 @@ static StrategyBenchmarkResult benchmark_sample_method(
         .output_file = string(output_filename),
     };
 
-    const scalix::ResizeOptions options = scalix::ResizeOptions::with_vulkan(
+    const scalix::ResizeOptions options = scalix::ResizeOptions::with_gl(
         filter,
         strategy,
         max_mip_levels
@@ -400,8 +400,8 @@ static StrategyBenchmarkResult benchmark_sample_method(
 
 int main(int argc, char** argv) {
     TableReporter::print_banner(
-        "SCALIX HARDWARE ACCELERATOR BENCHMARK SUITE",
-        "Vulkan Multi-Strategy & Resolution Evaluation (SOLID Architecture)"
+        "SCALIX OPENGL/GLES HARDWARE ACCELERATOR BENCHMARK SUITE",
+        "EGL Headless Multi-Strategy & Resolution Evaluation (SOLID Architecture)"
     );
 
     // Locate sample image
@@ -414,13 +414,22 @@ int main(int argc, char** argv) {
 
     const size_t num_sample_rounds = (argc > 2) ? static_cast<size_t>(stoul(argv[2])) : DEFAULT_BENCH_ROUNDS;
 
-    // Initialize Scalix Engine
-    scalix::Engine engine(scalix::Backend::Auto, PREFIX_BENCH.data());
+    // Initialize Scalix Engine with OpenGL Backend
+    unique_ptr<scalix::Engine> engine_ptr;
+    try {
+        engine_ptr = make_unique<scalix::Engine>(scalix::Backend::OpenGL, PREFIX_BENCH.data());
+        cout << "[Engine Initialized: Active Backend = " << engine_ptr->backend_name() << "]" << endl;
+    } catch (const exception& e) {
+        cerr << "[OpenGL Backend Initialization Failed / Unavailable]: " << e.what() << endl;
+        return 1;
+    }
+
+    auto& engine = *engine_ptr;
 
     // 0. Hardware DMA Availability Probe
     bool has_dma = false;
     try {
-        scalix::DmaBuffer probe(64, 64, scalix::PixelFormat::Rgba8888);
+        scalix::DmaBuffer probe(64, 64, scalix::PixelFormat::Rgba8888, scalix::AllocatorType::Auto);
         has_dma = (probe.fd() >= 0);
     } catch (...) {
         has_dma = false;
@@ -473,55 +482,57 @@ int main(int argc, char** argv) {
     }
 
     if (sample_loaded) {
-        cout << "\nExecuting Vulkan Pipeline Strategy Benchmarks on " << sample_path << "..." << endl;
+        cout << "\nExecuting OpenGL Pipeline Strategy Benchmarks on " << sample_path << "..." << endl;
 
         const vector<StrategyBenchmarkResult> sample_benchmarks = {
-            benchmark_sample_method(engine, "1. Vulkan Blit", "Hardware 2D Blitter (`vkCmdBlitImage`)",
+            benchmark_sample_method_gl(engine, "1. OpenGL Blit", "Hardware 2D FBO Blitter (`glBlitFramebuffer`)",
                 scalix::Strategy::Blit, 0, scalix::Filter::Bilinear,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_BLIT_FILE),
 
-            benchmark_sample_method(engine, "2. Vulkan Raster", "Offscreen Raster Graphics (`vkCmdDraw`)",
+            benchmark_sample_method_gl(engine, "2. OpenGL Raster", "Offscreen Quad Shader (`glDrawArrays`)",
                 scalix::Strategy::Raster, 0, scalix::Filter::Bilinear,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_RASTER_FILE),
 
-            benchmark_sample_method(engine, "3. Vulkan Lod Mipmap (Auto)", "Hierarchical Mipchain Reduction (Full)",
+            benchmark_sample_method_gl(engine, "3. OpenGL Lod Mipmap (Auto)", "Hierarchical Mipchain Reduction (Full)",
                 scalix::Strategy::LodPyramid, 0, scalix::Filter::Bilinear,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_LOD_AUTO_FILE),
 
-            benchmark_sample_method(engine, "4. Vulkan Lod Mipmap (2-Lvl)", "Hierarchical Mipchain Reduction (2-Pass)",
+            benchmark_sample_method_gl(engine, "4. OpenGL Lod Mipmap (2-Lvl)", "Hierarchical Mipchain Reduction (2-Pass)",
                 scalix::Strategy::LodPyramid, 2, scalix::Filter::Bilinear,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_LOD_2LVL_FILE),
 
-            benchmark_sample_method(engine, "5. Vulkan Compute", "Direct Fused 24-bit Compute Resizer (`vkCmdDispatch`)",
+            benchmark_sample_method_gl(engine, "5. OpenGL Compute", "Direct Compute Shader Resizer (`glDispatchCompute`)",
                 scalix::Strategy::Compute, 0, scalix::Filter::Bilinear,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_COMPUTE_FILE),
 
-            benchmark_sample_method(engine, "6. Vulkan Compute (Area)", "Direct Fused 24-bit Area Box Averaging Resizer",
-                scalix::Strategy::Compute, 0, scalix::Filter::Area,
+            benchmark_sample_method_gl(engine, "6. OpenGL Raster (Area)", "Offscreen Area Box Averaging Quad Shader (`glDrawArrays`)",
+                scalix::Strategy::Raster, 0, scalix::Filter::Area,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_AREA_FILE),
 
-            benchmark_sample_method(engine, "7. Vulkan Auto", "Scalix Engine Adaptive Strategy Fast-Path Selector",
+            benchmark_sample_method_gl(engine, "7. OpenGL Auto", "Scalix Engine Adaptive Fast-Path Selector",
                 scalix::Strategy::Auto, 0, scalix::Filter::Bilinear,
                 sample_rgb_src, sample_w, sample_h, sample_dst_w, sample_dst_h, num_sample_rounds, OUT_AUTO_FILE),
         };
 
         // Render Dedicated Results Tables
-        TableReporter::print_vulkan_strategy_table(
-            "DEDICATED RESULTS: ALL VULKAN METHODS ON " + sample_path + " (" + to_string(sample_w) + "x" + to_string(sample_h) + " → " + to_string(sample_dst_w) + "x" + to_string(sample_dst_h) + ")",
-            sample_benchmarks
+        TableReporter::print_strategy_table(
+            "DEDICATED RESULTS: ALL OPENGL METHODS ON " + sample_path + " (" + to_string(sample_w) + "x" + to_string(sample_h) + " → " + to_string(sample_dst_w) + "x" + to_string(sample_dst_h) + ")",
+            sample_benchmarks,
+            "OpenGL Pipeline Method"
         );
 
         TableReporter::print_profiling_breakdown_table(
             "STAGE-BY-STAGE GPU LATENCY PROFILING BREAKDOWN (" + sample_path + ")",
-            sample_benchmarks
+            sample_benchmarks,
+            "OpenGL Strategy"
         );
 
-        cout << "  Verification artifacts saved to /tmp/bench_sample_*.jpg for visual fidelity inspection." << endl;
+        cout << "  Verification artifacts saved to /tmp/bench_gl_sample_*.jpg for visual fidelity inspection." << endl;
     }
 
 #if SCALIX_HAS_OPENCV
     if (sample_loaded) {
-        TableReporter::print_section("OPENCV (CPU) vs SCALIX (VULKAN GPU) ON " + sample_path + " (" + to_string(sample_w) + "x" + to_string(sample_h) + " → " + to_string(sample_dst_w) + "x" + to_string(sample_dst_h) + ")");
+        TableReporter::print_section("OPENCV (CPU) vs SCALIX (OPENGL GPU) ON " + sample_path + " (" + to_string(sample_w) + "x" + to_string(sample_h) + " → " + to_string(sample_dst_w) + "x" + to_string(sample_dst_h) + ")");
 
         struct CvInterpTest final {
             string name;
@@ -544,7 +555,7 @@ int main(int argc, char** argv) {
         cout << left << setw(24) << "Interpolation"
              << setw(18) << "OpenCV (CPU) Latency"
              << setw(16) << "OpenCV FPS"
-             << setw(18) << "Scalix (Vulkan Async)"
+             << setw(18) << "Scalix (GL Async)"
              << setw(16) << "Scalix FPS"
              << "GPU Speedup" << endl;
         cout << "------------------------------------------------------------------------------------------" << endl;
@@ -623,8 +634,8 @@ int main(int argc, char** argv) {
         if (auto mhd = run_dma_resolution_benchmark(engine, "HD 720p (1280x720)", SYNTH_HD_W, SYNTH_HD_H, SYNTH_DST_DIM, SYNTH_DST_DIM, DEFAULT_BENCH_ROUNDS)) synth_results.push_back(*mhd);
     }
 
-    TableReporter::print_resolution_summary_table("SYNTHETIC MULTI-RESOLUTION BENCHMARK COMPARISON SUMMARY", synth_results);
+    TableReporter::print_resolution_summary_table("SYNTHETIC MULTI-RESOLUTION BENCHMARK COMPARISON SUMMARY (OPENGL)", synth_results);
 
-    cout << "\n[Vulkan benchmark suite completed successfully!]" << endl;
+    cout << "\n[OpenGL benchmark suite completed successfully!]" << endl;
     return 0;
 }

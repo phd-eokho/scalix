@@ -68,8 +68,9 @@ impl VulkanLodDownscaler {
         };
         let num_levels = if ratio > 1 {
             let calculated = ratio.ilog2().saturating_add(1);
-            if options.vulkan.max_mip_levels > 0 {
-                calculated.min(options.vulkan.max_mip_levels)
+            let max_mip_levels = options.vulkan_options().max_mip_levels;
+            if max_mip_levels > 0 {
+                calculated.min(max_mip_levels)
             } else {
                 calculated
             }

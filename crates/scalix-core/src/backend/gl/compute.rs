@@ -1,0 +1,319 @@
+//! OpenGL Compute Shader Resizer (`glDispatchCompute`)
+
+use std::ffi::{c_char, CString};
+use std::sync::Arc;
+use std::time::Instant;
+
+use super::blit::get_gl_format_tuple;
+use super::context::*;
+use crate::profiler::{ProfileMetrics, Profiler};
+use crate::types::{FilterMode, ImageDesc, ImageDescMut, Result, ScalixError};
+
+const COMPUTE_SHADER_BODY: &str = r#"
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0) uniform sampler2D uSrcTexture;
+layout(binding = 1, rgba8) uniform writeonly highp image2D uDstImage;
+
+void main() {
+    ivec2 dstCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(uDstImage);
+    if (dstCoord.x >= dstSize.x || dstCoord.y >= dstSize.y) {
+        return;
+    }
+
+    vec2 uv = (vec2(dstCoord) + 0.5) / vec2(dstSize);
+    vec4 color = texture(uSrcTexture, uv);
+    imageStore(uDstImage, dstCoord, color);
+}
+"#;
+
+const COMPUTE_SHADER_AREA_BODY: &str = r#"
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0) uniform sampler2D uSrcTexture;
+layout(binding = 1, rgba8) uniform writeonly highp image2D uDstImage;
+uniform vec2 uSrcSize;
+
+void main() {
+    ivec2 dstCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(uDstImage);
+    if (dstCoord.x >= dstSize.x || dstCoord.y >= dstSize.y) {
+        return;
+    }
+
+    vec2 scale = uSrcSize / vec2(dstSize);
+    float x0 = float(dstCoord.x) * scale.x;
+    float x1 = float(dstCoord.x + 1) * scale.x;
+    float y0 = float(dstCoord.y) * scale.y;
+    float y1 = float(dstCoord.y + 1) * scale.y;
+
+    int sx_min = int(floor(x0));
+    int sx_max = int(floor(x1));
+    sx_max -= int(float(sx_max) == x1 && sx_max > sx_min);
+
+    int sy_min = int(floor(y0));
+    int sy_max = int(floor(y1));
+    sy_max -= int(float(sy_max) == y1 && sy_max > sy_min);
+
+    vec4 sum_col = vec4(0.0);
+    float total_weight = 0.0;
+
+    for (int sy = sy_min; sy <= sy_max; ++sy) {
+        float wy = max(0.0, min(float(sy) + 1.0, y1) - max(float(sy), y0));
+        int cy = clamp(sy, 0, int(uSrcSize.y) - 1);
+        for (int sx = sx_min; sx <= sx_max; ++sx) {
+            float wx = max(0.0, min(float(sx) + 1.0, x1) - max(float(sx), x0));
+            float w = wx * wy;
+            int cx = clamp(sx, 0, int(uSrcSize.x) - 1);
+            sum_col += texelFetch(uSrcTexture, ivec2(cx, cy), 0) * w;
+            total_weight += w;
+        }
+    }
+
+    vec4 color = (total_weight > 0.0) ? (sum_col / total_weight) : texelFetch(uSrcTexture, ivec2(clamp(sx_min, 0, int(uSrcSize.x) - 1), clamp(sy_min, 0, int(uSrcSize.y) - 1)), 0);
+    imageStore(uDstImage, dstCoord, color);
+}
+"#;
+
+use super::ring::GlStagingRing;
+use std::sync::Mutex;
+
+pub struct GlComputeResizer {
+    ctx: Arc<EglContext>,
+    ring: Arc<Mutex<GlStagingRing>>,
+    profiler: Arc<dyn Profiler>,
+    prog_bilinear: Mutex<Option<u32>>,
+    prog_area: Mutex<Option<u32>>,
+}
+
+impl GlComputeResizer {
+    pub fn new(
+        ctx: Arc<EglContext>,
+        ring: Arc<Mutex<GlStagingRing>>,
+        profiler: Arc<dyn Profiler>,
+    ) -> Self {
+        Self {
+            ctx,
+            ring,
+            profiler,
+            prog_bilinear: Mutex::new(None),
+            prog_area: Mutex::new(None),
+        }
+    }
+
+    pub fn is_supported(&self) -> bool {
+        self.ctx.is_compute_supported
+    }
+
+    fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
+        let is_area = filter == FilterMode::Area;
+        let target_lock = if is_area {
+            &self.prog_area
+        } else {
+            &self.prog_bilinear
+        };
+
+        let mut prog_lock = target_lock.lock().map_err(|_| {
+            ScalixError::ExecutionFailed("Failed to acquire compute program lock".to_string())
+        })?;
+        if let Some(prog) = *prog_lock {
+            return Ok(prog);
+        }
+        let prog = self.build_program(filter)?;
+        *prog_lock = Some(prog);
+        Ok(prog)
+    }
+
+    fn build_program(&self, filter: FilterMode) -> Result<u32> {
+        let gl = &self.ctx.gl;
+        let header = self.ctx.compute_shader_header();
+        let body = if filter == FilterMode::Area {
+            COMPUTE_SHADER_AREA_BODY
+        } else {
+            COMPUTE_SHADER_BODY
+        };
+        let src = format!("{header}{body}");
+
+        unsafe {
+            let shader = (gl.glCreateShader)(GL_COMPUTE_SHADER);
+            let c_src = CString::new(src).unwrap();
+            let ptr = c_src.as_ptr();
+            (gl.glShaderSource)(shader, 1, &ptr, std::ptr::null());
+            (gl.glCompileShader)(shader);
+
+            let mut success = 0;
+            (gl.glGetShaderiv)(shader, GL_COMPILE_STATUS, &mut success);
+            if success == 0 {
+                let mut len = 0;
+                (gl.glGetShaderiv)(shader, GL_INFO_LOG_LENGTH, &mut len);
+                let mut buffer = vec![0u8; len as usize + 1];
+                (gl.glGetShaderInfoLog)(
+                    shader,
+                    len,
+                    std::ptr::null_mut(),
+                    buffer.as_mut_ptr() as *mut c_char,
+                );
+                (gl.glDeleteShader)(shader);
+                let log = String::from_utf8_lossy(&buffer);
+                return Err(ScalixError::ExecutionFailed(format!(
+                    "Compute shader compilation failed: {log}"
+                )));
+            }
+
+            let prog = (gl.glCreateProgram)();
+            (gl.glAttachShader)(prog, shader);
+            (gl.glLinkProgram)(prog);
+            (gl.glDeleteShader)(shader);
+
+            let mut link_success = 0;
+            (gl.glGetProgramiv)(prog, GL_LINK_STATUS, &mut link_success);
+            if link_success == 0 {
+                let mut len = 0;
+                (gl.glGetProgramiv)(prog, GL_INFO_LOG_LENGTH, &mut len);
+                let mut buffer = vec![0u8; len as usize + 1];
+                (gl.glGetProgramInfoLog)(
+                    prog,
+                    len,
+                    std::ptr::null_mut(),
+                    buffer.as_mut_ptr() as *mut c_char,
+                );
+                (gl.glDeleteProgram)(prog);
+                let log = String::from_utf8_lossy(&buffer);
+                return Err(ScalixError::ExecutionFailed(format!(
+                    "Compute program link failed: {log}"
+                )));
+            }
+            Ok(prog)
+        }
+    }
+
+    pub fn process(
+        &self,
+        src: &ImageDesc,
+        dst: &mut ImageDescMut,
+        filter: FilterMode,
+    ) -> Result<()> {
+        if !self.is_supported() {
+            return Err(ScalixError::ExecutionFailed(
+                "OpenGL Compute Shaders (glDispatchCompute) are not supported on this device"
+                    .to_string(),
+            ));
+        }
+
+        let wall_start = Instant::now();
+        let _guard = self.ctx.bind_current()?;
+        let gl = &self.ctx.gl;
+
+        let gl_dispatch = gl.glDispatchCompute.ok_or_else(|| {
+            ScalixError::ExecutionFailed("glDispatchCompute not available".to_string())
+        })?;
+        let gl_bind_image = gl.glBindImageTexture.ok_or_else(|| {
+            ScalixError::ExecutionFailed("glBindImageTexture not available".to_string())
+        })?;
+
+        let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
+        let (_dst_internal, dst_format, dst_type) = get_gl_format_tuple(dst.format)?;
+
+        let program = self.get_or_build_program(filter)?;
+        let gl_filter = if filter == FilterMode::Nearest {
+            GL_NEAREST
+        } else {
+            GL_LINEAR
+        };
+
+        let mut ring_guard = self.ring.lock().map_err(|_| {
+            ScalixError::ExecutionFailed("Failed to acquire GlStagingRing lock".to_string())
+        })?;
+        let (_slot_idx, slot) = ring_guard.acquire_slot()?;
+
+        unsafe {
+            (gl.glPixelStorei)(GL_UNPACK_ALIGNMENT, 1);
+            (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
+
+            // 1. Upload Source via PBO DMA staging
+            let upload_start = Instant::now();
+            let src_tex = slot.upload_src_data(
+                &self.ctx,
+                src.data,
+                src.width,
+                src.height,
+                src_internal,
+                src_format,
+                src_type,
+                gl_filter,
+            )?;
+            let dst_tex = slot.ensure_dst_texture(
+                &self.ctx,
+                dst.width,
+                dst.height,
+                GL_RGBA8,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+            )?;
+            let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
+
+            // 2. Dispatch Compute
+            let compute_start = Instant::now();
+            (gl.glUseProgram)(program);
+
+            (gl.glActiveTexture)(GL_TEXTURE0);
+            (gl.glBindTexture)(GL_TEXTURE_2D, src_tex);
+            let u_tex =
+                (gl.glGetUniformLocation)(program, c"uSrcTexture".as_ptr() as *const c_char);
+            (gl.glUniform1i)(u_tex, 0);
+
+            let u_src_size =
+                (gl.glGetUniformLocation)(program, c"uSrcSize".as_ptr() as *const c_char);
+            if u_src_size >= 0 {
+                (gl.glUniform2f)(u_src_size, src.width as f32, src.height as f32);
+            }
+
+            gl_bind_image(1, dst_tex, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA8);
+
+            let groups_x = dst.width.div_ceil(16);
+            let groups_y = dst.height.div_ceil(16);
+            gl_dispatch(groups_x, groups_y, 1);
+
+            if let Some(gl_barrier) = gl.glMemoryBarrier {
+                gl_barrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_ALL_BARRIER_BITS);
+            }
+            slot.signal_fence(&self.ctx);
+            let compute_ms = compute_start.elapsed().as_secs_f64() * 1000.0;
+
+            // 3. Download Pixels via Persistent FBO
+            let download_start = Instant::now();
+            (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
+            (gl.glFramebufferTexture2D)(
+                GL_READ_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                dst_tex,
+                0,
+            );
+
+            (gl.glReadPixels)(
+                0,
+                0,
+                dst.width as i32,
+                dst.height as i32,
+                dst_format,
+                dst_type,
+                dst.data.as_mut_ptr() as *mut std::ffi::c_void,
+            );
+            (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, 0);
+            let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
+
+            let total_wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
+            self.profiler.record(ProfileMetrics {
+                host_unpack_ms: 0.0,
+                gpu_upload_ms: upload_ms,
+                gpu_pure_blit_ms: compute_ms,
+                gpu_download_ms: download_ms,
+                host_repack_ms: 0.0,
+                driver_sync_ms: 0.0,
+                total_wall_ms,
+            });
+        }
+
+        Ok(())
+    }
+}

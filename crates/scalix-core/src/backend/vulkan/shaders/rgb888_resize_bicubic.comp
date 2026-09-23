@@ -1,0 +1,121 @@
+#version 450
+layout(local_size_x = 64) in;
+
+// NOTE (Reference Implementation):
+// 2D Separable Bicubic Resampling using Catmull-Rom cubic spline (Keys, 1981, a = -0.5).
+// Reference: Keys, R. (1981). "Cubic convolution interpolation for digital image processing",
+// IEEE Transactions on Acoustics, Speech, and Signal Processing, 29(6), 1153-1160.
+// Preserves continuous first derivatives with sharp edge transitions across a 4x4 kernel window.
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
+layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
+
+layout(push_constant) uniform PushConsts {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    float scale_x;
+    float scale_y;
+};
+
+// Branchless 24-bit packed RGB fetch to vec3
+vec3 fetch_raw_rgb(int px, int py) {
+    int cx = clamp(px, 0, int(src_w) - 1);
+    int cy = clamp(py, 0, int(src_h) - 1);
+    uint src_byte_offset = (uint(cy) * src_w + uint(cx)) * 3u;
+    uint word_idx = src_byte_offset >> 2u;
+    uint w0 = src_data[word_idx];
+    uint w1 = src_data[word_idx + 1u];
+
+    uint shift = (src_byte_offset & 3u) << 3u;
+    uint shift_hi = (32u - shift) & 31u;
+    uint mask_hi = uint(0) - uint(shift != 0u);
+    uint val = (w0 >> shift) | ((w1 << shift_hi) & mask_hi);
+    return vec3(float(val & 0xFFu), float((val >> 8u) & 0xFFu), float((val >> 16u) & 0xFFu));
+}
+
+// Branchless Catmull-Rom cubic weights evaluation (a = -0.5)
+void eval_bicubic_weights(float f, out float w[4]) {
+    // Exact piecewise polynomials for f in [0, 1):
+    // tap 0 (x = 1 + f in [1, 2]): ((-0.5*(1+f) + 2.5)*(1+f) - 4.0)*(1+f) + 2.0
+    // tap 1 (x = f in [0, 1]):     (1.5*f - 2.5)*f*f + 1.0
+    // tap 2 (x = 1 - f in (0, 1]): (1.5*(1-f) - 2.5)*(1-f)*(1-f) + 1.0
+    // tap 3 (x = 2 - f in (1, 2]): ((-0.5*(2-f) + 2.5)*(2-f) - 4.0)*(2-f) + 2.0
+    float f2 = f * f;
+    float f3 = f2 * f;
+    w[0] = -0.5 * f3 + f2 - 0.5 * f;
+    w[1] = 1.5 * f3 - 2.5 * f2 + 1.0;
+    w[2] = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    w[3] = 0.5 * f3 - 0.5 * f2;
+}
+
+uint sample_bicubic_coord(uint dx, uint dy) {
+    float u = (float(dx) + 0.5) * scale_x - 0.5;
+    float v = (float(dy) + 0.5) * scale_y - 0.5;
+
+    int x0 = int(floor(u));
+    int y0 = int(floor(v));
+
+    float fx = u - float(x0);
+    float fy = v - float(y0);
+
+    float wx[4];
+    eval_bicubic_weights(fx, wx);
+
+    float wy[4];
+    eval_bicubic_weights(fy, wy);
+
+    vec3 col = vec3(0.0);
+    for (int j = 0; j < 4; ++j) {
+        vec3 row_col = vec3(0.0);
+        for (int i = 0; i < 4; ++i) {
+            row_col += wx[i] * fetch_raw_rgb(x0 - 1 + i, y0 - 1 + j);
+        }
+        col += wy[j] * row_col;
+    }
+
+    uvec3 ucol = uvec3(clamp(col + 0.5, 0.0, 255.0));
+    return ucol.r | (ucol.g << 8u) | (ucol.b << 16u);
+}
+
+void main() {
+    uint chunk_idx = gl_GlobalInvocationID.x;
+    uint total_dst_pixels = dst_w * dst_h;
+    uint base_pixel = chunk_idx * 4u;
+    if (base_pixel >= total_dst_pixels) return;
+
+    uint dx0 = base_pixel % dst_w;
+    uint dy0 = base_pixel / dst_w;
+
+    // Fully unrolled 4-pixel chunk without dynamic arrays or branch hazards
+    uint p0 = sample_bicubic_coord(dx0, dy0);
+
+    uint dx1 = dx0 + 1u;
+    uint wrap1 = uint(dx1 >= dst_w);
+    dx1 -= wrap1 * dst_w;
+    uint dy1 = dy0 + wrap1;
+    uint p1 = (base_pixel + 1u < total_dst_pixels) ? sample_bicubic_coord(dx1, dy1) : 0u;
+
+    uint dx2 = dx0 + 2u;
+    uint wrap2 = uint(dx2 >= dst_w);
+    dx2 -= wrap2 * dst_w;
+    uint dy2 = dy0 + wrap2;
+    uint p2 = (base_pixel + 2u < total_dst_pixels) ? sample_bicubic_coord(dx2, dy2) : 0u;
+
+    uint dx3 = dx0 + 3u;
+    uint wrap3 = uint(dx3 >= dst_w);
+    dx3 -= wrap3 * dst_w;
+    uint dy3 = dy0 + wrap3;
+    uint p3 = (base_pixel + 3u < total_dst_pixels) ? sample_bicubic_coord(dx3, dy3) : 0u;
+
+    // Branchless packing into 3x32-bit storage buffer words
+    uint w0 = p0 | (p1 << 24u);
+    uint w1 = (p1 >> 8u) | (p2 << 16u);
+    uint w2 = (p2 >> 16u) | (p3 << 8u);
+    uint out_word_base = chunk_idx * 3u;
+
+    dst_data[out_word_base + 0u] = w0;
+    if (base_pixel + 1u < total_dst_pixels) dst_data[out_word_base + 1u] = w1;
+    if (base_pixel + 2u < total_dst_pixels) dst_data[out_word_base + 2u] = w2;
+}
