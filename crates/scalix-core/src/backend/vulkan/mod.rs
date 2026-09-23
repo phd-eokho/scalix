@@ -110,7 +110,8 @@ impl VulkanBackend {
         filter: FilterMode,
         spv_bytes: &[u8],
     ) -> Result<()> {
-        self.compute.register_format_shader(format, filter, spv_bytes)
+        self.compute
+            .register_format_shader(format, filter, spv_bytes)
     }
 }
 

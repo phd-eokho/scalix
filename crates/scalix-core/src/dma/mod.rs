@@ -377,7 +377,8 @@ impl DmaBuffer {
                 )))]
                 {
                     Err(ScalixError::DmaUnavailable(
-                        "Android AHardwareBuffer allocator is only available on Android".to_string(),
+                        "Android AHardwareBuffer allocator is only available on Android"
+                            .to_string(),
                     ))
                 }
             }

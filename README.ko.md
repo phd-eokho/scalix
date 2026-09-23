@@ -67,13 +67,13 @@
 | :--- | :--- | :---: | :---: | :---: |
 | **64바이트 정렬 Host Memory** | 64바이트 정렬된 연속형 CPU 메모리 버퍼 (RGB/RGBA) | ✔ Verified | ✔ Verified | ◐ Compiled (미검증) |
 | **Triple-Buffered Staging Ring** | 히스테리시스 축소 정책이 적용된 3-슬롯 Staging 버퍼 링 | ✔ Verified | ✔ Verified | ◐ Compiled (미검증) |
-| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME Zero-Copy) | ○ Supported | ◐ Fallback (미검증) | — |
+| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME Zero-Copy) | ○ Supported | ◐ Fallback | — |
 | **AHardwareBuffer** | `AHardwareBuffer*` Zero-Copy 연동 | — | — | ◐ Compiled (미검증) |
 
 > [!NOTE]
 > **현재 검증 상태 및 타겟 플랫폼 현황**
 > - **Linux (x86_64):** 실제 NVIDIA GPU(Vulkan 드라이버) 및 CI 파이프라인(Mesa Lavapipe Vulkan 소프트웨어 래스터라이저)에서 검증되었습니다.
-> - **WSL2 (Windows Subsystem for Linux 2):** NVIDIA GPU 환경의 `/dev/dxg` 브리지를 통한 Vulkan 오프스크린 렌더링이 검증되었습니다. Linux `dma-buf`는 미검증 상태이며 64바이트 정렬 Host Staging 메모리로 자동 Fallback됩니다.
+> - **WSL2 (Windows Subsystem for Linux 2):** NVIDIA GPU 환경의 `/dev/dxg` 브리지를 통한 Vulkan 오프스크린 렌더링이 검증되었습니다. Linux `dma-buf`는 64바이트 정렬 Host Staging 메모리로 자동 Fallback되어 원활히 동작합니다.
 > - **Android (aarch64 / armv7):** CI 상에서 Android NDK 크로스 컴파일(`cargo-ndk`) 및 동적 라이브러리 빌드가 검증되었습니다. 단, 실제 Android 기기나 에뮬레이터 상에서의 런타임 GPU 실행, Vulkan 드라이버 구동, `AHardwareBuffer` Zero-Copy DMA 동작은 **아직 검증되지 않았습니다 (Unverified)**.
 
 ---

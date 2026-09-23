@@ -581,10 +581,7 @@ impl ResizeOptions {
 
     #[inline]
     #[must_use]
-    pub fn with_gl_strategy(
-        mut self,
-        strategy: crate::backend::gl::GlStrategy,
-    ) -> Self {
+    pub fn with_gl_strategy(mut self, strategy: crate::backend::gl::GlStrategy) -> Self {
         let mut opts = match self.backend_options {
             BackendOptions::Gl(g) => g,
             _ => crate::backend::gl::GlOptions::default(),
@@ -607,10 +604,11 @@ impl ResizeOptions {
                 self.backend_options = BackendOptions::Gl(g);
             }
             BackendOptions::None => {
-                self.backend_options = BackendOptions::Vulkan(crate::backend::vulkan::VulkanOptions {
-                    strategy: crate::backend::vulkan::VulkanStrategy::Auto,
-                    max_mip_levels: max_levels,
-                });
+                self.backend_options =
+                    BackendOptions::Vulkan(crate::backend::vulkan::VulkanOptions {
+                        strategy: crate::backend::vulkan::VulkanStrategy::Auto,
+                        max_mip_levels: max_levels,
+                    });
             }
         }
         self

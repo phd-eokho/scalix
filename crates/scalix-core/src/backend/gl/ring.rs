@@ -4,10 +4,10 @@
 //! 2D texture pooling, and per-slot `GLsync` fence synchronization to eliminate
 //! per-frame allocations and enable seamless CPU/GPU asynchronous pipelining.
 
-use std::sync::Arc;
-use std::ffi::c_void;
 use crate::backend::gl::context::*;
 use crate::types::Result;
+use std::ffi::c_void;
+use std::sync::Arc;
 
 pub const DEFAULT_GL_RING_SLOTS: usize = 3;
 
@@ -94,7 +94,12 @@ impl GlStagingSlot {
             let new_size = min_size.max(64 * 1024);
             unsafe {
                 (gl.glBindBuffer)(GL_PIXEL_UNPACK_BUFFER, self.src_pbo);
-                (gl.glBufferData)(GL_PIXEL_UNPACK_BUFFER, new_size as isize, std::ptr::null(), GL_STREAM_DRAW);
+                (gl.glBufferData)(
+                    GL_PIXEL_UNPACK_BUFFER,
+                    new_size as isize,
+                    std::ptr::null(),
+                    GL_STREAM_DRAW,
+                );
                 (gl.glBindBuffer)(GL_PIXEL_UNPACK_BUFFER, 0);
             }
             self.src_pbo_size = new_size;
@@ -110,7 +115,12 @@ impl GlStagingSlot {
             let new_size = min_size.max(64 * 1024);
             unsafe {
                 (gl.glBindBuffer)(GL_PIXEL_PACK_BUFFER, self.dst_pbo);
-                (gl.glBufferData)(GL_PIXEL_PACK_BUFFER, new_size as isize, std::ptr::null(), GL_STREAM_READ);
+                (gl.glBufferData)(
+                    GL_PIXEL_PACK_BUFFER,
+                    new_size as isize,
+                    std::ptr::null(),
+                    GL_STREAM_READ,
+                );
                 (gl.glBindBuffer)(GL_PIXEL_PACK_BUFFER, 0);
             }
             self.dst_pbo_size = new_size;
@@ -147,9 +157,15 @@ impl GlStagingSlot {
 
             if needs_realloc {
                 (gl.glTexImage2D)(
-                    GL_TEXTURE_2D, 0, internal as i32,
-                    w as i32, h as i32, 0,
-                    format, typ, std::ptr::null(),
+                    GL_TEXTURE_2D,
+                    0,
+                    internal as i32,
+                    w as i32,
+                    h as i32,
+                    0,
+                    format,
+                    typ,
+                    std::ptr::null(),
                 );
                 self.src_tex_w = w;
                 self.src_tex_h = h;
@@ -188,9 +204,15 @@ impl GlStagingSlot {
 
             if needs_realloc {
                 (gl.glTexImage2D)(
-                    GL_TEXTURE_2D, 0, internal as i32,
-                    w as i32, h as i32, 0,
-                    format, typ, std::ptr::null(),
+                    GL_TEXTURE_2D,
+                    0,
+                    internal as i32,
+                    w as i32,
+                    h as i32,
+                    0,
+                    format,
+                    typ,
+                    std::ptr::null(),
                 );
                 self.dst_tex_w = w;
                 self.dst_tex_h = h;
@@ -230,9 +252,15 @@ impl GlStagingSlot {
 
             (gl.glBindTexture)(GL_TEXTURE_2D, self.src_texture);
             (gl.glTexSubImage2D)(
-                GL_TEXTURE_2D, 0, 0, 0,
-                w as i32, h as i32,
-                format, typ, std::ptr::null(),
+                GL_TEXTURE_2D,
+                0,
+                0,
+                0,
+                w as i32,
+                h as i32,
+                format,
+                typ,
+                std::ptr::null(),
             );
             (gl.glBindBuffer)(GL_PIXEL_UNPACK_BUFFER, 0);
         }

@@ -267,12 +267,7 @@ fn test_c_api_sync_with_backend_options() {
             backend_options: &vk_opts.header,
         };
 
-        let status = scalix_resize_sync_with_options(
-            engine,
-            &src_desc,
-            &mut dst_desc,
-            &options,
-        );
+        let status = scalix_resize_sync_with_options(engine, &src_desc, &mut dst_desc, &options);
         assert_eq!(status, SCALIX_SUCCESS);
         assert_eq!(dst_data.as_slice(), src_data.as_slice());
 

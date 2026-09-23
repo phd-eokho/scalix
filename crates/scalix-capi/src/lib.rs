@@ -233,10 +233,11 @@ impl ScalixResizeOptions {
                 ScalixBackendType::Vulkan => {
                     if header.struct_size as usize >= std::mem::size_of::<ScalixVulkanOptions>() {
                         let vk = &*(self.backend_options as *const ScalixVulkanOptions);
-                        core_options = core_options.with_vulkan_options(scalix_core::VulkanOptions {
-                            strategy: vk.strategy.into(),
-                            max_mip_levels: vk.max_mip_levels,
-                        });
+                        core_options =
+                            core_options.with_vulkan_options(scalix_core::VulkanOptions {
+                                strategy: vk.strategy.into(),
+                                max_mip_levels: vk.max_mip_levels,
+                            });
                     }
                 }
                 ScalixBackendType::OpenGL => {

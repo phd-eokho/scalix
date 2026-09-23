@@ -19,7 +19,11 @@ impl GlLodDownscaler {
         ring: Arc<Mutex<GlStagingRing>>,
         profiler: Arc<dyn Profiler>,
     ) -> Self {
-        Self { ctx, ring, profiler }
+        Self {
+            ctx,
+            ring,
+            profiler,
+        }
     }
 
     pub fn process(
@@ -76,7 +80,11 @@ impl GlLodDownscaler {
                 let max_level = (src.width.max(src.height) as f32).log2().floor() as u32;
                 (gl.glBindTexture)(GL_TEXTURE_2D, src_tex);
                 (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, max_level as i32);
-                (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR as i32);
+                (gl.glTexParameteri)(
+                    GL_TEXTURE_2D,
+                    GL_TEXTURE_MIN_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR as i32,
+                );
                 (gl.glGenerateMipmap)(GL_TEXTURE_2D);
             }
 
@@ -94,16 +102,34 @@ impl GlLodDownscaler {
             )?;
 
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, slot.dst_fbo);
-            (gl.glFramebufferTexture2D)(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst_tex, 0);
+            (gl.glFramebufferTexture2D)(
+                GL_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                dst_tex,
+                0,
+            );
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             let blit_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.src_fbo);
-            (gl.glFramebufferTexture2D)(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src_tex, chosen_level as i32);
+            (gl.glFramebufferTexture2D)(
+                GL_READ_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                src_tex,
+                chosen_level as i32,
+            );
             (gl.glBindFramebuffer)(GL_DRAW_FRAMEBUFFER, slot.dst_fbo);
             (gl.glBlitFramebuffer)(
-                0, 0, mip_w as i32, mip_h as i32,
-                0, 0, dst.width as i32, dst.height as i32,
+                0,
+                0,
+                mip_w as i32,
+                mip_h as i32,
+                0,
+                0,
+                dst.width as i32,
+                dst.height as i32,
                 GL_COLOR_BUFFER_BIT,
                 GL_LINEAR,
             );
@@ -115,13 +141,24 @@ impl GlLodDownscaler {
             let download_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
             (gl.glReadPixels)(
-                0, 0, dst.width as i32, dst.height as i32,
-                dst_format, dst_type, dst.data.as_mut_ptr() as *mut std::ffi::c_void,
+                0,
+                0,
+                dst.width as i32,
+                dst.height as i32,
+                dst_format,
+                dst_type,
+                dst.data.as_mut_ptr() as *mut std::ffi::c_void,
             );
 
             // Clean up / restore FBO attachments and texture states
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.src_fbo);
-            (gl.glFramebufferTexture2D)(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src_tex, 0);
+            (gl.glFramebufferTexture2D)(
+                GL_READ_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                src_tex,
+                0,
+            );
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, 0);
             if chosen_level > 0 {
                 (gl.glBindTexture)(GL_TEXTURE_2D, src_tex);

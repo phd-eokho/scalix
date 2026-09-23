@@ -20,7 +20,11 @@ impl GlBlitter {
         ring: Arc<Mutex<GlStagingRing>>,
         profiler: Arc<dyn Profiler>,
     ) -> Self {
-        Self { ctx, ring, profiler }
+        Self {
+            ctx,
+            ring,
+            profiler,
+        }
     }
 
     pub fn process(
@@ -65,7 +69,13 @@ impl GlBlitter {
             )?;
 
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, slot.src_fbo);
-            (gl.glFramebufferTexture2D)(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src_tex, 0);
+            (gl.glFramebufferTexture2D)(
+                GL_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                src_tex,
+                0,
+            );
 
             // 2. Setup Destination Texture & FBO
             let dst_tex = slot.ensure_dst_texture(
@@ -78,7 +88,13 @@ impl GlBlitter {
             )?;
 
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, slot.dst_fbo);
-            (gl.glFramebufferTexture2D)(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst_tex, 0);
+            (gl.glFramebufferTexture2D)(
+                GL_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                dst_tex,
+                0,
+            );
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             // 3. Blit Framebuffer
@@ -86,8 +102,14 @@ impl GlBlitter {
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.src_fbo);
             (gl.glBindFramebuffer)(GL_DRAW_FRAMEBUFFER, slot.dst_fbo);
             (gl.glBlitFramebuffer)(
-                0, 0, src.width as i32, src.height as i32,
-                0, 0, dst.width as i32, dst.height as i32,
+                0,
+                0,
+                src.width as i32,
+                src.height as i32,
+                0,
+                0,
+                dst.width as i32,
+                dst.height as i32,
                 GL_COLOR_BUFFER_BIT,
                 gl_filter,
             );
@@ -98,7 +120,10 @@ impl GlBlitter {
             let download_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
             (gl.glReadPixels)(
-                0, 0, dst.width as i32, dst.height as i32,
+                0,
+                0,
+                dst.width as i32,
+                dst.height as i32,
                 dst_format,
                 dst_type,
                 dst.data.as_mut_ptr() as *mut std::ffi::c_void,

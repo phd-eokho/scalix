@@ -77,8 +77,8 @@ void main() {
 }
 "#;
 
-use std::sync::Mutex;
 use super::ring::GlStagingRing;
+use std::sync::Mutex;
 
 pub struct GlRasterResizer {
     ctx: Arc<EglContext>,
@@ -106,18 +106,16 @@ impl GlRasterResizer {
     }
 
     fn ensure_mesh(&self) -> Result<(u32, u32)> {
-        let mut mesh_guard = self.mesh.lock().map_err(|_| {
-            ScalixError::ExecutionFailed("Failed to lock raster mesh".to_string())
-        })?;
+        let mut mesh_guard = self
+            .mesh
+            .lock()
+            .map_err(|_| ScalixError::ExecutionFailed("Failed to lock raster mesh".to_string()))?;
         if let Some(m) = *mesh_guard {
             return Ok(m);
         }
 
         let quad_vertices: [f32; 16] = [
-            -1.0, -1.0, 0.0, 0.0,
-             1.0, -1.0, 1.0, 0.0,
-            -1.0,  1.0, 0.0, 1.0,
-             1.0,  1.0, 1.0, 1.0,
+            -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ];
 
         let gl = &self.ctx.gl;
@@ -137,11 +135,22 @@ impl GlRasterResizer {
             );
 
             (gl.glEnableVertexAttribArray)(0);
-            (gl.glVertexAttribPointer)(0, 2, GL_FLOAT, 0, (4 * std::mem::size_of::<f32>()) as i32, std::ptr::null());
+            (gl.glVertexAttribPointer)(
+                0,
+                2,
+                GL_FLOAT,
+                0,
+                (4 * std::mem::size_of::<f32>()) as i32,
+                std::ptr::null(),
+            );
 
             (gl.glEnableVertexAttribArray)(1);
             (gl.glVertexAttribPointer)(
-                1, 2, GL_FLOAT, 0, (4 * std::mem::size_of::<f32>()) as i32,
+                1,
+                2,
+                GL_FLOAT,
+                0,
+                (4 * std::mem::size_of::<f32>()) as i32,
                 (2 * std::mem::size_of::<f32>()) as *const std::ffi::c_void,
             );
             (gl.glBindVertexArray)(0);
@@ -168,17 +177,27 @@ impl GlRasterResizer {
                 let mut len = 0;
                 (gl.glGetShaderiv)(shader, GL_INFO_LOG_LENGTH, &mut len);
                 let mut buffer = vec![0u8; len as usize + 1];
-                (gl.glGetShaderInfoLog)(shader, len, std::ptr::null_mut(), buffer.as_mut_ptr() as *mut c_char);
+                (gl.glGetShaderInfoLog)(
+                    shader,
+                    len,
+                    std::ptr::null_mut(),
+                    buffer.as_mut_ptr() as *mut c_char,
+                );
                 (gl.glDeleteShader)(shader);
                 let log = String::from_utf8_lossy(&buffer);
-                return Err(ScalixError::ExecutionFailed(format!("Raster shader compilation failed: {log}")));
+                return Err(ScalixError::ExecutionFailed(format!(
+                    "Raster shader compilation failed: {log}"
+                )));
             }
             Ok(shader)
         }
     }
 
     fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
-        let is_bicubic = matches!(filter, FilterMode::Bicubic | FilterMode::Lanczos3 | FilterMode::Area);
+        let is_bicubic = matches!(
+            filter,
+            FilterMode::Bicubic | FilterMode::Lanczos3 | FilterMode::Area
+        );
         let target_lock = if is_bicubic {
             &self.prog_bicubic
         } else {
@@ -220,10 +239,17 @@ impl GlRasterResizer {
                 let mut len = 0;
                 (gl.glGetProgramiv)(prog, GL_INFO_LOG_LENGTH, &mut len);
                 let mut buffer = vec![0u8; len as usize + 1];
-                (gl.glGetProgramInfoLog)(prog, len, std::ptr::null_mut(), buffer.as_mut_ptr() as *mut c_char);
+                (gl.glGetProgramInfoLog)(
+                    prog,
+                    len,
+                    std::ptr::null_mut(),
+                    buffer.as_mut_ptr() as *mut c_char,
+                );
                 (gl.glDeleteProgram)(prog);
                 let log = String::from_utf8_lossy(&buffer);
-                return Err(ScalixError::ExecutionFailed(format!("Raster program link failed: {log}")));
+                return Err(ScalixError::ExecutionFailed(format!(
+                    "Raster program link failed: {log}"
+                )));
             }
             *guard = Some(prog);
             Ok(prog)
@@ -245,7 +271,11 @@ impl GlRasterResizer {
         let program = self.get_or_build_program(filter)?;
         let (vao, _vbo) = self.ensure_mesh()?;
 
-        let gl_filter = if filter == FilterMode::Nearest { GL_NEAREST } else { GL_LINEAR };
+        let gl_filter = if filter == FilterMode::Nearest {
+            GL_NEAREST
+        } else {
+            GL_LINEAR
+        };
 
         let mut ring_guard = self.ring.lock().map_err(|_| {
             ScalixError::ExecutionFailed("Failed to acquire GlStagingRing lock".to_string())
@@ -280,7 +310,13 @@ impl GlRasterResizer {
             )?;
 
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, slot.dst_fbo);
-            (gl.glFramebufferTexture2D)(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst_tex, 0);
+            (gl.glFramebufferTexture2D)(
+                GL_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                dst_tex,
+                0,
+            );
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             // 3. Render Quad
@@ -291,7 +327,8 @@ impl GlRasterResizer {
             let u_tex = (gl.glGetUniformLocation)(program, c"uTexture".as_ptr() as *const c_char);
             (gl.glUniform1i)(u_tex, 0);
 
-            let u_tex_size = (gl.glGetUniformLocation)(program, c"uTexSize".as_ptr() as *const c_char);
+            let u_tex_size =
+                (gl.glGetUniformLocation)(program, c"uTexSize".as_ptr() as *const c_char);
             if u_tex_size >= 0 {
                 (gl.glUniform2f)(u_tex_size, src.width as f32, src.height as f32);
             }
@@ -310,8 +347,13 @@ impl GlRasterResizer {
             let download_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
             (gl.glReadPixels)(
-                0, 0, dst.width as i32, dst.height as i32,
-                dst_format, dst_type, dst.data.as_mut_ptr() as *mut std::ffi::c_void,
+                0,
+                0,
+                dst.width as i32,
+                dst.height as i32,
+                dst_format,
+                dst_type,
+                dst.data.as_mut_ptr() as *mut std::ffi::c_void,
             );
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, 0);
             let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;

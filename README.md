@@ -67,13 +67,13 @@ This matrix tracks the hardware backends, execution paradigms, and platform capa
 | :--- | :--- | :---: | :---: | :---: |
 | **64-Byte Aligned Host Memory** | Contiguous 64-byte aligned CPU memory (RGB/RGBA) | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
 | **Triple-Buffered Staging Ring** | 3-slot pinned / mapped staging buffer ring with hysteresis | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
-| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | ○ Supported | ◐ Fallback (Unverified) | — |
+| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | ○ Supported | ◐ Fallback | — |
 | **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | — | — | ◐ Compiled (Unverified) |
 
 > [!NOTE]
 > **Current Verification & Target Platform Status**
 > - **Linux (x86_64):** Verified on NVIDIA GPU (via Vulkan driver) and automated CI pipeline with Mesa Lavapipe Vulkan software rasterizer.
-> - **WSL2 (Windows Subsystem for Linux 2):** Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Direct Linux `dma-buf` is unverified and automatically falls back to 64-byte aligned host staging memory.
+> - **WSL2 (Windows Subsystem for Linux 2):** Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Linux `dma-buf` automatically falls back to 64-byte aligned host staging memory.
 > - **Android (aarch64 / armv7):** Android NDK cross-compilation (`cargo-ndk`) and dynamic library generation are validated in CI. However, runtime GPU execution, Vulkan drivers, and `AHardwareBuffer` zero-copy DMA sharing are **not yet verified** on physical Android hardware or emulators.
 
 ---

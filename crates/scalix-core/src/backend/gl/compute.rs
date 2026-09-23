@@ -27,8 +27,8 @@ void main() {
 }
 "#;
 
-use std::sync::Mutex;
 use super::ring::GlStagingRing;
+use std::sync::Mutex;
 
 pub struct GlComputeResizer {
     ctx: Arc<EglContext>,
@@ -85,10 +85,17 @@ impl GlComputeResizer {
                 let mut len = 0;
                 (gl.glGetShaderiv)(shader, GL_INFO_LOG_LENGTH, &mut len);
                 let mut buffer = vec![0u8; len as usize + 1];
-                (gl.glGetShaderInfoLog)(shader, len, std::ptr::null_mut(), buffer.as_mut_ptr() as *mut c_char);
+                (gl.glGetShaderInfoLog)(
+                    shader,
+                    len,
+                    std::ptr::null_mut(),
+                    buffer.as_mut_ptr() as *mut c_char,
+                );
                 (gl.glDeleteShader)(shader);
                 let log = String::from_utf8_lossy(&buffer);
-                return Err(ScalixError::ExecutionFailed(format!("Compute shader compilation failed: {log}")));
+                return Err(ScalixError::ExecutionFailed(format!(
+                    "Compute shader compilation failed: {log}"
+                )));
             }
 
             let prog = (gl.glCreateProgram)();
@@ -102,10 +109,17 @@ impl GlComputeResizer {
                 let mut len = 0;
                 (gl.glGetProgramiv)(prog, GL_INFO_LOG_LENGTH, &mut len);
                 let mut buffer = vec![0u8; len as usize + 1];
-                (gl.glGetProgramInfoLog)(prog, len, std::ptr::null_mut(), buffer.as_mut_ptr() as *mut c_char);
+                (gl.glGetProgramInfoLog)(
+                    prog,
+                    len,
+                    std::ptr::null_mut(),
+                    buffer.as_mut_ptr() as *mut c_char,
+                );
                 (gl.glDeleteProgram)(prog);
                 let log = String::from_utf8_lossy(&buffer);
-                return Err(ScalixError::ExecutionFailed(format!("Compute program link failed: {log}")));
+                return Err(ScalixError::ExecutionFailed(format!(
+                    "Compute program link failed: {log}"
+                )));
             }
             Ok(prog)
         }
@@ -119,7 +133,8 @@ impl GlComputeResizer {
     ) -> Result<()> {
         if !self.is_supported() {
             return Err(ScalixError::ExecutionFailed(
-                "OpenGL Compute Shaders (glDispatchCompute) are not supported on this device".to_string(),
+                "OpenGL Compute Shaders (glDispatchCompute) are not supported on this device"
+                    .to_string(),
             ));
         }
 
@@ -138,7 +153,11 @@ impl GlComputeResizer {
         let (_dst_internal, dst_format, dst_type) = get_gl_format_tuple(dst.format)?;
 
         let program = self.get_or_build_program()?;
-        let gl_filter = if filter == FilterMode::Nearest { GL_NEAREST } else { GL_LINEAR };
+        let gl_filter = if filter == FilterMode::Nearest {
+            GL_NEAREST
+        } else {
+            GL_LINEAR
+        };
 
         let mut ring_guard = self.ring.lock().map_err(|_| {
             ScalixError::ExecutionFailed("Failed to acquire GlStagingRing lock".to_string())
@@ -177,7 +196,8 @@ impl GlComputeResizer {
 
             (gl.glActiveTexture)(GL_TEXTURE0);
             (gl.glBindTexture)(GL_TEXTURE_2D, src_tex);
-            let u_tex = (gl.glGetUniformLocation)(program, c"uSrcTexture".as_ptr() as *const c_char);
+            let u_tex =
+                (gl.glGetUniformLocation)(program, c"uSrcTexture".as_ptr() as *const c_char);
             (gl.glUniform1i)(u_tex, 0);
 
             gl_bind_image(1, dst_tex, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA8);
@@ -195,11 +215,22 @@ impl GlComputeResizer {
             // 3. Download Pixels via Persistent FBO
             let download_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
-            (gl.glFramebufferTexture2D)(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst_tex, 0);
+            (gl.glFramebufferTexture2D)(
+                GL_READ_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                dst_tex,
+                0,
+            );
 
             (gl.glReadPixels)(
-                0, 0, dst.width as i32, dst.height as i32,
-                dst_format, dst_type, dst.data.as_mut_ptr() as *mut std::ffi::c_void,
+                0,
+                0,
+                dst.width as i32,
+                dst.height as i32,
+                dst_format,
+                dst_type,
+                dst.data.as_mut_ptr() as *mut std::ffi::c_void,
             );
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, 0);
             let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;

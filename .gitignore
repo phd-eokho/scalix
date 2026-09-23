@@ -25,3 +25,9 @@ rustc-ice-*.txt
 *.raw
 !assets/**
 
+# Example binaries
+examples/cpp_basic
+examples/cpp_jpeg
+examples/cpp_benchmark
+examples/cpp_benchmark_gl
+examples/*.o

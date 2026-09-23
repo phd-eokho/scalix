@@ -46,12 +46,17 @@ impl GlBackend {
     /// Initializes a new OpenGL backend with an explicit profiler.
     pub fn with_profiler(profiler: Arc<dyn Profiler>) -> Result<Self> {
         let ctx = Arc::new(EglContext::new()?);
-        let ring = Arc::new(Mutex::new(GlStagingRing::new(Arc::clone(&ctx), DEFAULT_GL_RING_SLOTS)?));
+        let ring = Arc::new(Mutex::new(GlStagingRing::new(
+            Arc::clone(&ctx),
+            DEFAULT_GL_RING_SLOTS,
+        )?));
 
         let blitter = GlBlitter::new(Arc::clone(&ctx), Arc::clone(&ring), Arc::clone(&profiler));
-        let raster = GlRasterResizer::new(Arc::clone(&ctx), Arc::clone(&ring), Arc::clone(&profiler));
+        let raster =
+            GlRasterResizer::new(Arc::clone(&ctx), Arc::clone(&ring), Arc::clone(&profiler));
         let lod = GlLodDownscaler::new(Arc::clone(&ctx), Arc::clone(&ring), Arc::clone(&profiler));
-        let compute = GlComputeResizer::new(Arc::clone(&ctx), Arc::clone(&ring), Arc::clone(&profiler));
+        let compute =
+            GlComputeResizer::new(Arc::clone(&ctx), Arc::clone(&ring), Arc::clone(&profiler));
 
         Ok(Self {
             ctx,

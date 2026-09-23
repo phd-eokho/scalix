@@ -160,9 +160,9 @@ impl Engine {
             BackendType::Vulkan => Arc::new(crate::backend::VulkanBackend::with_profiler(
                 Arc::clone(&profiler),
             )?),
-            BackendType::OpenGL => Arc::new(crate::backend::GlBackend::with_profiler(
-                Arc::clone(&profiler),
-            )?),
+            BackendType::OpenGL => Arc::new(crate::backend::GlBackend::with_profiler(Arc::clone(
+                &profiler,
+            ))?),
             BackendType::Passthrough | BackendType::Cpu => Arc::new(PassthroughBackend::new()),
             other => return Err(ScalixError::BackendUnavailable(other)),
         };
