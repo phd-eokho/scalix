@@ -10,7 +10,7 @@ OPENCV_LIBS ?= $(shell pkg-config --libs opencv4 2>/dev/null || pkg-config --lib
 COMMON_OBJS = jpeg_io.o benchmark_utils.o
 TARGETS = cpp_basic cpp_jpeg cpp_benchmark cpp_benchmark_gl
 
-.PHONY: all clean run benchmark benchmark_gl cargo-build
+.PHONY: all clean run benchmark benchmark_vulkan benchmark_gl cargo-build
 
 all: cargo-build $(TARGETS)
 
@@ -48,7 +48,9 @@ run: cargo-build cpp_basic cpp_jpeg
 	@echo "\n=== Running cpp_jpeg ==="
 	./cpp_jpeg ../assets/sample.jpg /tmp/output_sample.jpg
 
-benchmark: cargo-build cpp_benchmark
+benchmark: benchmark_vulkan benchmark_gl
+
+benchmark_vulkan: cargo-build cpp_benchmark
 	@echo "\n=== Running cpp_benchmark (Vulkan) ==="
 	./cpp_benchmark
 

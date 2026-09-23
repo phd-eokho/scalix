@@ -216,8 +216,11 @@ make -C examples
 # Run all examples (including sample.jpg JPEG processing with libjpeg-turbo)
 make -C examples run
 
-# Run multi-resolution performance benchmark (Vulkan)
+# Run all performance benchmarks (all available on platform: Vulkan & OpenGL/EGL)
 make -C examples benchmark
+
+# Run multi-resolution performance benchmark (Vulkan)
+make -C examples benchmark_vulkan
 
 # Run multi-resolution performance benchmark (OpenGL/EGL)
 make -C examples benchmark_gl

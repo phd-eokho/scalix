@@ -213,8 +213,11 @@ make -C examples
 # 전체 예제 실행 (libjpeg-turbo 기반 sample.jpg JPEG 처리 포함)
 make -C examples run
 
-# 다중 해상도 성능 벤치마크 실행 (Vulkan)
+# 모든 성능 벤치마크 실행 (플랫폼에서 지원하는 모든 백엔드: Vulkan & OpenGL/EGL)
 make -C examples benchmark
+
+# 다중 해상도 성능 벤치마크 실행 (Vulkan)
+make -C examples benchmark_vulkan
 
 # 다중 해상도 성능 벤치마크 실행 (OpenGL/EGL)
 make -C examples benchmark_gl
