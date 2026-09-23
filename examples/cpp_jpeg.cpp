@@ -90,13 +90,11 @@ int main(int argc, char** argv) {
     scalix::Engine engine(scalix::Backend::Auto, "jpeg");
     engine.set_profiling(true);
 
-    const scalix::ResizeOptions resize_options{
-        .filter = scalix::Filter::Bilinear,
-        .vulkan = {
-            .strategy = strategy,
-            .max_mip_levels = max_mip_levels,
-        },
-    };
+    const scalix::ResizeOptions resize_options = scalix::ResizeOptions::with_vulkan(
+        scalix::Filter::Bilinear,
+        strategy,
+        max_mip_levels
+    );
 
     // 3. Attempt hardware DMA buffer allocation; fallback to host staging
     unique_ptr<scalix::DmaBuffer> src_dma;

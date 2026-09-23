@@ -10,6 +10,8 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace scalix {
@@ -93,7 +95,7 @@ struct ImageDesc final {
     size_t data_len{0};
     int dma_buf_fd{-1};
 
-    [[nodiscard]] ScalixImageDesc to_c() const {
+    [[nodiscard]] ScalixImageDesc to_c() const noexcept {
         return ScalixImageDesc{
             .width = width,
             .height = height,
@@ -106,21 +108,36 @@ struct ImageDesc final {
     }
 };
 
+enum class AllocatorType : int {
+    Auto        = SCALIX_ALLOCATOR_AUTO,
+    DmaHeap     = SCALIX_ALLOCATOR_DMA_HEAP,
+    DrmDumb     = SCALIX_ALLOCATOR_DRM_DUMB,
+    AndroidAhb  = SCALIX_ALLOCATOR_ANDROID_AHB,
+    HostAligned = SCALIX_ALLOCATOR_HOST_ALIGNED
+};
+
 /// @brief RAII wrapper for a hardware-backed zero-copy DMA buffer.
 class DmaBuffer final {
 public:
-    /// @brief Allocates a new hardware DMA buffer.
+    /// @brief Allocates a new hardware DMA buffer or aligned host buffer.
     /// @param width Width in pixels.
     /// @param height Height in pixels.
     /// @param format Pixel format (default: PixelFormat::Rgba8888).
-    DmaBuffer(uint32_t width, uint32_t height, PixelFormat format = PixelFormat::Rgba8888) {
-        handle_ = scalix_dma_buffer_allocate(
+    /// @param alloc_type Allocator strategy type (default: AllocatorType::Auto).
+    DmaBuffer(
+        uint32_t width,
+        uint32_t height,
+        PixelFormat format = PixelFormat::Rgba8888,
+        AllocatorType alloc_type = AllocatorType::Auto
+    ) {
+        handle_ = scalix_dma_buffer_allocate_with_type(
             width,
             height,
-            static_cast<ScalixPixelFormat>(format)
+            static_cast<ScalixPixelFormat>(format),
+            static_cast<ScalixAllocatorType>(alloc_type)
         );
         if (!handle_) {
-            throw std::runtime_error("Failed to allocate DMA buffer (DMA-Heap/DRM unavailable)");
+            throw std::runtime_error("Failed to allocate DMA/aligned buffer (Requested allocator unavailable)");
         }
     }
 
@@ -147,6 +164,10 @@ public:
             other.handle_ = nullptr;
         }
         return *this;
+    }
+
+    [[nodiscard]] AllocatorType allocator_type() const noexcept {
+        return handle_ ? static_cast<AllocatorType>(scalix_dma_buffer_get_allocator_type(handle_)) : AllocatorType::Auto;
     }
 
     [[nodiscard]] int fd() const noexcept {
@@ -309,7 +330,7 @@ public:
 
     /// @brief Checks whether the asynchronous task has finished processing.
     /// @return True if task has completed, false otherwise.
-    [[nodiscard]] bool is_ready() const {
+    [[nodiscard]] bool is_ready() const noexcept {
         return task_ ? scalix_task_is_ready(task_) : false;
     }
 
@@ -344,27 +365,97 @@ private:
     ScalixTask* task_{nullptr};
 };
 
-struct VulkanOptions final {
-    Strategy strategy{Strategy::Auto};
-    uint32_t max_mip_levels{0}; // 0 = automatic / unlimited, >0 = limit mipchain depth
+/// @brief Base header structure for backend-specific options.
+struct BackendOptions {
+    Backend backend_type{Backend::Auto};
+};
 
-    [[nodiscard]] ScalixVulkanOptions to_c() const {
+/// @brief Vulkan-specific execution options.
+struct VulkanOptions : BackendOptions {
+    Strategy strategy{Strategy::Auto};
+    uint32_t max_mip_levels{0}; ///< 0 = automatic / unlimited, >0 = limit mipchain depth
+
+    constexpr VulkanOptions() noexcept {
+        backend_type = Backend::Vulkan;
+    }
+
+    constexpr explicit VulkanOptions(Strategy s, uint32_t max_mips = 0) noexcept
+        : BackendOptions{Backend::Vulkan}, strategy(s), max_mip_levels(max_mips) {}
+
+    [[nodiscard]] ScalixVulkanOptions to_c() const noexcept {
         return ScalixVulkanOptions{
+            .header = ScalixBackendOptions{
+                .backend_type = SCALIX_BACKEND_VULKAN,
+                .struct_size = sizeof(ScalixVulkanOptions),
+            },
             .strategy = static_cast<ScalixStrategy>(strategy),
             .max_mip_levels = max_mip_levels,
         };
     }
 };
 
+/// @brief OpenGL-specific execution options.
+struct GlOptions : BackendOptions {
+    Strategy strategy{Strategy::Auto};
+    uint32_t max_mip_levels{0}; ///< 0 = automatic / unlimited, >0 = limit mipchain depth
+
+    constexpr GlOptions() noexcept {
+        backend_type = Backend::OpenGL;
+    }
+
+    constexpr explicit GlOptions(Strategy s, uint32_t max_mips = 0) noexcept
+        : BackendOptions{Backend::OpenGL}, strategy(s), max_mip_levels(max_mips) {}
+
+    [[nodiscard]] ScalixGlOptions to_c() const noexcept {
+        return ScalixGlOptions{
+            .header = ScalixBackendOptions{
+                .backend_type = SCALIX_BACKEND_OPENGL,
+                .struct_size = sizeof(ScalixGlOptions),
+            },
+            .strategy = static_cast<ScalixStrategy>(strategy),
+            .max_mip_levels = max_mip_levels,
+        };
+    }
+};
+
+/// @brief Dynamic resize options holding scaling filter and optional backend metadata.
 struct ResizeOptions final {
     Filter filter{Filter::Passthrough};
-    VulkanOptions vulkan{};
+    std::variant<std::monostate, VulkanOptions, GlOptions> backend_options{};
 
-    [[nodiscard]] ScalixResizeOptions to_c() const {
-        return ScalixResizeOptions{
-            .filter = static_cast<ScalixFilterMode>(filter),
-            .vulkan = vulkan.to_c(),
+    /// @brief Creates ResizeOptions configured with Vulkan options.
+    static ResizeOptions with_vulkan(Filter f, Strategy s = Strategy::Auto, uint32_t max_mips = 0) {
+        return ResizeOptions{
+            .filter = f,
+            .backend_options = VulkanOptions{s, max_mips},
         };
+    }
+
+    /// @brief Creates ResizeOptions configured with OpenGL options.
+    static ResizeOptions with_gl(Filter f, Strategy s = Strategy::Auto, uint32_t max_mips = 0) {
+        return ResizeOptions{
+            .filter = f,
+            .backend_options = GlOptions{s, max_mips},
+        };
+    }
+
+    /// @brief Scoped execution helper that builds C ABI options on stack and invokes a callback.
+    template <typename Fn>
+    auto with_c(Fn&& fn) const {
+        ScalixResizeOptions c_opt{
+            .filter = static_cast<ScalixFilterMode>(filter),
+            .backend_options = nullptr,
+        };
+        ScalixVulkanOptions vk_opt{};
+        ScalixGlOptions gl_opt{};
+        if (std::holds_alternative<VulkanOptions>(backend_options)) {
+            vk_opt = std::get<VulkanOptions>(backend_options).to_c();
+            c_opt.backend_options = &vk_opt.header;
+        } else if (std::holds_alternative<GlOptions>(backend_options)) {
+            gl_opt = std::get<GlOptions>(backend_options).to_c();
+            c_opt.backend_options = &gl_opt.header;
+        }
+        return fn(c_opt);
     }
 };
 
@@ -413,9 +504,19 @@ public:
         return *this;
     }
 
+    /// @brief Returns the human-readable name of the active backend.
+    [[nodiscard]] const char* backend_name() const noexcept {
+        return engine_ ? scalix_engine_get_backend_name(engine_) : "Unknown";
+    }
+
+    /// @brief Returns the Backend enum type of the active backend.
+    [[nodiscard]] Backend backend_type() const noexcept {
+        return engine_ ? static_cast<Backend>(scalix_engine_get_backend_type(engine_)) : Backend::Auto;
+    }
+
     /// @brief Enables or disables zero-overhead profiling in the engine.
     /// @param enabled True to enable execution profiling, false to disable.
-    void set_profiling(bool enabled) {
+    void set_profiling(bool enabled) noexcept {
         if (engine_) {
             scalix_engine_set_profiling(engine_, enabled);
         }
@@ -436,20 +537,21 @@ public:
     /// @brief Synchronously resizes an image with explicit options.
     /// @param src Source image descriptor.
     /// @param dst Destination image descriptor.
-    /// @param options Resize options (filter, strategy, mipmap levels).
+    /// @param options Resize options (filter, backend-specific strategy / mip levels).
     void resize(const ImageDesc& src, ImageDesc& dst, const ResizeOptions& options) {
         auto c_src = src.to_c();
         auto c_dst = dst.to_c();
-        auto c_opt = options.to_c();
-        int status = scalix_resize_sync_with_options(
-            engine_,
-            &c_src,
-            &c_dst,
-            &c_opt
-        );
-        if (status != SCALIX_SUCCESS) {
-            throw std::runtime_error("Scalix resize_sync failed with status code: " + std::to_string(status));
-        }
+        options.with_c([&](const ScalixResizeOptions& c_opt) {
+            int status = scalix_resize_sync_with_options(
+                engine_,
+                &c_src,
+                &c_dst,
+                &c_opt
+            );
+            if (status != SCALIX_SUCCESS) {
+                throw std::runtime_error("Scalix resize_sync failed with status code: " + std::to_string(status));
+            }
+        });
     }
 
     /// @brief Synchronously resizes an image with a specific filter.
@@ -464,30 +566,31 @@ public:
     /// @param src Source image descriptor.
     /// @param dst Destination image descriptor.
     /// @param filter Scaling filter mode.
-    /// @param strategy Vulkan execution strategy.
+    /// @param strategy Vulkan/Gl execution strategy.
     void resize(const ImageDesc& src, ImageDesc& dst, Filter filter, Strategy strategy) {
-        resize(src, dst, ResizeOptions{.filter = filter, .vulkan = {.strategy = strategy}});
+        resize(src, dst, ResizeOptions::with_vulkan(filter, strategy));
     }
 
     /// @brief Spawns an asynchronous image resize task returning a Task handle.
     /// @param src Source image descriptor.
     /// @param dst Destination image descriptor.
-    /// @param options Resize options (filter, strategy, mipmap levels).
+    /// @param options Resize options (filter, backend-specific strategy / mip levels).
     /// @return RAII Task handle for polling or awaiting completion.
     [[nodiscard]] Task resize_async(const ImageDesc& src, const ImageDesc& dst, const ResizeOptions& options) {
         auto c_src = src.to_c();
         auto c_dst = dst.to_c();
-        auto c_opt = options.to_c();
-        ScalixTask* task = scalix_resize_async_with_options(
-            engine_,
-            &c_src,
-            &c_dst,
-            &c_opt
-        );
-        if (!task) {
-            throw std::runtime_error("Failed to spawn async task in Scalix Engine");
-        }
-        return Task(task);
+        return options.with_c([&](const ScalixResizeOptions& c_opt) {
+            ScalixTask* task = scalix_resize_async_with_options(
+                engine_,
+                &c_src,
+                &c_dst,
+                &c_opt
+            );
+            if (!task) {
+                throw std::runtime_error("Failed to spawn async task in Scalix Engine");
+            }
+            return Task(task);
+        });
     }
 
     /// @brief Spawns an asynchronous image resize task with a specific filter.
@@ -503,16 +606,16 @@ public:
     /// @param src Source image descriptor.
     /// @param dst Destination image descriptor.
     /// @param filter Scaling filter mode.
-    /// @param strategy Vulkan execution strategy.
+    /// @param strategy Vulkan/Gl execution strategy.
     /// @return RAII Task handle for polling or awaiting completion.
     [[nodiscard]] Task resize_async(const ImageDesc& src, const ImageDesc& dst, Filter filter, Strategy strategy) {
-        return resize_async(src, dst, ResizeOptions{.filter = filter, .vulkan = {.strategy = strategy}});
+        return resize_async(src, dst, ResizeOptions::with_vulkan(filter, strategy));
     }
 
     /// @brief Submits a callback-driven asynchronous image resize task.
     /// @param src Source image descriptor.
     /// @param dst Destination image descriptor.
-    /// @param options Resize options (filter, strategy, mipmap levels).
+    /// @param options Resize options (filter, backend-specific strategy / mip levels).
     /// @param callback Invoked upon task completion with status code (0 = success).
     void resize_callback(
         const ImageDesc& src,
@@ -524,23 +627,24 @@ public:
         auto* cb_ptr = cb_holder.get();
         auto c_src = src.to_c();
         auto c_dst = dst.to_c();
-        auto c_opt = options.to_c();
 
-        int status = scalix_resize_submit_with_options(
-            engine_,
-            &c_src,
-            &c_dst,
-            &c_opt,
-            [](int code, void* user_data) {
-                std::unique_ptr<std::function<void(int status)>> cb(
-                    static_cast<std::function<void(int status)>*>(user_data)
-                );
-                if (cb && *cb) {
-                    (*cb)(code);
-                }
-            },
-            cb_ptr
-        );
+        int status = options.with_c([&](const ScalixResizeOptions& c_opt) {
+            return scalix_resize_submit_with_options(
+                engine_,
+                &c_src,
+                &c_dst,
+                &c_opt,
+                [](int code, void* user_data) {
+                    std::unique_ptr<std::function<void(int status)>> cb(
+                        static_cast<std::function<void(int status)>*>(user_data)
+                    );
+                    if (cb && *cb) {
+                        (*cb)(code);
+                    }
+                },
+                cb_ptr
+            );
+        });
 
         if (status != SCALIX_SUCCESS) {
             throw std::runtime_error("Scalix resize_submit failed with status code: " + std::to_string(status));
@@ -566,7 +670,7 @@ public:
     /// @param src Source image descriptor.
     /// @param dst Destination image descriptor.
     /// @param filter Scaling filter mode.
-    /// @param strategy Vulkan execution strategy.
+    /// @param strategy Vulkan/Gl execution strategy.
     /// @param callback Invoked upon task completion with status code.
     void resize_callback(
         const ImageDesc& src,
@@ -578,7 +682,7 @@ public:
         resize_callback(
             src,
             dst,
-            ResizeOptions{.filter = filter, .vulkan = {.strategy = strategy}},
+            ResizeOptions::with_vulkan(filter, strategy),
             std::move(callback)
         );
     }

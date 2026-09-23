@@ -101,9 +101,30 @@ impl From<ScalixStrategy> for scalix_core::VulkanStrategy {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScalixBackendOptions {
+    pub backend_type: ScalixBackendType,
+    pub struct_size: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScalixVulkanOptions {
+    pub header: ScalixBackendOptions,
     pub strategy: ScalixStrategy,
     pub max_mip_levels: u32,
+}
+
+impl Default for ScalixVulkanOptions {
+    fn default() -> Self {
+        Self {
+            header: ScalixBackendOptions {
+                backend_type: ScalixBackendType::Vulkan,
+                struct_size: std::mem::size_of::<Self>() as u32,
+            },
+            strategy: ScalixStrategy::Auto,
+            max_mip_levels: 0,
+        }
+    }
 }
 
 impl From<ScalixVulkanOptions> for scalix_core::VulkanOptions {
@@ -117,17 +138,120 @@ impl From<ScalixVulkanOptions> for scalix_core::VulkanOptions {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScalixResizeOptions {
-    pub filter: ScalixFilterMode,
-    pub vulkan: ScalixVulkanOptions,
+pub enum ScalixAllocatorType {
+    Auto = 0,
+    DmaHeap = 1,
+    DrmDumb = 2,
+    AndroidAhb = 3,
+    HostAligned = 4,
 }
 
-impl From<ScalixResizeOptions> for scalix_core::ResizeOptions {
-    fn from(o: ScalixResizeOptions) -> Self {
-        Self {
-            filter: o.filter.into(),
-            vulkan: o.vulkan.into(),
+impl From<ScalixAllocatorType> for scalix_core::DmaAllocatorType {
+    fn from(a: ScalixAllocatorType) -> Self {
+        match a {
+            ScalixAllocatorType::Auto => scalix_core::DmaAllocatorType::Auto,
+            ScalixAllocatorType::DmaHeap => scalix_core::DmaAllocatorType::DmaHeap,
+            ScalixAllocatorType::DrmDumb => scalix_core::DmaAllocatorType::DrmDumb,
+            ScalixAllocatorType::AndroidAhb => scalix_core::DmaAllocatorType::AndroidAhb,
+            ScalixAllocatorType::HostAligned => scalix_core::DmaAllocatorType::HostAligned,
         }
+    }
+}
+
+impl From<scalix_core::DmaAllocatorType> for ScalixAllocatorType {
+    fn from(a: scalix_core::DmaAllocatorType) -> Self {
+        match a {
+            scalix_core::DmaAllocatorType::Auto => ScalixAllocatorType::Auto,
+            scalix_core::DmaAllocatorType::DmaHeap => ScalixAllocatorType::DmaHeap,
+            scalix_core::DmaAllocatorType::DrmDumb => ScalixAllocatorType::DrmDumb,
+            scalix_core::DmaAllocatorType::AndroidAhb => ScalixAllocatorType::AndroidAhb,
+            scalix_core::DmaAllocatorType::HostAligned => ScalixAllocatorType::HostAligned,
+        }
+    }
+}
+
+impl From<ScalixStrategy> for scalix_core::GlStrategy {
+    fn from(s: ScalixStrategy) -> Self {
+        match s {
+            ScalixStrategy::Auto => scalix_core::GlStrategy::Auto,
+            ScalixStrategy::Blit => scalix_core::GlStrategy::Blit,
+            ScalixStrategy::Raster => scalix_core::GlStrategy::Raster,
+            ScalixStrategy::LodPyramid => scalix_core::GlStrategy::LodPyramid,
+            ScalixStrategy::Compute => scalix_core::GlStrategy::Compute,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScalixGlOptions {
+    pub header: ScalixBackendOptions,
+    pub strategy: ScalixStrategy,
+    pub max_mip_levels: u32,
+}
+
+impl Default for ScalixGlOptions {
+    fn default() -> Self {
+        Self {
+            header: ScalixBackendOptions {
+                backend_type: ScalixBackendType::OpenGL,
+                struct_size: std::mem::size_of::<Self>() as u32,
+            },
+            strategy: ScalixStrategy::Auto,
+            max_mip_levels: 0,
+        }
+    }
+}
+
+impl From<ScalixGlOptions> for scalix_core::GlOptions {
+    fn from(g: ScalixGlOptions) -> Self {
+        Self {
+            strategy: g.strategy.into(),
+            max_mip_levels: g.max_mip_levels,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ScalixResizeOptions {
+    pub filter: ScalixFilterMode,
+    pub backend_options: *const ScalixBackendOptions,
+}
+
+impl ScalixResizeOptions {
+    /// Safely convert C ABI `ScalixResizeOptions` to core `ResizeOptions`.
+    ///
+    /// # Safety
+    /// If `self.backend_options` is non-null, it must point to a valid struct starting with
+    /// `ScalixBackendOptions` header whose `struct_size` matches or exceeds the backend-specific struct size.
+    pub unsafe fn to_core(&self) -> scalix_core::ResizeOptions {
+        let mut core_options = scalix_core::ResizeOptions::new(self.filter.into());
+        if !self.backend_options.is_null() {
+            let header = &*self.backend_options;
+            match header.backend_type {
+                ScalixBackendType::Vulkan => {
+                    if header.struct_size as usize >= std::mem::size_of::<ScalixVulkanOptions>() {
+                        let vk = &*(self.backend_options as *const ScalixVulkanOptions);
+                        core_options = core_options.with_vulkan_options(scalix_core::VulkanOptions {
+                            strategy: vk.strategy.into(),
+                            max_mip_levels: vk.max_mip_levels,
+                        });
+                    }
+                }
+                ScalixBackendType::OpenGL => {
+                    if header.struct_size as usize >= std::mem::size_of::<ScalixGlOptions>() {
+                        let gl = &*(self.backend_options as *const ScalixGlOptions);
+                        core_options = core_options.with_gl_options(scalix_core::GlOptions {
+                            strategy: gl.strategy.into(),
+                            max_mip_levels: gl.max_mip_levels,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        core_options
     }
 }
 
@@ -300,6 +424,48 @@ impl From<scalix_core::ProfileMetrics> for ScalixProfileMetrics {
 
 #[no_mangle]
 #[must_use]
+pub unsafe extern "C" fn scalix_engine_get_backend_name(
+    engine: *const ScalixEngine,
+) -> *const std::ffi::c_char {
+    ffi_catch!(std::ptr::null(), {
+        if engine.is_null() {
+            return std::ptr::null();
+        }
+        match (*engine).inner.backend_type() {
+            BackendType::Vulkan => c"Vulkan".as_ptr() as *const std::ffi::c_char,
+            BackendType::OpenGL => c"OpenGL".as_ptr() as *const std::ffi::c_char,
+            BackendType::Npu => c"NPU".as_ptr() as *const std::ffi::c_char,
+            BackendType::Hw2d => c"Hardware 2D".as_ptr() as *const std::ffi::c_char,
+            BackendType::Cpu => c"CPU (Fallback)".as_ptr() as *const std::ffi::c_char,
+            BackendType::Passthrough => c"Passthrough".as_ptr() as *const std::ffi::c_char,
+            BackendType::Auto => c"Auto".as_ptr() as *const std::ffi::c_char,
+        }
+    })
+}
+
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn scalix_engine_get_backend_type(
+    engine: *const ScalixEngine,
+) -> ScalixBackendType {
+    ffi_catch!(ScalixBackendType::Auto, {
+        if engine.is_null() {
+            return ScalixBackendType::Auto;
+        }
+        match (*engine).inner.backend_type() {
+            BackendType::Auto => ScalixBackendType::Auto,
+            BackendType::Vulkan => ScalixBackendType::Vulkan,
+            BackendType::OpenGL => ScalixBackendType::OpenGL,
+            BackendType::Npu => ScalixBackendType::Npu,
+            BackendType::Hw2d => ScalixBackendType::Hw2d,
+            BackendType::Cpu => ScalixBackendType::Cpu,
+            BackendType::Passthrough => ScalixBackendType::Passthrough,
+        }
+    })
+}
+
+#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_engine_set_profiling(
     engine: *mut ScalixEngine,
     enabled: bool,
@@ -365,7 +531,7 @@ pub unsafe extern "C" fn scalix_resize_sync_with_options(
             Err(e) => return map_error_to_code(e),
         };
 
-        let core_options: scalix_core::ResizeOptions = (*options).into();
+        let core_options = (*options).to_core();
         match (*engine)
             .inner
             .resize_sync(&src_desc, &mut dst_desc, core_options)
@@ -387,10 +553,7 @@ pub unsafe extern "C" fn scalix_resize_sync(
     ffi_catch!(SCALIX_ERR_FAILED, {
         let options = ScalixResizeOptions {
             filter,
-            vulkan: ScalixVulkanOptions {
-                strategy: ScalixStrategy::Auto,
-                max_mip_levels: 0,
-            },
+            backend_options: std::ptr::null(),
         };
         scalix_resize_sync_with_options(engine, src, dst, &options)
     })
@@ -417,7 +580,7 @@ pub unsafe extern "C" fn scalix_resize_async_with_options(
             return std::ptr::null_mut();
         }
 
-        let core_options: scalix_core::ResizeOptions = (*options).into();
+        let core_options = (*options).to_core();
 
         if !dst_ref.host_ptr.is_null() {
             // Direct zero-copy path: both src and dst host pointers are provided upfront
@@ -484,10 +647,7 @@ pub unsafe extern "C" fn scalix_resize_async(
     ffi_catch!(std::ptr::null_mut(), {
         let options = ScalixResizeOptions {
             filter,
-            vulkan: ScalixVulkanOptions {
-                strategy: ScalixStrategy::Auto,
-                max_mip_levels: 0,
-            },
+            backend_options: std::ptr::null(),
         };
         scalix_resize_async_with_options(engine, src, dst, &options)
     })
@@ -638,7 +798,7 @@ pub unsafe extern "C" fn scalix_resize_submit_with_options(
             user_data: user_data as usize,
         };
 
-        let core_options: scalix_core::ResizeOptions = (*options).into();
+        let core_options = (*options).to_core();
         let res =
             (*engine)
                 .inner
@@ -680,10 +840,7 @@ pub unsafe extern "C" fn scalix_resize_submit(
     ffi_catch!(SCALIX_ERR_FAILED, {
         let options = ScalixResizeOptions {
             filter,
-            vulkan: ScalixVulkanOptions {
-                strategy: ScalixStrategy::Auto,
-                max_mip_levels: 0,
-            },
+            backend_options: std::ptr::null(),
         };
         scalix_resize_submit_with_options(engine, src, dst, &options, callback, user_data)
     })
@@ -705,6 +862,40 @@ pub unsafe extern "C" fn scalix_dma_buffer_allocate(
             Ok(buf) => Box::into_raw(Box::new(ScalixDmaBuffer { inner: buf })),
             Err(_) => std::ptr::null_mut(),
         }
+    })
+}
+
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn scalix_dma_buffer_allocate_with_type(
+    width: u32,
+    height: u32,
+    format: ScalixPixelFormat,
+    allocator_type: ScalixAllocatorType,
+) -> *mut ScalixDmaBuffer {
+    ffi_catch!(std::ptr::null_mut(), {
+        match scalix_core::DmaBuffer::allocate_with_type(
+            width,
+            height,
+            format.into(),
+            allocator_type.into(),
+        ) {
+            Ok(buf) => Box::into_raw(Box::new(ScalixDmaBuffer { inner: buf })),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn scalix_dma_buffer_get_allocator_type(
+    buffer: *const ScalixDmaBuffer,
+) -> ScalixAllocatorType {
+    ffi_catch!(ScalixAllocatorType::Auto, {
+        if buffer.is_null() {
+            return ScalixAllocatorType::Auto;
+        }
+        (*buffer).inner.allocator_type().into()
     })
 }
 

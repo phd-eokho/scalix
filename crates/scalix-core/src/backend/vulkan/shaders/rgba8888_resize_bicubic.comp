@@ -1,0 +1,93 @@
+#version 450
+layout(local_size_x = 64) in;
+
+// NOTE (Reference Implementation):
+// Direct 32-bit RGBA8888 / BGRA8888 Bicubic Resampling Compute Kernel using Catmull-Rom spline (Keys, 1981, a = -0.5).
+// Reference: Keys, R. (1981). "Cubic convolution interpolation for digital image processing",
+// IEEE Transactions on Acoustics, Speech, and Signal Processing, 29(6), 1153-1160.
+// Interpolates RGBA 4-channel values across a 4x4 kernel window using hardware-accelerated pack/unpack intrinsics.
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
+layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
+
+layout(push_constant) uniform PushConsts {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    float scale_x;
+    float scale_y;
+};
+
+vec4 fetch_raw_rgba(int px, int py) {
+    int cx = clamp(px, 0, int(src_w) - 1);
+    int cy = clamp(py, 0, int(src_h) - 1);
+    return unpackUnorm4x8(src_data[uint(cy) * src_w + uint(cx)]);
+}
+
+// Catmull-Rom cubic weighting (a = -0.5)
+float cubic_weight(float x) {
+    float ax = abs(x);
+    if (ax <= 1.0) {
+        return (1.5 * ax - 2.5) * ax * ax + 1.0;
+    } else if (ax < 2.0) {
+        return ((-0.5 * ax + 2.5) * ax - 4.0) * ax + 2.0;
+    }
+    return 0.0;
+}
+
+uint sample_bicubic_coord(uint dx, uint dy) {
+    float u = (float(dx) + 0.5) * scale_x - 0.5;
+    float v = (float(dy) + 0.5) * scale_y - 0.5;
+
+    int x0 = int(floor(u));
+    int y0 = int(floor(v));
+
+    float fx = u - float(x0);
+    float fy = v - float(y0);
+
+    float wx[4];
+    wx[0] = cubic_weight(1.0 + fx);
+    wx[1] = cubic_weight(fx);
+    wx[2] = cubic_weight(1.0 - fx);
+    wx[3] = cubic_weight(2.0 - fx);
+
+    float wy[4];
+    wy[0] = cubic_weight(1.0 + fy);
+    wy[1] = cubic_weight(fy);
+    wy[2] = cubic_weight(1.0 - fy);
+    wy[3] = cubic_weight(2.0 - fy);
+
+    vec4 col = vec4(0.0);
+    for (int j = 0; j < 4; ++j) {
+        vec4 row_col = vec4(0.0);
+        for (int i = 0; i < 4; ++i) {
+            row_col += wx[i] * fetch_raw_rgba(x0 - 1 + i, y0 - 1 + j);
+        }
+        col += wy[j] * row_col;
+    }
+
+    return packUnorm4x8(clamp(col, 0.0, 1.0));
+}
+
+void main() {
+    uint chunk_idx = gl_GlobalInvocationID.x;
+    uint total_dst_pixels = dst_w * dst_h;
+    uint base_pixel = chunk_idx * 4u;
+    if (base_pixel >= total_dst_pixels) return;
+
+    uint dx0 = base_pixel % dst_w;
+    uint dy0 = base_pixel / dst_w;
+
+    for (uint i = 0u; i < 4u; ++i) {
+        if (base_pixel + i < total_dst_pixels) {
+            uint dx = dx0 + i;
+            uint dy = dy0;
+            if (dx >= dst_w) {
+                dx -= dst_w;
+                dy += 1u;
+            }
+            dst_data[base_pixel + i] = sample_bicubic_coord(dx, dy);
+        }
+    }
+}

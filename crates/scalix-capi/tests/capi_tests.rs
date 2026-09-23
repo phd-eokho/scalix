@@ -219,3 +219,63 @@ fn test_c_api_profiling() {
         scalix_engine_destroy(engine);
     }
 }
+
+#[test]
+fn test_c_api_sync_with_backend_options() {
+    unsafe {
+        let engine = scalix_engine_create(ScalixBackendType::Auto);
+        assert!(!engine.is_null());
+
+        let width = 16;
+        let height = 16;
+        let stride = width * 4;
+        let mut src_data = scalix_core::AlignedBuffer::new(stride * height).unwrap();
+        src_data.as_mut_slice().fill(55);
+        let mut dst_data = scalix_core::AlignedBuffer::new(stride * height).unwrap();
+
+        let src_desc = ScalixImageDesc {
+            width: width as u32,
+            height: height as u32,
+            stride_bytes: stride,
+            format: ScalixPixelFormat::Rgba8888,
+            host_ptr: src_data.as_mut_ptr(),
+            data_len: src_data.len(),
+            dma_buf_fd: -1,
+        };
+
+        let mut dst_desc = ScalixImageDesc {
+            width: width as u32,
+            height: height as u32,
+            stride_bytes: stride,
+            format: ScalixPixelFormat::Rgba8888,
+            host_ptr: dst_data.as_mut_ptr(),
+            data_len: dst_data.len(),
+            dma_buf_fd: -1,
+        };
+
+        let vk_opts = ScalixVulkanOptions {
+            header: ScalixBackendOptions {
+                backend_type: ScalixBackendType::Vulkan,
+                struct_size: std::mem::size_of::<ScalixVulkanOptions>() as u32,
+            },
+            strategy: ScalixStrategy::Auto,
+            max_mip_levels: 0,
+        };
+
+        let options = ScalixResizeOptions {
+            filter: ScalixFilterMode::Passthrough,
+            backend_options: &vk_opts.header,
+        };
+
+        let status = scalix_resize_sync_with_options(
+            engine,
+            &src_desc,
+            &mut dst_desc,
+            &options,
+        );
+        assert_eq!(status, SCALIX_SUCCESS);
+        assert_eq!(dst_data.as_slice(), src_data.as_slice());
+
+        scalix_engine_destroy(engine);
+    }
+}

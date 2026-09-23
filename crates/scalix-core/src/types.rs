@@ -504,19 +504,29 @@ impl<'a> ImageDescMut<'a> {
     }
 }
 
+pub use crate::dma::DmaAllocatorType;
+
+/// Backend-specific execution options and strategy metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackendOptions {
+    #[default]
+    None,
+    Vulkan(crate::backend::vulkan::VulkanOptions),
+    Gl(crate::backend::gl::GlOptions),
+}
+
 /// Dynamic per-resize operation metadata and configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(C)]
 pub struct ResizeOptions {
     pub filter: FilterMode,
-    pub vulkan: crate::backend::vulkan::VulkanOptions,
+    pub backend_options: BackendOptions,
 }
 
 impl Default for ResizeOptions {
     fn default() -> Self {
         Self {
             filter: FilterMode::Bilinear,
-            vulkan: crate::backend::vulkan::VulkanOptions::default(),
+            backend_options: BackendOptions::None,
         }
     }
 }
@@ -525,7 +535,7 @@ impl From<FilterMode> for ResizeOptions {
     fn from(filter: FilterMode) -> Self {
         Self {
             filter,
-            vulkan: crate::backend::vulkan::VulkanOptions::default(),
+            backend_options: BackendOptions::None,
         }
     }
 }
@@ -536,8 +546,15 @@ impl ResizeOptions {
     pub fn new(filter: FilterMode) -> Self {
         Self {
             filter,
-            vulkan: crate::backend::vulkan::VulkanOptions::default(),
+            backend_options: BackendOptions::None,
         }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_vulkan_options(mut self, opts: crate::backend::vulkan::VulkanOptions) -> Self {
+        self.backend_options = BackendOptions::Vulkan(opts);
+        self
     }
 
     #[inline]
@@ -546,14 +563,76 @@ impl ResizeOptions {
         mut self,
         strategy: crate::backend::vulkan::VulkanStrategy,
     ) -> Self {
-        self.vulkan.strategy = strategy;
+        let mut opts = match self.backend_options {
+            BackendOptions::Vulkan(v) => v,
+            _ => crate::backend::vulkan::VulkanOptions::default(),
+        };
+        opts.strategy = strategy;
+        self.backend_options = BackendOptions::Vulkan(opts);
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_gl_options(mut self, opts: crate::backend::gl::GlOptions) -> Self {
+        self.backend_options = BackendOptions::Gl(opts);
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_gl_strategy(
+        mut self,
+        strategy: crate::backend::gl::GlStrategy,
+    ) -> Self {
+        let mut opts = match self.backend_options {
+            BackendOptions::Gl(g) => g,
+            _ => crate::backend::gl::GlOptions::default(),
+        };
+        opts.strategy = strategy;
+        self.backend_options = BackendOptions::Gl(opts);
         self
     }
 
     #[inline]
     #[must_use]
     pub fn with_max_mip_levels(mut self, max_levels: u32) -> Self {
-        self.vulkan.max_mip_levels = max_levels;
+        match self.backend_options {
+            BackendOptions::Vulkan(mut v) => {
+                v.max_mip_levels = max_levels;
+                self.backend_options = BackendOptions::Vulkan(v);
+            }
+            BackendOptions::Gl(mut g) => {
+                g.max_mip_levels = max_levels;
+                self.backend_options = BackendOptions::Gl(g);
+            }
+            BackendOptions::None => {
+                self.backend_options = BackendOptions::Vulkan(crate::backend::vulkan::VulkanOptions {
+                    strategy: crate::backend::vulkan::VulkanStrategy::Auto,
+                    max_mip_levels: max_levels,
+                });
+            }
+        }
         self
+    }
+
+    /// Extracts Vulkan options or returns default.
+    #[inline]
+    #[must_use]
+    pub fn vulkan_options(&self) -> crate::backend::vulkan::VulkanOptions {
+        match self.backend_options {
+            BackendOptions::Vulkan(v) => v,
+            _ => crate::backend::vulkan::VulkanOptions::default(),
+        }
+    }
+
+    /// Extracts OpenGL options or returns default.
+    #[inline]
+    #[must_use]
+    pub fn gl_options(&self) -> crate::backend::gl::GlOptions {
+        match self.backend_options {
+            BackendOptions::Gl(g) => g,
+            _ => crate::backend::gl::GlOptions::default(),
+        }
     }
 }

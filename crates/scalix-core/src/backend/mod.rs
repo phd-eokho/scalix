@@ -1,6 +1,8 @@
+pub mod gl;
 pub mod passthrough;
 pub mod vulkan;
 
+pub use gl::{GlBackend, GlOptions, GlStrategy};
 pub use passthrough::PassthroughBackend;
 pub use vulkan::{VulkanBackend, VulkanOptions, VulkanPipeline, VulkanStrategy};
 

@@ -1,7 +1,8 @@
 //! Programmable Compute Shader Resampler Pipeline (`vkCmdDispatch`)
 //!
-//! Fused GPU Compute Kernels for direct packed RGB888 / BGR888 resampling.
-//! Avoids intermediate RGBA8888 texture allocations and multi-pass blits.
+//! Fused GPU Compute Kernels for direct packed RGB888 / BGR888 and 32-bit RGBA8888 / BGRA8888 resampling.
+//! Avoids intermediate RGBA8888 texture allocations and multi-pass blits for packed formats, while
+//! accelerating high-order spatial filters (Bicubic, Lanczos3) on headless offscreen GPUs.
 //! Provides a pluggable kernel registry for dynamic custom compute shaders.
 
 use crate::backend::vulkan::context::VulkanContext;
@@ -16,157 +17,59 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Pre-compiled SPIR-V binary bytecode for direct RGB888 nearest resize compute kernel.
-///
-/// ```glsl
-/// #version 450
-/// layout(local_size_x = 64) in;
-///
-/// layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
-/// layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
-///
-/// layout(push_constant) uniform PushConsts {
-///     uint src_w;
-///     uint src_h;
-///     uint dst_w;
-///     uint dst_h;
-///     float scale_x;
-///     float scale_y;
-/// };
-///
-/// // Branchless 24-bit packed RGB pixel fetch from 32-bit storage buffer words
-/// uint sample_rgb(uint p_idx, uint total_dst) {
-///     if (p_idx >= total_dst) return 0u;
-///     uint dx = p_idx % dst_w;
-///     uint dy = p_idx / dst_w;
-///
-///     uint sx = min(uint(floor(float(dx) * scale_x)), src_w - 1u);
-///     uint sy = min(uint(floor(float(dy) * scale_y)), src_h - 1u);
-///
-///     uint src_byte_offset = (sy * src_w + sx) * 3u;
-///     uint word_idx = src_byte_offset >> 2u;
-///     uint w0 = src_data[word_idx];
-///     uint w1 = src_data[word_idx + 1u];
-///
-///     uint shift = (src_byte_offset & 3u) << 3u;
-///     uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
-///     return val & 0x00FFFFFFu;
-/// }
-///
-/// void main() {
-///     uint chunk_idx = gl_GlobalInvocationID.x;
-///     uint total_dst_pixels = dst_w * dst_h;
-///     uint base_pixel = chunk_idx * 4u;
-///     if (base_pixel >= total_dst_pixels) return;
-///
-///     // Fetch 4 contiguous pixels as packed 24-bit words
-///     uint p0 = sample_rgb(base_pixel, total_dst_pixels);
-///     uint p1 = sample_rgb(base_pixel + 1u, total_dst_pixels);
-///     uint p2 = sample_rgb(base_pixel + 2u, total_dst_pixels);
-///     uint p3 = sample_rgb(base_pixel + 3u, total_dst_pixels);
-///
-///     // Branchless packing of 4x24-bit pixels into 3x32-bit storage buffer words
-///     uint w0 = p0 | (p1 << 24u);
-///     uint w1 = (p1 >> 8u) | (p2 << 16u);
-///     uint w2 = (p2 >> 16u) | (p3 << 8u);
-///     uint out_word_base = chunk_idx * 3u;
-///
-///     dst_data[out_word_base + 0u] = w0;
-///     if (base_pixel + 1u < total_dst_pixels) dst_data[out_word_base + 1u] = w1;
-///     if (base_pixel + 2u < total_dst_pixels) dst_data[out_word_base + 2u] = w2;
-/// }
-/// ```
 pub const RGB888_RESIZE_NEAREST_COMP_SPV: &[u8] =
     include_bytes!("shaders/rgb888_resize_nearest.spv");
 
 /// Pre-compiled SPIR-V binary bytecode for direct RGB888 bilinear resize compute kernel.
-///
-/// ```glsl
-/// #version 450
-/// layout(local_size_x = 64) in;
-///
-/// layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
-/// layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
-///
-/// layout(push_constant) uniform PushConsts {
-///     uint src_w;
-///     uint src_h;
-///     uint dst_w;
-///     uint dst_h;
-///     float scale_x;
-///     float scale_y;
-/// };
-///
-/// // Branchless 24-bit packed RGB fetch to vec3
-/// vec3 fetch_raw_rgb(uint px, uint py) {
-///     uint src_byte_offset = (py * src_w + px) * 3u;
-///     uint word_idx = src_byte_offset >> 2u;
-///     uint w0 = src_data[word_idx];
-///     uint w1 = src_data[word_idx + 1u];
-///
-///     uint shift = (src_byte_offset & 3u) << 3u;
-///     uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
-///     return vec3(float(val & 0xFFu), float((val >> 8u) & 0xFFu), float((val >> 16u) & 0xFFu));
-/// }
-///
-/// uint sample_bilinear(uint p_idx, uint total_dst) {
-///     if (p_idx >= total_dst) return 0u;
-///     uint dx = p_idx % dst_w;
-///     uint dy = p_idx / dst_w;
-///
-///     float u = (float(dx) + 0.5) * scale_x - 0.5;
-///     float v = (float(dy) + 0.5) * scale_y - 0.5;
-///
-///     float fu = floor(u);
-///     float fv = floor(v);
-///
-///     int max_x = int(src_w) - 1;
-///     int max_y = int(src_h) - 1;
-///
-///     int x0 = clamp(int(fu), 0, max_x);
-///     int y0 = clamp(int(fv), 0, max_y);
-///     int x1 = clamp(int(fu) + 1, 0, max_x);
-///     int y1 = clamp(int(fv) + 1, 0, max_y);
-///
-///     float fx = u - fu;
-///     float fy = v - fv;
-///
-///     vec3 c00 = fetch_raw_rgb(uint(x0), uint(y0));
-///     vec3 c10 = fetch_raw_rgb(uint(x1), uint(y0));
-///     vec3 c01 = fetch_raw_rgb(uint(x0), uint(y1));
-///     vec3 c11 = fetch_raw_rgb(uint(x1), uint(y1));
-///
-///     vec3 top = mix(c00, c10, fx);
-///     vec3 bot = mix(c01, c11, fx);
-///     vec3 col = clamp(mix(top, bot, fy) + 0.5, 0.0, 255.0);
-///
-///     return uint(col.r) | (uint(col.g) << 8u) | (uint(col.b) << 16u);
-/// }
-///
-/// void main() {
-///     uint chunk_idx = gl_GlobalInvocationID.x;
-///     uint total_dst_pixels = dst_w * dst_h;
-///     uint base_pixel = chunk_idx * 4u;
-///     if (base_pixel >= total_dst_pixels) return;
-///
-///     // Fetch 4 contiguous bilinear filtered pixels
-///     uint p0 = sample_bilinear(base_pixel, total_dst_pixels);
-///     uint p1 = sample_bilinear(base_pixel + 1u, total_dst_pixels);
-///     uint p2 = sample_bilinear(base_pixel + 2u, total_dst_pixels);
-///     uint p3 = sample_bilinear(base_pixel + 3u, total_dst_pixels);
-///
-///     // Branchless packing into 3x32-bit storage buffer words
-///     uint w0 = p0 | (p1 << 24u);
-///     uint w1 = (p1 >> 8u) | (p2 << 16u);
-///     uint w2 = (p2 >> 16u) | (p3 << 8u);
-///     uint out_word_base = chunk_idx * 3u;
-///
-///     dst_data[out_word_base + 0u] = w0;
-///     if (base_pixel + 1u < total_dst_pixels) dst_data[out_word_base + 1u] = w1;
-///     if (base_pixel + 2u < total_dst_pixels) dst_data[out_word_base + 2u] = w2;
-/// }
-/// ```
 pub const RGB888_RESIZE_BILINEAR_COMP_SPV: &[u8] =
     include_bytes!("shaders/rgb888_resize_bilinear.spv");
+
+/// Pre-compiled SPIR-V binary bytecode for direct RGB888 bicubic resize compute kernel.
+///
+/// NOTE (Reference Implementation):
+/// Utilizes 2D separable Catmull-Rom cubic spline filtering ($a = -0.5$) over a $4 \times 4$ tap window.
+/// Reference: Keys, R. (1981). "Cubic convolution interpolation for digital image processing",
+/// IEEE Transactions on Acoustics, Speech, and Signal Processing, 29(6), 1153-1160.
+pub const RGB888_RESIZE_BICUBIC_COMP_SPV: &[u8] =
+    include_bytes!("shaders/rgb888_resize_bicubic.spv");
+
+/// Pre-compiled SPIR-V binary bytecode for direct RGB888 Lanczos3 resize compute kernel.
+///
+/// NOTE (Reference Implementation):
+/// Utilizes 2D separable 3-lobe sinc-windowed sinc filtering ($a = 3$) over a $6 \times 6$ tap window
+/// with dynamic weight normalization.
+/// Reference: Lanczos, C. (1956). "Applied Analysis", Prentice-Hall;
+/// Turkowski, K. (1990). "Filters for Common Resampling Tasks", Graphics Gems.
+pub const RGB888_RESIZE_LANCZOS3_COMP_SPV: &[u8] =
+    include_bytes!("shaders/rgb888_resize_lanczos3.spv");
+
+/// Pre-compiled SPIR-V binary bytecode for direct RGBA8888 nearest resize compute kernel.
+pub const RGBA8888_RESIZE_NEAREST_COMP_SPV: &[u8] =
+    include_bytes!("shaders/rgba8888_resize_nearest.spv");
+
+/// Pre-compiled SPIR-V binary bytecode for direct RGBA8888 bilinear resize compute kernel.
+pub const RGBA8888_RESIZE_BILINEAR_COMP_SPV: &[u8] =
+    include_bytes!("shaders/rgba8888_resize_bilinear.spv");
+
+/// Pre-compiled SPIR-V binary bytecode for direct RGBA8888 bicubic resize compute kernel.
+///
+/// NOTE (Reference Implementation):
+/// Utilizes 2D separable Catmull-Rom cubic spline filtering ($a = -0.5$) over a $4 \times 4$ tap window
+/// across 4 color and alpha channels.
+/// Reference: Keys, R. (1981). "Cubic convolution interpolation for digital image processing",
+/// IEEE Transactions on Acoustics, Speech, and Signal Processing, 29(6), 1153-1160.
+pub const RGBA8888_RESIZE_BICUBIC_COMP_SPV: &[u8] =
+    include_bytes!("shaders/rgba8888_resize_bicubic.spv");
+
+/// Pre-compiled SPIR-V binary bytecode for direct RGBA8888 Lanczos3 resize compute kernel.
+///
+/// NOTE (Reference Implementation):
+/// Utilizes 2D separable 3-lobe sinc-windowed sinc filtering ($a = 3$) over a $6 \times 6$ tap window
+/// with dynamic weight normalization across RGBA channels.
+/// Reference: Lanczos, C. (1956). "Applied Analysis", Prentice-Hall;
+/// Turkowski, K. (1990). "Filters for Common Resampling Tasks", Graphics Gems.
+pub const RGBA8888_RESIZE_LANCZOS3_COMP_SPV: &[u8] =
+    include_bytes!("shaders/rgba8888_resize_lanczos3.spv");
 
 /// Default local workgroup size along X dimension.
 pub const DEFAULT_WORKGROUP_SIZE_X: u32 = 64;
@@ -189,6 +92,20 @@ pub struct ComputePushConsts {
     pub dst_h: u32,
     pub scale_x: f32,
     pub scale_y: f32,
+}
+
+/// Unique lookup key identifying a compute kernel by pixel format and filter mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ComputeKernelKey {
+    pub format: PixelFormat,
+    pub filter: FilterMode,
+}
+
+impl ComputeKernelKey {
+    #[inline]
+    pub const fn new(format: PixelFormat, filter: FilterMode) -> Self {
+        Self { format, filter }
+    }
 }
 
 /// Scoped RAII guard guaranteeing deterministic destruction of transient VkDescriptorPool.
@@ -235,19 +152,19 @@ impl Drop for ComputeKernel {
     }
 }
 
-/// Fused GPU compute resizer executing direct 24-bit RGB888 / BGR888 resampling kernels.
+/// Fused GPU compute resizer executing direct 24-bit RGB888 / BGR888 and 32-bit RGBA8888 / BGRA8888 resampling kernels.
 /// Supports pluggable compute shaders for custom spatial filters and image processing.
 pub struct VulkanComputeResizer {
     ctx: Arc<VulkanContext>,
     profiler: Arc<dyn Profiler>,
     desc_layout: vk::DescriptorSetLayout,
     pipe_layout: vk::PipelineLayout,
-    kernels: Mutex<HashMap<FilterMode, Arc<ComputeKernel>>>,
+    kernels: Mutex<HashMap<ComputeKernelKey, Arc<ComputeKernel>>>,
     ring: Mutex<VulkanStagingRing>,
 }
 
 impl VulkanComputeResizer {
-    /// Initializes compute resizer pipelines and registers default nearest & bilinear kernels.
+    /// Initializes compute resizer pipelines and registers default nearest, bilinear, bicubic & lanczos3 kernels.
     pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Result<Self> {
         let device = &ctx.device;
 
@@ -323,24 +240,74 @@ impl VulkanComputeResizer {
             ring,
         };
 
-        // Register default nearest and bilinear shaders
-        resizer.register_shader_with_layout(
-            FilterMode::Nearest,
-            RGB888_RESIZE_NEAREST_COMP_SPV,
-            DEFAULT_WORKGROUP_SIZE_X,
-            DEFAULT_PIXELS_PER_THREAD,
-        )?;
-        resizer.register_shader_with_layout(
-            FilterMode::Bilinear,
-            RGB888_RESIZE_BILINEAR_COMP_SPV,
-            DEFAULT_WORKGROUP_SIZE_X,
-            DEFAULT_PIXELS_PER_THREAD,
-        )?;
+        // Register default RGB888 / BGR888 kernels
+        for &fmt in &[PixelFormat::Rgb888, PixelFormat::Bgr888] {
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Nearest,
+                RGB888_RESIZE_NEAREST_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Bilinear,
+                RGB888_RESIZE_BILINEAR_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Bicubic,
+                RGB888_RESIZE_BICUBIC_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Lanczos3,
+                RGB888_RESIZE_LANCZOS3_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+        }
+
+        // Register default RGBA8888 / BGRA8888 kernels
+        for &fmt in &[PixelFormat::Rgba8888, PixelFormat::Bgra8888] {
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Nearest,
+                RGBA8888_RESIZE_NEAREST_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Bilinear,
+                RGBA8888_RESIZE_BILINEAR_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Bicubic,
+                RGBA8888_RESIZE_BICUBIC_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+            resizer.register_format_shader_with_layout(
+                fmt,
+                FilterMode::Lanczos3,
+                RGBA8888_RESIZE_LANCZOS3_COMP_SPV,
+                DEFAULT_WORKGROUP_SIZE_X,
+                DEFAULT_PIXELS_PER_THREAD,
+            )?;
+        }
 
         Ok(resizer)
     }
 
-    /// Compiles and registers a custom SPIR-V compute shader for a given filter mode.
+    /// Compiles and registers a custom SPIR-V compute shader for RGB888/BGR888 for a given filter mode.
     #[inline]
     pub fn register_shader(&self, filter: FilterMode, spv_bytes: &[u8]) -> Result<()> {
         self.register_shader_with_layout(
@@ -351,9 +318,51 @@ impl VulkanComputeResizer {
         )
     }
 
-    /// Compiles and registers a custom compute shader specifying workgroup and pixel layout.
+    /// Compiles and registers a custom compute shader for RGB888/BGR888 specifying workgroup and pixel layout.
     pub fn register_shader_with_layout(
         &self,
+        filter: FilterMode,
+        spv_bytes: &[u8],
+        workgroup_size_x: u32,
+        pixels_per_thread: u32,
+    ) -> Result<()> {
+        self.register_format_shader_with_layout(
+            PixelFormat::Rgb888,
+            filter,
+            spv_bytes,
+            workgroup_size_x,
+            pixels_per_thread,
+        )?;
+        self.register_format_shader_with_layout(
+            PixelFormat::Bgr888,
+            filter,
+            spv_bytes,
+            workgroup_size_x,
+            pixels_per_thread,
+        )
+    }
+
+    /// Compiles and registers a custom compute shader for a specific pixel format.
+    #[inline]
+    pub fn register_format_shader(
+        &self,
+        format: PixelFormat,
+        filter: FilterMode,
+        spv_bytes: &[u8],
+    ) -> Result<()> {
+        self.register_format_shader_with_layout(
+            format,
+            filter,
+            spv_bytes,
+            DEFAULT_WORKGROUP_SIZE_X,
+            DEFAULT_PIXELS_PER_THREAD,
+        )
+    }
+
+    /// Compiles and registers a custom compute shader specifying format, workgroup and pixel layout.
+    pub fn register_format_shader_with_layout(
+        &self,
+        format: PixelFormat,
         filter: FilterMode,
         spv_bytes: &[u8],
         workgroup_size_x: u32,
@@ -363,7 +372,7 @@ impl VulkanComputeResizer {
         let mut kernels = self.kernels.lock().map_err(|_| {
             ScalixError::ExecutionFailed("Failed to acquire compute kernel lock".to_string())
         })?;
-        kernels.insert(filter, kernel);
+        kernels.insert(ComputeKernelKey::new(format, filter), kernel);
         Ok(())
     }
 
@@ -426,13 +435,20 @@ impl VulkanComputeResizer {
         }))
     }
 
-    /// Checks if a compute kernel is registered for the specified filter mode.
+    /// Checks if a compute kernel is registered for RGB888 and the specified filter mode.
     #[inline]
     #[must_use]
     pub fn has_shader(&self, filter: FilterMode) -> bool {
+        self.has_format_shader(PixelFormat::Rgb888, filter)
+    }
+
+    /// Checks if a compute kernel is registered for the specified format and filter mode.
+    #[inline]
+    #[must_use]
+    pub fn has_format_shader(&self, format: PixelFormat, filter: FilterMode) -> bool {
         self.kernels
             .lock()
-            .map(|k| k.contains_key(&filter))
+            .map(|k| k.contains_key(&ComputeKernelKey::new(format, filter)))
             .unwrap_or(false)
     }
 
@@ -461,12 +477,23 @@ impl VulkanComputeResizer {
             )));
         }
 
-        if !matches!(src.format, PixelFormat::Rgb888 | PixelFormat::Bgr888) {
-            return Err(ScalixError::UnsupportedFormat(src.format));
-        }
+        let bpp = match src.format.bytes_per_pixel() {
+            Some(bytes)
+                if matches!(
+                    src.format,
+                    PixelFormat::Rgb888
+                        | PixelFormat::Bgr888
+                        | PixelFormat::Rgba8888
+                        | PixelFormat::Bgra8888
+                ) =>
+            {
+                bytes
+            }
+            _ => return Err(ScalixError::UnsupportedFormat(src.format)),
+        };
 
-        let src_min_stride = (src.width as usize).saturating_mul(3);
-        let dst_min_stride = (dst.width as usize).saturating_mul(3);
+        let src_min_stride = (src.width as usize).saturating_mul(bpp);
+        let dst_min_stride = (dst.width as usize).saturating_mul(bpp);
         if src.stride < src_min_stride || dst.stride < dst_min_stride {
             return Err(ScalixError::InvalidStride {
                 stride: if src.stride < src_min_stride {
@@ -486,8 +513,9 @@ impl VulkanComputeResizer {
             let kernels = self.kernels.lock().map_err(|_| {
                 ScalixError::ExecutionFailed("Failed to acquire compute kernel lock".to_string())
             })?;
+            let key = ComputeKernelKey::new(src.format, filter);
             kernels
-                .get(&filter)
+                .get(&key)
                 .cloned()
                 .or_else(|| {
                     // Fallback to Bilinear for high-order filters if not explicitly registered
@@ -495,15 +523,17 @@ impl VulkanComputeResizer {
                         filter,
                         FilterMode::Bicubic | FilterMode::Lanczos3 | FilterMode::Area
                     ) {
-                        kernels.get(&FilterMode::Bilinear).cloned()
+                        kernels
+                            .get(&ComputeKernelKey::new(src.format, FilterMode::Bilinear))
+                            .cloned()
                     } else {
                         None
                     }
                 })
                 .ok_or_else(|| {
                     ScalixError::ExecutionFailed(format!(
-                        "No compute shader kernel registered for filter mode: {:?}",
-                        filter
+                        "No compute shader kernel registered for format {:?} and filter mode: {:?}",
+                        src.format, filter
                     ))
                 })?
         };

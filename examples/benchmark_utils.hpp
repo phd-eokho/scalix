@@ -56,14 +56,30 @@ public:
     static void print_banner(std::string_view title, std::string_view subtitle = "");
     static void print_section(std::string_view section_title);
 
+    static void print_strategy_table(
+        std::string_view title,
+        const std::vector<StrategyBenchmarkResult>& results,
+        std::string_view method_header = "Pipeline Method"
+    );
+
     static void print_vulkan_strategy_table(
         std::string_view title,
         const std::vector<StrategyBenchmarkResult>& results
-    );
+    ) {
+        print_strategy_table(title, results, "Vulkan Pipeline Method");
+    }
+
+    static void print_gl_strategy_table(
+        std::string_view title,
+        const std::vector<StrategyBenchmarkResult>& results
+    ) {
+        print_strategy_table(title, results, "OpenGL Pipeline Method");
+    }
 
     static void print_profiling_breakdown_table(
         std::string_view title,
-        const std::vector<StrategyBenchmarkResult>& results
+        const std::vector<StrategyBenchmarkResult>& results,
+        std::string_view strategy_header = "Hardware Strategy"
     );
 
     static void print_resolution_summary_table(

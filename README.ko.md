@@ -45,7 +45,7 @@
 | Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64 / armv7) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
 | **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (AMD / NVIDIA / Intel / Mesa Lavapipe) | ✔ Verified | ✔ Verified | ◐ Compiled (미검증) |
-| **OpenGL / GLES** | EGL Headless / FBO / CS | GLES 3.1+ / GL 4.3+ | ○ Supported | ○ Supported | ○ Supported |
+| **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ✔ Verified | ◐ Compiled (미검증) |
 | **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | ○ Mock / Loopback | ○ Hardware Req. | — |
 | **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | ○ Mock / CPU | ○ OpenVINO | ○ QNN / NNAPI |
 
@@ -70,10 +70,29 @@
 | **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME Zero-Copy) | ○ Supported | ◐ Fallback (미검증) | — |
 | **AHardwareBuffer** | `AHardwareBuffer*` Zero-Copy 연동 | — | — | ◐ Compiled (미검증) |
 
-> [!NOTE] 현재 검증 상태 및 타겟 플랫폼 현황
+> [!NOTE]
+> **현재 검증 상태 및 타겟 플랫폼 현황**
 > - **Linux (x86_64):** 실제 NVIDIA GPU(Vulkan 드라이버) 및 CI 파이프라인(Mesa Lavapipe Vulkan 소프트웨어 래스터라이저)에서 검증되었습니다.
 > - **WSL2 (Windows Subsystem for Linux 2):** NVIDIA GPU 환경의 `/dev/dxg` 브리지를 통한 Vulkan 오프스크린 렌더링이 검증되었습니다. Linux `dma-buf`는 미검증 상태이며 64바이트 정렬 Host Staging 메모리로 자동 Fallback됩니다.
 > - **Android (aarch64 / armv7):** CI 상에서 Android NDK 크로스 컴파일(`cargo-ndk`) 및 동적 라이브러리 빌드가 검증되었습니다. 단, 실제 Android 기기나 에뮬레이터 상에서의 런타임 GPU 실행, Vulkan 드라이버 구동, `AHardwareBuffer` Zero-Copy DMA 동작은 **아직 검증되지 않았습니다 (Unverified)**.
+
+---
+
+### 4. 픽셀 포맷 및 필터 전략 실행 매트릭스 (Vulkan Backend)
+
+| 픽셀 포맷 (In / Out) | `Nearest` | `Bilinear` | `Bicubic` | `Lanczos3` | `LodPyramid` (축소) | 기본 `Auto` 전략 매핑 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`RGB888` / `BGR888` (24-bit)** | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Raster` / `Compute` (✔) | **`Compute`** (Fused 24-bit 전용 패스) |
+| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` (✔) | `Blit` / `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `LodPyramid` (✔) | **`Blit`** (고속 패스) / **`Compute`** (Bicubic/Lanczos3) |
+| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
+| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
+| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` (◐) | `Raster` / `Blit` (◐) | — | — | — | **`Raster`** (Y/UV 평면 분할 패스) |
+
+> [!NOTE]
+> **필터 알고리즘 레퍼런스 구현 (Reference Implementation)**
+> - **Bicubic (`FilterMode::Bicubic`):** $4 \times 4$ 탭 윈도우 기반 2D 분리형 Catmull-Rom 3차 스플라인 보간 ($a = -0.5$) 적용 ([Keys, 1981](https://doi.org/10.1109/TASSP.1981.1163711)).
+> - **Lanczos3 (`FilterMode::Lanczos3`):** 밝기 왜곡을 방지하기 위한 동적 가중치 정규화가 적용된 3-lobe sinc 윈도우 sinc 필터 ($a = 3$, $L(x) = \text{sinc}(x)\text{sinc}(x/3)$) 기반 $6 \times 6$ 탭 윈도우 보간 ([Lanczos, 1956](https://archive.org/details/appliedanalysis0000corn); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
+> - **전략 자동 라우팅 (`VulkanStrategy::Auto`):** CPU 호스트 포맷 변환 병목을 방지하기 위해 24-bit 패킹 포맷(`RGB888` / `BGR888`)은 Fused GPU `Compute`로 직행합니다. 32-bit `RGBA8888`의 `Nearest` 및 `Bilinear`는 최대 필레이트 처리를 위해 하드웨어 `Blit` 명령을 우선 사용하며, `Bicubic` 및 `Lanczos3` 고차 필터는 GPU `Compute` 파이프라인으로 디스패치됩니다.
 
 ---
 
@@ -100,20 +119,18 @@ int main() {
     };
 
     // 동적 리사이즈 옵션 설정 (Strategy: Blit, Raster, LodPyramid)
-    scalix::ResizeOptions options{
-        .filter = scalix::Filter::Bilinear,
-        .vulkan = {
-            .strategy = scalix::Strategy::LodPyramid,
-            .max_mip_levels = 2, // 계층적 Anti-Aliasing 다운스케일링
-        },
-    };
+    const scalix::ResizeOptions options = scalix::ResizeOptions::with_vulkan(
+        scalix::Filter::Bilinear,
+        scalix::Strategy::LodPyramid,
+        2 // 계층적 Anti-Aliasing 다운스케일링
+    );
 
     // Mode A: 동기식 실행
     engine.resize(src, dst, options);
 
-    // Mode B: 비동기 Future 실행
-    auto future = engine.resize_async(src, dst, options);
-    future.get(); // 완료 대기
+    // Mode B: 비동기 Task 실행
+    auto task = engine.resize_async(src, dst, options);
+    task.wait(); // 완료 대기
 
     // Mode C: 콜백 기반 실행
     engine.resize_callback(src, dst, options, [](int status) {
@@ -136,12 +153,18 @@ ScalixImageDesc src = { .width = 3840, .height = 2160, .stride_bytes = 3840 * 4,
 ScalixImageDesc dst = { .width = 320, .height = 320, .stride_bytes = 320 * 4,
                         .format = SCALIX_FORMAT_RGBA8888, .host_ptr = dst_ptr, .dma_buf_fd = -1 };
 
+ScalixVulkanOptions vk_opts = {
+    .header = {
+        .backend_type = SCALIX_BACKEND_VULKAN,
+        .struct_size = sizeof(ScalixVulkanOptions),
+    },
+    .strategy = SCALIX_STRATEGY_LOD_PYRAMID,
+    .max_mip_levels = 2,
+};
+
 ScalixResizeOptions options = {
     .filter = SCALIX_FILTER_BILINEAR,
-    .vulkan = {
-        .strategy = SCALIX_STRATEGY_LOD_PYRAMID,
-        .max_mip_levels = 2,
-    },
+    .backend_options = &vk_opts.header,
 };
 
 // 동적 옵션을 적용한 동기식 리사이즈
@@ -190,8 +213,11 @@ make -C examples
 # 전체 예제 실행 (libjpeg-turbo 기반 sample.jpg JPEG 처리 포함)
 make -C examples run
 
-# 다중 해상도 성능 벤치마크 실행
+# 다중 해상도 성능 벤치마크 실행 (Vulkan)
 make -C examples benchmark
+
+# 다중 해상도 성능 벤치마크 실행 (OpenGL/EGL)
+make -C examples benchmark_gl
 
 # 예제 빌드 산출물 정리
 make -C examples clean
@@ -200,7 +226,8 @@ make -C examples clean
 #### 개별 예제 안내:
 * **`cpp_basic`**: 동기식, 비동기 콜백 및 Zero-Copy DMA 버퍼 사전 할당 데모.
 * **`cpp_jpeg`**: `libjpeg-turbo`를 사용하여 [`assets/sample.jpg`](assets/sample.jpg)를 메모리 맵핑된 DMA 버퍼로 직접 디코딩하고, Scalix 파이프라인(`blit`, `raster`, `lod [max_mip_levels]`)을 실행한 후 결과 JPEG를 저장.
-* **`cpp_benchmark`**: 4K UHD, 1080p, 720p 입력을 320×320 텐서로 다운스케일링하는 다중 해상도 마이크로 벤치마크.
+* **`cpp_benchmark`**: 4K UHD, 1080p, 720p 입력을 320×320 텐서로 다운스케일링하는 **Vulkan** 다중 해상도 마이크로 벤치마크.
+* **`cpp_benchmark_gl`**: 4K UHD, 1080p, 720p 입력을 320×320 텐서로 다운스케일링하는 **OpenGL / EGL** 다중 해상도 마이크로 벤치마크.
 
 ---
 

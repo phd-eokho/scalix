@@ -96,10 +96,21 @@ impl VulkanBackend {
         &self.compute
     }
 
-    /// Registers a custom pluggable compute shader kernel for a given filter mode.
+    /// Registers a custom pluggable compute shader kernel for RGB888/BGR888 and a given filter mode.
     #[inline]
     pub fn register_compute_shader(&self, filter: FilterMode, spv_bytes: &[u8]) -> Result<()> {
         self.compute.register_shader(filter, spv_bytes)
+    }
+
+    /// Registers a custom pluggable compute shader kernel for a specific pixel format.
+    #[inline]
+    pub fn register_format_compute_shader(
+        &self,
+        format: crate::types::PixelFormat,
+        filter: FilterMode,
+        spv_bytes: &[u8],
+    ) -> Result<()> {
+        self.compute.register_format_shader(format, filter, spv_bytes)
     }
 }
 
@@ -129,18 +140,31 @@ impl Backend for VulkanBackend {
             return crate::backend::PassthroughBackend::new().process(src, dst, options);
         }
 
-        let chosen_strategy = match options.vulkan.strategy {
+        let vk_opts = options.vulkan_options();
+        let chosen_strategy = match vk_opts.strategy {
             VulkanStrategy::Auto => {
-                // Specialized fast-path: Direct fused compute resizer for identical packed 24-bit formats
-                if src.format == dst.format
-                    && matches!(
+                if src.format == dst.format {
+                    if matches!(
                         src.format,
                         crate::types::PixelFormat::Rgb888 | crate::types::PixelFormat::Bgr888
-                    )
-                {
-                    VulkanStrategy::Compute
+                    ) {
+                        // Packed 24-bit direct GPU compute pipeline
+                        VulkanStrategy::Compute
+                    } else if matches!(
+                        src.format,
+                        crate::types::PixelFormat::Rgba8888 | crate::types::PixelFormat::Bgra8888
+                    ) && matches!(
+                        options.filter,
+                        FilterMode::Bicubic | FilterMode::Lanczos3
+                    ) {
+                        // High-order spatial filters on RGBA dispatch via compute pipeline
+                        VulkanStrategy::Compute
+                    } else {
+                        // Fixed-function 2D blit for RGBA8888 Nearest/Bilinear
+                        VulkanStrategy::Blit
+                    }
                 } else {
-                    // Default to hardware blitter for 1:1 format scaling
+                    // Default to hardware blitter for cross-format or general scaling
                     VulkanStrategy::Blit
                 }
             }
@@ -152,7 +176,7 @@ impl Backend for VulkanBackend {
             VulkanStrategy::Raster => self.raster.process(src, dst, options.filter),
             VulkanStrategy::LodPyramid => self.lod.process(src, dst, options),
             VulkanStrategy::Compute => self.compute.process(src, dst, options.filter),
-            VulkanStrategy::Auto => unreachable!("Auto strategy mapped prior to execution"),
+            VulkanStrategy::Auto => self.blitter.process(src, dst, options.filter),
         }
     }
 }

@@ -800,7 +800,31 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
     assert_eq!(dst_data.as_slice()[0], 0x77);
     assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
 
-    // 3. Test Auto Strategy routing directly to Compute for RGB888
+    // 3. Test Bicubic Filter via Direct Compute
+    {
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options =
+            ResizeOptions::new(FilterMode::Bicubic).with_vulkan_strategy(VulkanStrategy::Compute);
+        let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+        assert!(res.is_ok(), "Compute Bicubic failed: {:?}", res.err());
+    }
+    assert_eq!(dst_data.as_slice()[0], 0x77);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
+
+    // 4. Test Lanczos3 Filter via Direct Compute
+    {
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let options =
+            ResizeOptions::new(FilterMode::Lanczos3).with_vulkan_strategy(VulkanStrategy::Compute);
+        let res = vk_backend.process(&src_desc, &mut dst_desc, &options);
+        assert!(res.is_ok(), "Compute Lanczos3 failed: {:?}", res.err());
+    }
+    assert_eq!(dst_data.as_slice()[0], 0x77);
+    assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
+
+    // 5. Test Auto Strategy routing directly to Compute for RGB888
     {
         let mut dst_desc =
             ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
@@ -816,10 +840,10 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
     assert_eq!(dst_data.as_slice()[0], 0x77);
     assert_eq!(dst_data.as_slice()[dst_data.len() - 1], 0x77);
 
-    // 4. Test Dynamic Pluggable Shader Registration (e.g. registering custom kernel for Lanczos3)
+    // 6. Test Dynamic Pluggable Shader Registration (e.g. registering custom kernel)
     {
         let pluggable_spv = scalix_core::backend::vulkan::compute::RGB888_RESIZE_NEAREST_COMP_SPV;
-        assert!(!vk_backend
+        assert!(vk_backend
             .compute_resizer()
             .has_shader(FilterMode::Lanczos3));
 
@@ -844,6 +868,27 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
             res.err()
         );
         assert_eq!(dst_data.as_slice()[0], 0x77);
+    }
+
+    // 7. Test RGBA8888 Compute Resizing (Nearest, Bilinear, Bicubic, Lanczos3)
+    {
+        let rgba_fmt = PixelFormat::Rgba8888;
+        let rgba_src_stride = rgba_fmt.min_stride(src_w).unwrap();
+        let rgba_dst_stride = rgba_fmt.min_stride(dst_w).unwrap();
+        let mut rgba_src_data = AlignedBuffer::new(rgba_src_stride * (src_h as usize)).unwrap();
+        rgba_src_data.as_mut_slice().fill(0xAA);
+        let mut rgba_dst_data = AlignedBuffer::new(rgba_dst_stride * (dst_h as usize)).unwrap();
+
+        let rgba_src_desc = ImageDesc::new(src_w, src_h, rgba_src_stride, rgba_fmt, &rgba_src_data).unwrap();
+
+        for filter in [FilterMode::Nearest, FilterMode::Bilinear, FilterMode::Bicubic, FilterMode::Lanczos3] {
+            let mut rgba_dst_desc = ImageDescMut::new(dst_w, dst_h, rgba_dst_stride, rgba_fmt, &mut rgba_dst_data).unwrap();
+            let options = ResizeOptions::new(filter).with_vulkan_strategy(VulkanStrategy::Compute);
+            let res = vk_backend.process(&rgba_src_desc, &mut rgba_dst_desc, &options);
+            assert!(res.is_ok(), "RGBA Compute {:?} failed: {:?}", filter, res.err());
+            assert_eq!(rgba_dst_data.as_slice()[0], 0xAA);
+            assert_eq!(rgba_dst_data.as_slice()[rgba_dst_data.len() - 1], 0xAA);
+        }
     }
 
     // 5. Test Non-Uniform Pattern to verify channel ordering and spatial scaling
@@ -871,4 +916,73 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
         );
         assert_eq!(dst_data.as_slice()[2], 0xAA, "Blue channel mismatch");
     }
+}
+
+#[test]
+fn test_opengl_backend_strategies() {
+    use scalix_core::{GlBackend, GlStrategy, ResizeOptions};
+
+    let gl_backend = match GlBackend::new() {
+        Ok(backend) => backend,
+        Err(ScalixError::BackendUnavailable(_)) => {
+            eprintln!("OpenGL/EGL backend not available on this host; skipping GL backend test");
+            return;
+        }
+        Err(e) => panic!("Unexpected error initializing GlBackend: {e:?}"),
+    };
+
+    let src_w = 64;
+    let src_h = 64;
+    let dst_w = 32;
+    let dst_h = 32;
+    let format = PixelFormat::Rgba8888;
+    let src_stride = format.min_stride(src_w).unwrap();
+    let dst_stride = format.min_stride(dst_w).unwrap();
+
+    let mut src_data = AlignedBuffer::new(src_stride * (src_h as usize)).unwrap();
+    for (i, byte) in src_data.as_mut_slice().iter_mut().enumerate() {
+        *byte = (i % 255) as u8;
+    }
+    let mut dst_data = AlignedBuffer::new(dst_stride * (dst_h as usize)).unwrap();
+
+    let src_desc = ImageDesc::new(src_w, src_h, src_stride, format, &src_data).unwrap();
+    let mut dst_desc =
+        ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+
+    // 1. Blit Strategy
+    let blit_opts = ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(GlStrategy::Blit);
+    let res_blit = gl_backend.process(&src_desc, &mut dst_desc, &blit_opts);
+    assert!(res_blit.is_ok(), "GL Blit failed: {:?}", res_blit.err());
+
+    // 2. Raster Strategy
+    let raster_opts = ResizeOptions::new(FilterMode::Bicubic).with_gl_strategy(GlStrategy::Raster);
+    let res_raster = gl_backend.process(&src_desc, &mut dst_desc, &raster_opts);
+    assert!(res_raster.is_ok(), "GL Raster failed: {:?}", res_raster.err());
+
+    // 3. Lod Pyramid Strategy
+    let lod_opts = ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(GlStrategy::LodPyramid);
+    let res_lod = gl_backend.process(&src_desc, &mut dst_desc, &lod_opts);
+    assert!(res_lod.is_ok(), "GL Lod Pyramid failed: {:?}", res_lod.err());
+}
+
+#[test]
+fn test_dma_allocator_types() {
+    use scalix_core::{DmaAllocatorType, DmaBuffer};
+
+    // Test HostAligned allocator type
+    let host_buf = DmaBuffer::allocate_with_type(64, 64, PixelFormat::Rgba8888, DmaAllocatorType::HostAligned);
+    assert!(host_buf.is_ok(), "HostAligned allocation must succeed: {:?}", host_buf.err());
+    let mut buf = host_buf.unwrap();
+    assert_eq!(buf.allocator_type(), DmaAllocatorType::HostAligned);
+    assert_eq!(buf.width(), 64);
+    assert_eq!(buf.height(), 64);
+
+    let write_res = buf.with_write(|slice| {
+        slice[0] = 0x42;
+        slice[1] = 0x43;
+    });
+    assert!(write_res.is_ok());
+
+    let read_val = buf.with_read(|slice| slice[0]);
+    assert_eq!(read_val.unwrap(), 0x42);
 }

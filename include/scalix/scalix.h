@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-/* Return Status Codes */
+/// @brief Return Status Codes
 #define SCALIX_SUCCESS                  0
 #define SCALIX_ERR_NULL_PTR            -1
 #define SCALIX_ERR_INVALID_DIMENSIONS  -2
@@ -25,14 +25,15 @@ extern "C" {
 #define SCALIX_ERR_UNALIGNED_POINTER   -12
 #define SCALIX_ERR_FAILED             -99
 
+/// @brief Required memory alignment in bytes for zero-copy DMA buffers and SIMD operations.
 #define SCALIX_REQUIRED_ALIGNMENT_BYTES 64
 
-/* Opaque Handle Types */
+/// @brief Opaque handle types
 typedef struct ScalixEngine ScalixEngine;
 typedef struct ScalixTask ScalixTask;
 typedef struct ScalixDmaBuffer ScalixDmaBuffer;
 
-/* Backend Provider Types */
+/// @brief Hardware accelerator backend providers.
 typedef enum ScalixBackendType {
     SCALIX_BACKEND_AUTO        = 0,
     SCALIX_BACKEND_VULKAN      = 1,
@@ -43,7 +44,7 @@ typedef enum ScalixBackendType {
     SCALIX_BACKEND_PASSTHROUGH = 6
 } ScalixBackendType;
 
-/* Execution Pipeline Strategy */
+/// @brief Execution pipeline strategy.
 typedef enum ScalixStrategy {
     SCALIX_STRATEGY_AUTO        = 0,
     SCALIX_STRATEGY_BLIT        = 1,
@@ -52,7 +53,7 @@ typedef enum ScalixStrategy {
     SCALIX_STRATEGY_COMPUTE     = 4
 } ScalixStrategy;
 
-/* Interpolation / Scaling Filters */
+/// @brief Interpolation / scaling filters.
 typedef enum ScalixFilterMode {
     SCALIX_FILTER_NEAREST     = 0,
     SCALIX_FILTER_BILINEAR    = 1,
@@ -62,7 +63,7 @@ typedef enum ScalixFilterMode {
     SCALIX_FILTER_PASSTHROUGH = 100
 } ScalixFilterMode;
 
-/* Pixel Formats */
+/// @brief Pixel formats.
 typedef enum ScalixPixelFormat {
     SCALIX_FORMAT_RGBA8888 = 0,
     SCALIX_FORMAT_BGRA8888 = 1,
@@ -76,19 +77,42 @@ typedef enum ScalixPixelFormat {
     SCALIX_FORMAT_RGBA32F  = 9
 } ScalixPixelFormat;
 
-/* Vulkan Backend Options */
+/// @brief DMA memory allocator types.
+typedef enum ScalixAllocatorType {
+    SCALIX_ALLOCATOR_AUTO         = 0,
+    SCALIX_ALLOCATOR_DMA_HEAP     = 1,
+    SCALIX_ALLOCATOR_DRM_DUMB     = 2,
+    SCALIX_ALLOCATOR_ANDROID_AHB  = 3,
+    SCALIX_ALLOCATOR_HOST_ALIGNED = 4
+} ScalixAllocatorType;
+
+/// @brief Common header for backend-specific options to support polymorphic upcasting.
+typedef struct ScalixBackendOptions {
+    ScalixBackendType backend_type;
+    uint32_t struct_size;
+} ScalixBackendOptions;
+
+/// @brief Vulkan backend options.
 typedef struct ScalixVulkanOptions {
+    ScalixBackendOptions header;
     ScalixStrategy strategy;
-    uint32_t max_mip_levels; /* 0 = automatic / unlimited, >0 = limit mipchain depth */
+    uint32_t max_mip_levels; ///< 0 = automatic / unlimited, >0 = limit mipchain depth
 } ScalixVulkanOptions;
 
-/* Dynamic Resize Options */
+/// @brief OpenGL backend options.
+typedef struct ScalixGlOptions {
+    ScalixBackendOptions header;
+    ScalixStrategy strategy;
+    uint32_t max_mip_levels; ///< 0 = automatic / unlimited, >0 = limit mipchain depth
+} ScalixGlOptions;
+
+/// @brief Dynamic resize options.
 typedef struct ScalixResizeOptions {
     ScalixFilterMode filter;
-    ScalixVulkanOptions vulkan;
+    const ScalixBackendOptions* backend_options; ///< Optional pointer to backend-specific options (e.g. ScalixVulkanOptions / ScalixGlOptions)
 } ScalixResizeOptions;
 
-/* Image Descriptor */
+/// @brief Image descriptor representing memory layout and geometry.
 typedef struct ScalixImageDesc {
     uint32_t width;
     uint32_t height;
@@ -99,45 +123,47 @@ typedef struct ScalixImageDesc {
     int dma_buf_fd;
 } ScalixImageDesc;
 
-/* Completion Callback Signature */
+/// @brief Completion callback signature for asynchronous notifications.
 typedef void (*ScalixCompletionCallback)(int status_code, void* user_data);
 
-/*
- * Creates a new Scalix Engine instance with default PID thread naming (<pid>/scx-*).
- * 
- * backend: Hardware accelerator backend type to initialize.
- * Returns: ScalixEngine* Pointer to created engine handle, or NULL on failure.
- */
+/// @brief Creates a new Scalix Engine instance with default PID thread naming (<pid>/scx-*).
+/// @param backend Hardware accelerator backend type to initialize.
+/// @return ScalixEngine* Pointer to created engine handle, or NULL on failure.
 ScalixEngine* scalix_engine_create(ScalixBackendType backend);
 
-/*
- * Creates a new Scalix Engine instance with a custom thread naming prefix.
- * 
- * Internal threads are named <prefix>/scx-hw (hardware executor) and
- * <prefix>/scx-w<id> (callback/worker pool).
- * 
- * backend: Hardware accelerator backend type to initialize.
- * thread_prefix: Custom prefix string for naming internal engine threads.
- *                Pass NULL or empty string to default to process ID (<pid>).
- * Note: Maximum effective length of thread_prefix is 7 characters.
- * Warning: Prefixes exceeding 7 characters will be automatically truncated to 7 characters
- *          with a runtime warning log to strictly adhere to the Linux 15-character thread
- *          name (comm) limit.
- * Returns: ScalixEngine* Pointer to created engine handle, or NULL on failure.
- */
+/// @brief Creates a new Scalix Engine instance with a custom thread naming prefix.
+///
+/// Internal threads are named <prefix>/scx-hw (hardware executor) and
+/// <prefix>/scx-w<id> (callback/worker pool).
+///
+/// @param backend Hardware accelerator backend type to initialize.
+/// @param thread_prefix Custom prefix string for naming internal engine threads.
+///                      Pass NULL or empty string to default to process ID (<pid>).
+/// @note Maximum effective length of thread_prefix is 7 characters.
+/// @warning Prefixes exceeding 7 characters will be automatically truncated to 7 characters
+///          with a runtime warning log to strictly adhere to the Linux 15-character thread
+///          name (comm) limit.
+/// @return ScalixEngine* Pointer to created engine handle, or NULL on failure.
 ScalixEngine* scalix_engine_create_with_prefix(
     ScalixBackendType backend,
     const char* thread_prefix
 );
 
-/*
- * Destroys a Scalix Engine instance and releases all associated worker threads.
- * 
- * engine: Pointer to engine handle to destroy.
- */
+/// @brief Destroys a Scalix Engine instance and releases all associated worker threads.
+/// @param engine Pointer to engine handle to destroy.
 void scalix_engine_destroy(ScalixEngine* engine);
 
-/* Profiling Metrics */
+/// @brief Returns the human-readable name of the engine's active backend provider.
+/// @param engine Pointer to engine handle.
+/// @return Pointer to static null-terminated C string.
+const char* scalix_engine_get_backend_name(const ScalixEngine* engine);
+
+/// @brief Returns the backend type of the engine's active backend provider.
+/// @param engine Pointer to engine handle.
+/// @return ScalixBackendType enum value.
+ScalixBackendType scalix_engine_get_backend_type(const ScalixEngine* engine);
+
+/// @brief Profiling metrics for execution stages.
 typedef struct ScalixProfileMetrics {
     double host_unpack_ms;
     double gpu_upload_ms;
@@ -148,28 +174,27 @@ typedef struct ScalixProfileMetrics {
     double total_wall_ms;
 } ScalixProfileMetrics;
 
-/*
- * Enables or disables zero-overhead profiling in the engine.
- * 
- * engine: Pointer to engine handle.
- * enabled: True to enable latency breakdowns and GPU hardware timestamps.
- * Returns: SCALIX_SUCCESS on success, error code otherwise.
- */
+/// @brief Enables or disables zero-overhead profiling in the engine.
+/// @param engine Pointer to engine handle.
+/// @param enabled True to enable latency breakdowns and GPU hardware timestamps.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_engine_set_profiling(ScalixEngine* engine, bool enabled);
 
-/*
- * Retrieves the most recent profile metrics if profiling was enabled.
- * 
- * engine: Pointer to engine handle.
- * out_metrics: Pointer to metrics structure to populate.
- * Returns: SCALIX_SUCCESS on success, error code otherwise.
- */
+/// @brief Retrieves the most recent profile metrics if profiling was enabled.
+/// @param engine Pointer to engine handle.
+/// @param out_metrics Pointer to metrics structure to populate.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_engine_get_last_profile(
     const ScalixEngine* engine,
     ScalixProfileMetrics* out_metrics
 );
 
-/* 1. Synchronous Execution */
+/// @brief Synchronously resizes an image with explicit options.
+/// @param engine Pointer to engine handle.
+/// @param src Pointer to source image descriptor.
+/// @param dst Pointer to destination image descriptor.
+/// @param options Pointer to resize options.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_resize_sync_with_options(
     ScalixEngine* engine,
     const ScalixImageDesc* src,
@@ -177,6 +202,12 @@ int scalix_resize_sync_with_options(
     const ScalixResizeOptions* options
 );
 
+/// @brief Synchronously resizes an image with filter mode.
+/// @param engine Pointer to engine handle.
+/// @param src Pointer to source image descriptor.
+/// @param dst Pointer to destination image descriptor.
+/// @param filter Scaling filter mode.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_resize_sync(
     ScalixEngine* engine,
     const ScalixImageDesc* src,
@@ -184,7 +215,12 @@ int scalix_resize_sync(
     ScalixFilterMode filter
 );
 
-/* 2. Asynchronous Execution (Task Handle / Polling / Wait) */
+/// @brief Spawns an asynchronous image resize task with options.
+/// @param engine Pointer to engine handle.
+/// @param src Pointer to source image descriptor.
+/// @param dst Pointer to destination image descriptor.
+/// @param options Pointer to resize options.
+/// @return ScalixTask* Pointer to created task handle, or NULL on failure.
 ScalixTask* scalix_resize_async_with_options(
     ScalixEngine* engine,
     const ScalixImageDesc* src,
@@ -192,27 +228,30 @@ ScalixTask* scalix_resize_async_with_options(
     const ScalixResizeOptions* options
 );
 
+/// @brief Spawns an asynchronous image resize task with filter mode.
+/// @param engine Pointer to engine handle.
+/// @param src Pointer to source image descriptor.
+/// @param dst Pointer to destination image descriptor.
+/// @param filter Scaling filter mode.
+/// @return ScalixTask* Pointer to created task handle, or NULL on failure.
 ScalixTask* scalix_resize_async(
     ScalixEngine* engine,
     const ScalixImageDesc* src,
     const ScalixImageDesc* dst,
     ScalixFilterMode filter
 );
-/*
- * Checks whether an asynchronous task has completed without blocking.
- * Returns true if completed, false otherwise.
- */
+
+/// @brief Checks whether an asynchronous task has completed without blocking.
+/// @param task Pointer to task handle.
+/// @return True if completed, false otherwise.
 bool scalix_task_is_ready(const ScalixTask* task);
 
-/*
- * Waits for an asynchronous task to complete.
- *
- * task: Task handle returned by scalix_resize_async*.
- * timeout_ms: Timeout in milliseconds (0 or UINT32_MAX = wait indefinitely, >0 = timeout limit).
- * out_dst_ptr: Optional buffer to copy destination image pixels into upon completion (can be NULL).
- * out_dst_len: Length of out_dst_ptr buffer in bytes.
- * Returns: SCALIX_SUCCESS on success, SCALIX_ERR_TIMEOUT on timeout, or negative error code.
- */
+/// @brief Waits for an asynchronous task to complete.
+/// @param task Task handle returned by scalix_resize_async*.
+/// @param timeout_ms Timeout in milliseconds (0 or UINT32_MAX = wait indefinitely, >0 = timeout limit).
+/// @param out_dst_ptr Optional buffer to copy destination image pixels into upon completion (can be NULL).
+/// @param out_dst_len Length of out_dst_ptr buffer in bytes.
+/// @return SCALIX_SUCCESS on success, SCALIX_ERR_TIMEOUT on timeout, or negative error code.
 int scalix_task_wait(
     ScalixTask* task,
     uint32_t timeout_ms,
@@ -220,13 +259,19 @@ int scalix_task_wait(
     size_t out_dst_len
 );
 
-/*
- * Releases and deallocates an asynchronous task handle.
- * Must be called to prevent memory leaks after task wait or when abandoning a task.
- */
+/// @brief Releases and deallocates an asynchronous task handle.
+/// Must be called to prevent memory leaks after task wait or when abandoning a task.
+/// @param task Pointer to task handle.
 void scalix_task_release(ScalixTask* task);
 
-/* 3. Callback-driven Execution */
+/// @brief Submits a callback-driven asynchronous image resize task with options.
+/// @param engine Pointer to engine handle.
+/// @param src Pointer to source image descriptor.
+/// @param dst Pointer to destination image descriptor.
+/// @param options Pointer to resize options.
+/// @param callback Callback function invoked upon completion.
+/// @param user_data User data passed to callback.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_resize_submit_with_options(
     ScalixEngine* engine,
     const ScalixImageDesc* src,
@@ -236,6 +281,14 @@ int scalix_resize_submit_with_options(
     void* user_data
 );
 
+/// @brief Submits a callback-driven asynchronous image resize task with filter mode.
+/// @param engine Pointer to engine handle.
+/// @param src Pointer to source image descriptor.
+/// @param dst Pointer to destination image descriptor.
+/// @param filter Scaling filter mode.
+/// @param callback Callback function invoked upon completion.
+/// @param user_data User data passed to callback.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_resize_submit(
     ScalixEngine* engine,
     const ScalixImageDesc* src,
@@ -245,60 +298,78 @@ int scalix_resize_submit(
     void* user_data
 );
 
-/* 4. Zero-Copy DMA Buffer Lifecycle & Synchronization */
-/*
- * Allocates a hardware-backed DMA buffer (Linux DMA-Heap/DRM, Android AHardwareBuffer).
- * 
- * width: Image buffer width in pixels.
- * height: Image buffer height in pixels.
- * format: Pixel format of the buffer.
- * Returns: ScalixDmaBuffer* Pointer to created DMA buffer handle, or NULL on failure.
- */
+/// @brief Allocates a hardware-backed DMA buffer (Linux DMA-Heap/DRM, Android AHardwareBuffer).
+/// @param width Image buffer width in pixels.
+/// @param height Image buffer height in pixels.
+/// @param format Pixel format of the buffer.
+/// @return ScalixDmaBuffer* Pointer to created DMA buffer handle, or NULL on failure.
 ScalixDmaBuffer* scalix_dma_buffer_allocate(
     uint32_t width,
     uint32_t height,
     ScalixPixelFormat format
 );
 
-/*
- * Releases a DMA buffer and unmaps its virtual memory.
- * 
- * buffer: Pointer to DMA buffer handle to release.
- */
+/// @brief Allocates a DMA/aligned buffer with a specific allocator selection.
+/// @param width Image buffer width in pixels.
+/// @param height Image buffer height in pixels.
+/// @param format Pixel format of the buffer.
+/// @param allocator_type Requested allocator type.
+/// @return ScalixDmaBuffer* Pointer to created DMA buffer handle, or NULL on failure.
+ScalixDmaBuffer* scalix_dma_buffer_allocate_with_type(
+    uint32_t width,
+    uint32_t height,
+    ScalixPixelFormat format,
+    ScalixAllocatorType allocator_type
+);
+
+/// @brief Returns the allocator type that backed the DMA buffer.
+/// @param buffer Pointer to DMA buffer handle.
+/// @return ScalixAllocatorType value.
+ScalixAllocatorType scalix_dma_buffer_get_allocator_type(const ScalixDmaBuffer* buffer);
+
+/// @brief Releases a DMA buffer and unmaps its virtual memory.
+/// @param buffer Pointer to DMA buffer handle to release.
 void scalix_dma_buffer_free(ScalixDmaBuffer* buffer);
 
-/* Returns the underlying Linux DMA-BUF file descriptor (or -1 if not applicable). */
+/// @brief Returns the underlying Linux DMA-BUF file descriptor (or -1 if not applicable).
+/// @param buffer Pointer to DMA buffer handle.
+/// @return File descriptor or -1.
 int scalix_dma_buffer_get_fd(const ScalixDmaBuffer* buffer);
 
-/* Returns the memory-mapped CPU virtual address pointer. */
+/// @brief Returns the memory-mapped CPU virtual address pointer.
+/// @param buffer Pointer to DMA buffer handle.
+/// @return Pointer to mapped host memory.
 uint8_t* scalix_dma_buffer_get_host_ptr(const ScalixDmaBuffer* buffer);
 
-/* Returns the total allocated byte size of the DMA buffer. */
+/// @brief Returns the total allocated byte size of the DMA buffer.
+/// @param buffer Pointer to DMA buffer handle.
+/// @return Size in bytes.
 size_t scalix_dma_buffer_get_size(const ScalixDmaBuffer* buffer);
 
-/* Returns the row pitch/stride in bytes. */
+/// @brief Returns the row pitch/stride in bytes.
+/// @param buffer Pointer to DMA buffer handle.
+/// @return Stride in bytes.
 size_t scalix_dma_buffer_get_stride(const ScalixDmaBuffer* buffer);
 
-/* Populates a ScalixImageDesc referencing this DMA buffer. */
+/// @brief Populates a ScalixImageDesc referencing this DMA buffer.
+/// @param buffer Pointer to DMA buffer handle.
+/// @param out_desc Pointer to image descriptor to populate.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_dma_buffer_get_desc(
     const ScalixDmaBuffer* buffer,
     ScalixImageDesc* out_desc
 );
 
-/*
- * Prepares DMA buffer for CPU read/write access (cache invalidation/clean).
- * 
- * buffer: DMA buffer handle.
- * is_write: True if CPU will write to buffer, False for read-only.
- */
+/// @brief Prepares DMA buffer for CPU read/write access (cache invalidation/clean).
+/// @param buffer DMA buffer handle.
+/// @param is_write True if CPU will write to buffer, False for read-only.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_dma_buffer_sync_start(const ScalixDmaBuffer* buffer, bool is_write);
 
-/*
- * Concludes CPU read/write access to flush caches for hardware accelerators.
- * 
- * buffer: DMA buffer handle.
- * is_write: True if CPU wrote to buffer, False for read-only.
- */
+/// @brief Concludes CPU read/write access to flush caches for hardware accelerators.
+/// @param buffer DMA buffer handle.
+/// @param is_write True if CPU wrote to buffer, False for read-only.
+/// @return SCALIX_SUCCESS on success, error code otherwise.
 int scalix_dma_buffer_sync_end(const ScalixDmaBuffer* buffer, bool is_write);
 
 #ifdef __cplusplus

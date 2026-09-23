@@ -139,16 +139,28 @@ impl Engine {
             BackendType::Auto => {
                 match crate::backend::VulkanBackend::with_profiler(Arc::clone(&profiler)) {
                     Ok(vk_backend) => Arc::new(vk_backend),
-                    Err(e) => {
+                    Err(vk_err) => {
                         log::info!(
-                        "Vulkan auto-initialization skipped ({:?}); falling back to passthrough",
-                        e
-                    );
-                        Arc::new(PassthroughBackend::new())
+                            "Vulkan auto-initialization skipped ({:?}); trying OpenGL...",
+                            vk_err
+                        );
+                        match crate::backend::GlBackend::with_profiler(Arc::clone(&profiler)) {
+                            Ok(gl_backend) => Arc::new(gl_backend),
+                            Err(gl_err) => {
+                                log::info!(
+                                    "OpenGL auto-initialization skipped ({:?}); falling back to passthrough",
+                                    gl_err
+                                );
+                                Arc::new(PassthroughBackend::new())
+                            }
+                        }
                     }
                 }
             }
             BackendType::Vulkan => Arc::new(crate::backend::VulkanBackend::with_profiler(
+                Arc::clone(&profiler),
+            )?),
+            BackendType::OpenGL => Arc::new(crate::backend::GlBackend::with_profiler(
                 Arc::clone(&profiler),
             )?),
             BackendType::Passthrough | BackendType::Cpu => Arc::new(PassthroughBackend::new()),

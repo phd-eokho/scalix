@@ -1,6 +1,10 @@
 #version 450
 layout(local_size_x = 64) in;
 
+// NOTE (Reference Implementation):
+// Direct 32-bit RGBA8888 / BGRA8888 Nearest-Neighbor Resampling Compute Kernel.
+// Direct 1-word-per-pixel indexing without cross-word shifts.
+
 layout(set = 0, binding = 0) readonly buffer SrcBuffer { uint src_data[]; };
 layout(set = 0, binding = 1) buffer DstBuffer { uint dst_data[]; };
 
@@ -13,19 +17,10 @@ layout(push_constant) uniform PushConsts {
     float scale_y;
 };
 
-// Branchless 24-bit packed RGB pixel fetch from 32-bit storage buffer words
-uint sample_rgb_coord(uint dx, uint dy) {
+uint sample_nearest_coord(uint dx, uint dy) {
     uint sx = min(uint(floor(float(dx) * scale_x)), src_w - 1u);
     uint sy = min(uint(floor(float(dy) * scale_y)), src_h - 1u);
-
-    uint src_byte_offset = (sy * src_w + sx) * 3u;
-    uint word_idx = src_byte_offset >> 2u;
-    uint w0 = src_data[word_idx];
-    uint w1 = src_data[word_idx + 1u];
-
-    uint shift = (src_byte_offset & 3u) << 3u;
-    uint val = (w0 >> shift) | ((shift > 0u) ? (w1 << (32u - shift)) : 0u);
-    return val & 0x00FFFFFFu;
+    return src_data[sy * src_w + sx];
 }
 
 void main() {
@@ -37,7 +32,6 @@ void main() {
     uint dx0 = base_pixel % dst_w;
     uint dy0 = base_pixel / dst_w;
 
-    uint p[4];
     for (uint i = 0u; i < 4u; ++i) {
         if (base_pixel + i < total_dst_pixels) {
             uint dx = dx0 + i;
@@ -46,19 +40,7 @@ void main() {
                 dx -= dst_w;
                 dy += 1u;
             }
-            p[i] = sample_rgb_coord(dx, dy);
-        } else {
-            p[i] = 0u;
+            dst_data[base_pixel + i] = sample_nearest_coord(dx, dy);
         }
     }
-
-    // Branchless packing of 4x24-bit pixels into 3x32-bit storage buffer words
-    uint w0 = p[0] | (p[1] << 24u);
-    uint w1 = (p[1] >> 8u) | (p[2] << 16u);
-    uint w2 = (p[2] >> 16u) | (p[3] << 8u);
-    uint out_word_base = chunk_idx * 3u;
-
-    dst_data[out_word_base + 0u] = w0;
-    if (base_pixel + 1u < total_dst_pixels) dst_data[out_word_base + 1u] = w1;
-    if (base_pixel + 2u < total_dst_pixels) dst_data[out_word_base + 2u] = w2;
 }
