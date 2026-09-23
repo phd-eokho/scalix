@@ -879,13 +879,26 @@ fn test_vulkan_backend_compute_direct_rgb888_resize() {
         rgba_src_data.as_mut_slice().fill(0xAA);
         let mut rgba_dst_data = AlignedBuffer::new(rgba_dst_stride * (dst_h as usize)).unwrap();
 
-        let rgba_src_desc = ImageDesc::new(src_w, src_h, rgba_src_stride, rgba_fmt, &rgba_src_data).unwrap();
+        let rgba_src_desc =
+            ImageDesc::new(src_w, src_h, rgba_src_stride, rgba_fmt, &rgba_src_data).unwrap();
 
-        for filter in [FilterMode::Nearest, FilterMode::Bilinear, FilterMode::Bicubic, FilterMode::Lanczos3] {
-            let mut rgba_dst_desc = ImageDescMut::new(dst_w, dst_h, rgba_dst_stride, rgba_fmt, &mut rgba_dst_data).unwrap();
+        for filter in [
+            FilterMode::Nearest,
+            FilterMode::Bilinear,
+            FilterMode::Bicubic,
+            FilterMode::Lanczos3,
+        ] {
+            let mut rgba_dst_desc =
+                ImageDescMut::new(dst_w, dst_h, rgba_dst_stride, rgba_fmt, &mut rgba_dst_data)
+                    .unwrap();
             let options = ResizeOptions::new(filter).with_vulkan_strategy(VulkanStrategy::Compute);
             let res = vk_backend.process(&rgba_src_desc, &mut rgba_dst_desc, &options);
-            assert!(res.is_ok(), "RGBA Compute {:?} failed: {:?}", filter, res.err());
+            assert!(
+                res.is_ok(),
+                "RGBA Compute {:?} failed: {:?}",
+                filter,
+                res.err()
+            );
             assert_eq!(rgba_dst_data.as_slice()[0], 0xAA);
             assert_eq!(rgba_dst_data.as_slice()[rgba_dst_data.len() - 1], 0xAA);
         }
@@ -950,52 +963,92 @@ fn test_opengl_backend_strategies() {
     // 1. Blit Strategy (RGBA8888)
     {
         dst_data.as_mut_slice().fill(0);
-        let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
         let blit_opts = ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(GlStrategy::Blit);
         let res_blit = gl_backend.process(&src_desc, &mut dst_desc, &blit_opts);
         assert!(res_blit.is_ok(), "GL Blit failed: {:?}", res_blit.err());
     }
-    assert_ne!(dst_data.as_slice()[0], 0, "GL Blit output must not be black");
+    assert_ne!(
+        dst_data.as_slice()[0],
+        0,
+        "GL Blit output must not be black"
+    );
 
     // 2. Raster Strategy (RGBA8888)
     {
         dst_data.as_mut_slice().fill(0);
-        let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
-        let raster_opts = ResizeOptions::new(FilterMode::Bicubic).with_gl_strategy(GlStrategy::Raster);
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let raster_opts =
+            ResizeOptions::new(FilterMode::Bicubic).with_gl_strategy(GlStrategy::Raster);
         let res_raster = gl_backend.process(&src_desc, &mut dst_desc, &raster_opts);
-        assert!(res_raster.is_ok(), "GL Raster failed: {:?}", res_raster.err());
+        assert!(
+            res_raster.is_ok(),
+            "GL Raster failed: {:?}",
+            res_raster.err()
+        );
     }
-    assert_ne!(dst_data.as_slice()[0], 0, "GL Raster output must not be black");
+    assert_ne!(
+        dst_data.as_slice()[0],
+        0,
+        "GL Raster output must not be black"
+    );
 
     // 3. Lod Pyramid Strategy (RGBA8888)
     {
         dst_data.as_mut_slice().fill(0);
-        let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
-        let lod_opts = ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(GlStrategy::LodPyramid);
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let lod_opts =
+            ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(GlStrategy::LodPyramid);
         let res_lod = gl_backend.process(&src_desc, &mut dst_desc, &lod_opts);
-        assert!(res_lod.is_ok(), "GL Lod Pyramid failed: {:?}", res_lod.err());
+        assert!(
+            res_lod.is_ok(),
+            "GL Lod Pyramid failed: {:?}",
+            res_lod.err()
+        );
     }
-    assert_ne!(dst_data.as_slice()[0], 0, "GL Lod Pyramid output must not be black");
+    assert_ne!(
+        dst_data.as_slice()[0],
+        0,
+        "GL Lod Pyramid output must not be black"
+    );
 
     // 4. Compute Strategy (RGBA8888)
     {
         dst_data.as_mut_slice().fill(0);
-        let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
-        let compute_opts = ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(GlStrategy::Compute);
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let compute_opts =
+            ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(GlStrategy::Compute);
         let res_compute = gl_backend.process(&src_desc, &mut dst_desc, &compute_opts);
-        assert!(res_compute.is_ok(), "GL Compute failed: {:?}", res_compute.err());
+        assert!(
+            res_compute.is_ok(),
+            "GL Compute failed: {:?}",
+            res_compute.err()
+        );
     }
-    assert_ne!(dst_data.as_slice()[0], 0, "GL Compute output must not be black");
+    assert_ne!(
+        dst_data.as_slice()[0],
+        0,
+        "GL Compute output must not be black"
+    );
 
     // 5. Auto Strategy (RGBA8888)
     {
         dst_data.as_mut_slice().fill(0);
-        let mut dst_desc = ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
+        let mut dst_desc =
+            ImageDescMut::new(dst_w, dst_h, dst_stride, format, &mut dst_data).unwrap();
         let auto_opts = ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(GlStrategy::Auto);
         let res_auto = gl_backend.process(&src_desc, &mut dst_desc, &auto_opts);
         assert!(res_auto.is_ok(), "GL Auto failed: {:?}", res_auto.err());
     }
-    assert_ne!(dst_data.as_slice()[0], 0, "GL Auto output must not be black");
+    assert_ne!(
+        dst_data.as_slice()[0],
+        0,
+        "GL Auto output must not be black"
+    );
 
     // 6. Test RGB888 across all strategies
     {
@@ -1009,15 +1062,32 @@ fn test_opengl_backend_strategies() {
         let mut rgb_dst = AlignedBuffer::new(rgb_dst_stride * (dst_h as usize)).unwrap();
         let rgb_src_desc = ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_fmt, &rgb_src).unwrap();
 
-        for strat in [GlStrategy::Blit, GlStrategy::Raster, GlStrategy::LodPyramid, GlStrategy::Compute, GlStrategy::Auto] {
+        for strat in [
+            GlStrategy::Blit,
+            GlStrategy::Raster,
+            GlStrategy::LodPyramid,
+            GlStrategy::Compute,
+            GlStrategy::Auto,
+        ] {
             rgb_dst.as_mut_slice().fill(0);
             {
-                let mut rgb_dst_desc = ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_fmt, &mut rgb_dst).unwrap();
+                let mut rgb_dst_desc =
+                    ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_fmt, &mut rgb_dst).unwrap();
                 let opts = ResizeOptions::new(FilterMode::Bilinear).with_gl_strategy(strat);
                 let res = gl_backend.process(&rgb_src_desc, &mut rgb_dst_desc, &opts);
-                assert!(res.is_ok(), "GL {:?} on RGB888 failed: {:?}", strat, res.err());
+                assert!(
+                    res.is_ok(),
+                    "GL {:?} on RGB888 failed: {:?}",
+                    strat,
+                    res.err()
+                );
             }
-            assert_ne!(rgb_dst.as_slice()[0], 0, "GL {:?} RGB888 output must not be black", strat);
+            assert_ne!(
+                rgb_dst.as_slice()[0],
+                0,
+                "GL {:?} RGB888 output must not be black",
+                strat
+            );
         }
     }
 }
@@ -1027,8 +1097,13 @@ fn test_dma_allocator_types() {
     use scalix_core::{DmaAllocatorType, DmaBuffer};
 
     // Test HostAligned allocator type
-    let host_buf = DmaBuffer::allocate_with_type(64, 64, PixelFormat::Rgba8888, DmaAllocatorType::HostAligned);
-    assert!(host_buf.is_ok(), "HostAligned allocation must succeed: {:?}", host_buf.err());
+    let host_buf =
+        DmaBuffer::allocate_with_type(64, 64, PixelFormat::Rgba8888, DmaAllocatorType::HostAligned);
+    assert!(
+        host_buf.is_ok(),
+        "HostAligned allocation must succeed: {:?}",
+        host_buf.err()
+    );
     let mut buf = host_buf.unwrap();
     assert_eq!(buf.allocator_type(), DmaAllocatorType::HostAligned);
     assert_eq!(buf.width(), 64);
