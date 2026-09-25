@@ -210,6 +210,7 @@ pub enum BackendType {
     Hw2d = 4,
     Cpu = 5,
     Passthrough = 6,
+    OpenCL = 7,
 }
 
 /// Scalix error types.
@@ -518,6 +519,7 @@ pub enum BackendOptions {
     None,
     Vulkan(crate::backend::vulkan::VulkanOptions),
     Gl(crate::backend::gl::GlOptions),
+    OpenCl(crate::backend::opencl::OpenClOptions),
 }
 
 /// Dynamic per-resize operation metadata and configuration.
@@ -598,6 +600,28 @@ impl ResizeOptions {
 
     #[inline]
     #[must_use]
+    pub fn with_opencl_options(mut self, opts: crate::backend::opencl::OpenClOptions) -> Self {
+        self.backend_options = BackendOptions::OpenCl(opts);
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_opencl_strategy(
+        mut self,
+        strategy: crate::backend::opencl::OpenClStrategy,
+    ) -> Self {
+        let mut opts = match self.backend_options {
+            BackendOptions::OpenCl(c) => c,
+            _ => crate::backend::opencl::OpenClOptions::default(),
+        };
+        opts.strategy = strategy;
+        self.backend_options = BackendOptions::OpenCl(opts);
+        self
+    }
+
+    #[inline]
+    #[must_use]
     pub fn with_max_mip_levels(mut self, max_levels: u32) -> Self {
         match self.backend_options {
             BackendOptions::Vulkan(mut v) => {
@@ -608,7 +632,7 @@ impl ResizeOptions {
                 g.max_mip_levels = max_levels;
                 self.backend_options = BackendOptions::Gl(g);
             }
-            BackendOptions::None => {
+            BackendOptions::OpenCl(_) | BackendOptions::None => {
                 self.backend_options =
                     BackendOptions::Vulkan(crate::backend::vulkan::VulkanOptions {
                         strategy: crate::backend::vulkan::VulkanStrategy::Auto,
@@ -636,6 +660,16 @@ impl ResizeOptions {
         match self.backend_options {
             BackendOptions::Gl(g) => g,
             _ => crate::backend::gl::GlOptions::default(),
+        }
+    }
+
+    /// Extracts OpenCL options or returns default.
+    #[inline]
+    #[must_use]
+    pub fn opencl_options(&self) -> crate::backend::opencl::OpenClOptions {
+        match self.backend_options {
+            BackendOptions::OpenCl(c) => c,
+            _ => crate::backend::opencl::OpenClOptions::default(),
         }
     }
 }

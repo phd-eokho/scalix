@@ -130,11 +130,12 @@ jobs:
       VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json:/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json:/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       LIBGL_ALWAYS_SOFTWARE: "1"
+      OCL_ICD_VENDORS: /etc/OpenCL/vendors
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install System Dependencies & OpenCV
+      - name: Install System Dependencies, OpenCV & OpenCL
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -150,6 +151,8 @@ jobs:
             mesa-utils \
             libjpeg-dev \
             libopencv-dev \
+            ocl-icd-libopencl1 \
+            pocl-opencl-icd \
             g++ \
             pkg-config
 
@@ -159,6 +162,12 @@ jobs:
           ls -la /usr/share/vulkan/icd.d/ || true
           vulkaninfo --summary || true
 
+      - name: Verify PoCL Software OpenCL
+        run: |
+          echo "=== OpenCL ICD Vendors ==="
+          ls -la /etc/OpenCL/vendors/ || true
+          clinfo --list || true
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -167,7 +176,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run C++ Performance Benchmark
+      - name: Run C++ Performance Benchmark (Vulkan, OpenGL/EGL, OpenCL)
         run: make -C examples benchmark
 
   build-android:

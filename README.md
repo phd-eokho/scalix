@@ -4,27 +4,28 @@
 
 **Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered exclusively for modern **Linux (x86_64)** and **Android (aarch64)** platforms (compiled library).
 
-Designed with a **headless-first and offscreen-first** architecture, Scalix provides a unified interface across **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, and **Dedicated 2D HW Engines (V4L2 M2M / DRM)**. CPU fallback and host SIMD operations are delegated to third-party image processing libraries (e.g. OpenCV).
+Designed with a **headless-first and offscreen-first** architecture, Scalix provides a unified interface across **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **OpenCL (Direct Compute)**, **NPU / Neural Accelerators**, and **Dedicated 2D HW Engines (V4L2 M2M / DRM)**. CPU fallback and host SIMD operations are delegated to third-party image processing libraries (e.g. OpenCV).
 
 ---
 
 ## Key Features
 
-* **Headless & Offscreen Native:** No display server (X11 / Wayland) required; executes pure offscreen GPU workloads in background workers, cloud servers, and embedded pipelines.
-* **Vulkan Offscreen Rendering Strategies:**
-  * **Hardware Blit (`Blit`):** Fixed-function 2D blitting for maximum raw throughput and zero shader overhead.
-  * **Offscreen Raster Graphics (`Raster`):** Complete graphics pipeline with vertex/fragment shaders and hardware bilinear/trilinear samplers.
-  * **Hierarchical LoD Pyramid (`LodPyramid`):** Multi-pass 2×2 box filtering downscaler with configurable `max_mip_levels` to eliminate aliasing and moiré artifacts during extreme downscaling (>4×).
-* **GPU Compute Shader Acceleration:** Native compute pipeline (`VulkanRgbCompute`) for GPU-side packed RGB888 unpack and repack passes, eliminating CPU host memory bottlenecks.
-* **Ring-Buffered Staging Allocator:** Triple-buffered staging ring (`VulkanStagingRing`, 3 slots) with per-slot `VkFence` synchronization and automatic memory retention with hysteresis shrinking (<50% threshold) for seamless CPU/GPU pipelining.
+* **Headless & Offscreen Native:** No display server (X11 / Wayland) required; executes pure offscreen GPU workloads across Vulkan, OpenGL/EGL, and OpenCL in background workers, cloud servers, and embedded pipelines.
+* **Unified Multi-Backend Hardware Acceleration:**
+  * **Vulkan Backend (`Backend::Vulkan`):** Modern explicit GPU control with fixed-function 2D `Blit`, programmable `Raster` graphics, hierarchical anti-aliasing `LodPyramid` (multi-pass box filtering downscaler), and direct `Compute` shaders.
+  * **OpenGL / GLES Backend (`Backend::OpenGL`):** Universal offscreen acceleration via EGL Headless and Framebuffer Objects (FBO), supporting GLES 3.1+ Compute and Framebuffer blits for environments without Vulkan.
+  * **OpenCL Backend (`Backend::OpenCL`):** Pure direct compute kernel pipeline (`clEnqueueNDRangeKernel`) with dynamic runtime loading (`dlopen`/`dlsym`), ideal for heterogeneous compute environments, headless servers, and Android OpenCL runtimes.
+  * **Dedicated 2D HW & NPU (Extensible):** Scalable engine architecture prepared for zero-copy DMA-BUF hardware scaling (V4L2 M2M, DRM) and neural network pre-processing accelerators.
+* **GPU Compute Shader Acceleration:** Native compute pipelines (`VulkanRgbCompute`, `OpenClComputeResizer`, OpenGL CS) for direct GPU-side packed RGB888 unpack/repack and high-order resamplers without CPU memory conversion bottlenecks.
+* **Ring-Buffered Staging Allocator:** Triple-buffered staging rings (`VulkanStagingRing`, `GlStagingRing`, `OpenClStagingRing`) with per-slot fence/event synchronization and automatic hysteresis memory management (<50% capacity threshold).
 * **Flexible Execution Models:**
   * **Synchronous (Blocking):** Direct execution for CLI tools and deterministic pipelines.
   * **Asynchronous (Zero-Copy Task):** Non-blocking polling and timeout waits with zero-copy descriptor dispatch (`resize_async_raw`).
-  * **Callback-Driven:** Event-driven frame completion callbacks for streaming, camera, and UI pipelines.
+  * **Callback-Driven:** Event-driven frame completion callbacks dispatched to a background thread pool for streaming, camera, and UI pipelines.
 * **Strict 64-Byte Memory Alignment:** 64-byte buffer alignment (`SCALIX_REQUIRED_ALIGNMENT_BYTES = 64`) across all descriptors, enabling optimal AVX-512 / ARM Neon SIMD vectorization and DMA-BUF hardware compatibility.
 * **Zero-Copy Memory Subsystem:** First-class support for Linux **DMA-BUF** and Android **AHardwareBuffer** across GPU, 2D hardware blitters, and V4L2.
 * **Multi-Language APIs:** Core engine with stable **C ABI** (`libscalix.so` / `scalix.h`), idiomatic **C++20** wrapper (`scalix.hpp`), and native **Rust** crate.
-* **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic, Lanczos-3, Area (pixel box relation), and hierarchical mipchain downscaling.
+* **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic (Catmull-Rom 4×4), Lanczos-3 (3-lobe sinc 6×6), Area (pixel box relation), and hierarchical LoD mipchain downscaling.
 
 ---
 
@@ -42,12 +43,13 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 ### 1. Hardware Backends & Accelerators
 
-| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64) |
+| Backend Provider | Subsystem / API | Host / Platform Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (AMD / NVIDIA / Intel / Mesa Lavapipe) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (Vulkan 1.1+) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
-| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | ○ Mock / Loopback | ○ Hardware Req. | — |
-| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | ○ Mock / CPU | ○ OpenVINO | ○ QNN / NNAPI |
+| **OpenCL** | Direct Compute (`clEnqueueNDRangeKernel`) | OpenCL 1.2+ / 3.0 (Linux / Android) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Linux 2D HW Engines | ○ Mock / Loopback | ○ Hardware Req. | — |
+| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Neural Accelerators | ○ Mock / CPU | ○ OpenVINO | ○ Supported (Unverified) |
 
 ---
 
@@ -84,6 +86,27 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 > - **Lanczos3 (`FilterMode::Lanczos3`):** Implements 2D separable 3-lobe sinc-windowed sinc filtering (`a = 3`, `L(x) = sinc(x) · sinc(x/3)`) across a 6×6 tap window with dynamic weight normalization to prevent DC energy drift ([Lanczos, 1956](https://archive.org/details/appliedanalysis0000corn); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
 > - **Area (`FilterMode::Area`):** Implements pixel area relation / box averaging with exact subpixel 2D bounding area overlap integration across source texels, preserving total pixel energy without aliasing ([Crow, 1984](https://doi.org/10.1145/964965.808599); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
 > - **Strategy Routing (`VulkanStrategy::Auto`):** Direct compute kernels are selected for packed 24-bit (`RGB888` / `BGR888`) to avoid CPU-host expansion bottlenecks. For 32-bit `RGBA8888`, hardware fixed-function `Blit` is preferred for `Nearest` and `Bilinear` workloads for maximum raw fill-rate throughput, while `Bicubic`, `Lanczos3`, and `Area` dispatch to GPU `Compute`.
+
+---
+
+### 4. Cross-Backend Filter & Execution Strategy Categorization
+
+Scalix provides unified, standardized filter mode abstractions while leveraging the diverse hardware execution pipelines available across GPU and compute runtimes:
+
+| Category | Filter Mode | Mathematical / Algorithmic Model | Vulkan Execution Paths | OpenGL / EGL Execution Paths | OpenCL Execution Paths |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Nearest** | `FilterMode::Nearest` | 0-Order Hold (Nearest Neighbor) | `Blit`, `Raster`, `Compute` | `Blit`, `Raster`, `Compute` | `Compute` |
+| **Bilinear** | `FilterMode::Bilinear` | 1st-Order Tent Filter (Linear) | `Blit`, `Raster`, `Compute` | `Blit`, `Raster`, `Compute` | `Compute` |
+| **Hierarchical LoD** | `Strategy::LodPyramid` | Multi-Pass Mipchain Reduction | `Lod Full`, `Lod 2-Pass` | `Lod Full`, `Lod 2-Pass` | — *(Graphics HW Only)* |
+| **Bicubic** | `FilterMode::Bicubic` | Catmull-Rom 4×4 Spline ($a = -0.5$) | `Compute` | `Compute` | `Compute` |
+| **Lanczos-3** | `FilterMode::Lanczos3` | 3-Lobe Sinc Windowed ($6\times 6$, $a = 3$) | `Compute` | `Compute` | `Compute` |
+| **Area** | `FilterMode::Area` | 2D Continuous Subpixel Box Overlap | `Compute` | `Raster`, `Compute` | `Compute` |
+| **Adaptive Auto** | `Strategy::Auto` | Engine Fast-Path Dynamic Selector | `Auto` | `Auto` | `Auto` |
+
+> [!TIP]
+> **Graphics vs. Direct Compute Implementation Highlights**
+> - **Hierarchical LoD Downscaling:** Available exclusively on graphics backends (Vulkan / OpenGL), exploiting hardware texture mipchain generation (`vkCmdBlitImage` / `glGenerateMipmap`) for aliasing-free multi-octave reduction.
+> - **Area Box Averaging:** Executed via direct 2D integration compute kernels across all backends (`VulkanComputeResizer`, `GlComputeResizer`, `OpenClComputeResizer`), with OpenGL also offering dedicated fragment shader rasterization (`raster_area.frag`).
 
 ---
 
@@ -255,10 +278,11 @@ void run_profiled_resizer() {
 * **GPU Backend Libraries:**
   * **Vulkan:** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
   * **OpenGL / GLES:** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
+  * **OpenCL:** `ocl-icd-libopencl1`, `mesa-opencl-icd`, `pocl-opencl-icd`
 * **Android Cross-Compilation (Optional):** Android NDK (r27+ recommended, API Level 26+, `aarch64-linux-android`) and `cargo-ndk` (Note: `armeabiv7` is not supported)
 
 > [!NOTE]
-> `libopencv-dev` is required for benchmarking workloads (`cpp_benchmark`) to provide side-by-side execution time comparisons between Scalix hardware pipelines and standard OpenCV image processing operations (`cv::resize`, `cv::warpAffine`).
+> `libopencv-dev` is required for benchmarking workloads (`cpp_benchmark_vulkan`, `cpp_benchmark_gl`, `cpp_benchmark_opencl`) to provide side-by-side execution time comparisons between Scalix hardware pipelines and standard OpenCV image processing operations (`cv::resize`, `cv::warpAffine`).
 
 ### 1. Build Rust Core & C ABI Library
 To build the static/shared library (`libscalix.so` / `libscalix.a`):
@@ -286,7 +310,7 @@ make -C examples
 # Run all examples (including sample.jpg JPEG processing with libjpeg-turbo)
 make -C examples run
 
-# Run all performance benchmarks (all available on platform: Vulkan & OpenGL/EGL)
+# Run all performance benchmarks (all available on platform: Vulkan, OpenGL/EGL, OpenCL)
 make -C examples benchmark
 
 # Run multi-resolution performance benchmark (Vulkan)
@@ -295,6 +319,9 @@ make -C examples benchmark_vulkan
 # Run multi-resolution performance benchmark (OpenGL/EGL)
 make -C examples benchmark_gl
 
+# Run multi-resolution performance benchmark (OpenCL)
+make -C examples benchmark_opencl
+
 # Clean example build artifacts
 make -C examples clean
 ```
@@ -302,8 +329,9 @@ make -C examples clean
 #### Individual Examples:
 * **`cpp_basic`**: Demonstrates synchronous, asynchronous callback, and zero-copy DMA buffer pre-allocation.
 * **`cpp_jpeg`**: Loads [`assets/sample.jpg`](assets/sample.jpg) using `libjpeg-turbo`, decodes directly into memory-mapped DMA buffers, executes the Scalix pipeline (`blit`, `raster`, or `lod [max_mip_levels]`), and writes the output JPEG.
-* **`cpp_benchmark`**: Micro-benchmarking multi-resolution downscaling workloads across 4K UHD, 1080p, and 720p to 320×320 tensors using the **Vulkan** backend.
+* **`cpp_benchmark_vulkan`**: Micro-benchmarking multi-resolution downscaling workloads across 4K UHD, 1080p, and 720p to 320×320 tensors using the **Vulkan** backend.
 * **`cpp_benchmark_gl`**: Micro-benchmarking multi-resolution downscaling workloads across 4K UHD, 1080p, and 720p to 320×320 tensors using the **OpenGL / EGL** backend.
+* **`cpp_benchmark_opencl`**: Micro-benchmarking multi-resolution downscaling workloads across 4K UHD, 1080p, and 720p to 320×320 tensors using the **OpenCL** backend.
 
 ---
 

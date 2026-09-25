@@ -148,10 +148,21 @@ impl Engine {
                             Ok(gl_backend) => Arc::new(gl_backend),
                             Err(gl_err) => {
                                 log::info!(
-                                    "OpenGL auto-initialization skipped ({:?}); falling back to passthrough",
+                                    "OpenGL auto-initialization skipped ({:?}); trying OpenCL...",
                                     gl_err
                                 );
-                                Arc::new(PassthroughBackend::new())
+                                match crate::backend::OpenClBackend::with_profiler(Arc::clone(
+                                    &profiler,
+                                )) {
+                                    Ok(cl_backend) => Arc::new(cl_backend),
+                                    Err(cl_err) => {
+                                        log::info!(
+                                            "OpenCL auto-initialization skipped ({:?}); falling back to passthrough",
+                                            cl_err
+                                        );
+                                        Arc::new(PassthroughBackend::new())
+                                    }
+                                }
                             }
                         }
                     }
@@ -163,6 +174,9 @@ impl Engine {
             BackendType::OpenGL => Arc::new(crate::backend::GlBackend::with_profiler(Arc::clone(
                 &profiler,
             ))?),
+            BackendType::OpenCL => Arc::new(crate::backend::OpenClBackend::with_profiler(
+                Arc::clone(&profiler),
+            )?),
             BackendType::Passthrough | BackendType::Cpu => Arc::new(PassthroughBackend::new()),
             other => return Err(ScalixError::BackendUnavailable(other)),
         };

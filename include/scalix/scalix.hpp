@@ -53,7 +53,8 @@ enum class Backend : int {
     Npu         = SCALIX_BACKEND_NPU,
     Hw2d        = SCALIX_BACKEND_HW2D,
     Cpu         = SCALIX_BACKEND_CPU,
-    Passthrough = SCALIX_BACKEND_PASSTHROUGH
+    Passthrough = SCALIX_BACKEND_PASSTHROUGH,
+    OpenCL      = SCALIX_BACKEND_OPENCL
 };
 
 enum class Strategy : int {
@@ -418,10 +419,32 @@ struct GlOptions : BackendOptions {
     }
 };
 
+/// @brief OpenCL-specific execution options.
+struct OpenClOptions : BackendOptions {
+    Strategy strategy{Strategy::Auto};
+
+    constexpr OpenClOptions() noexcept {
+        backend_type = Backend::OpenCL;
+    }
+
+    constexpr explicit OpenClOptions(Strategy s) noexcept
+        : BackendOptions{Backend::OpenCL}, strategy(s) {}
+
+    [[nodiscard]] ScalixOpenClOptions to_c() const noexcept {
+        return ScalixOpenClOptions{
+            .header = ScalixBackendOptions{
+                .backend_type = SCALIX_BACKEND_OPENCL,
+                .struct_size = sizeof(ScalixOpenClOptions),
+            },
+            .strategy = static_cast<ScalixStrategy>(strategy),
+        };
+    }
+};
+
 /// @brief Dynamic resize options holding scaling filter and optional backend metadata.
 struct ResizeOptions final {
     Filter filter{Filter::Passthrough};
-    std::variant<std::monostate, VulkanOptions, GlOptions> backend_options{};
+    std::variant<std::monostate, VulkanOptions, GlOptions, OpenClOptions> backend_options{};
 
     /// @brief Creates ResizeOptions configured with Vulkan options.
     static ResizeOptions with_vulkan(Filter f, Strategy s = Strategy::Auto, uint32_t max_mips = 0) {
@@ -439,6 +462,14 @@ struct ResizeOptions final {
         };
     }
 
+    /// @brief Creates ResizeOptions configured with OpenCL options.
+    static ResizeOptions with_opencl(Filter f, Strategy s = Strategy::Auto) {
+        return ResizeOptions{
+            .filter = f,
+            .backend_options = OpenClOptions{s},
+        };
+    }
+
     /// @brief Scoped execution helper that builds C ABI options on stack and invokes a callback.
     template <typename Fn>
     auto with_c(Fn&& fn) const {
@@ -448,12 +479,16 @@ struct ResizeOptions final {
         };
         ScalixVulkanOptions vk_opt{};
         ScalixGlOptions gl_opt{};
+        ScalixOpenClOptions cl_opt{};
         if (std::holds_alternative<VulkanOptions>(backend_options)) {
             vk_opt = std::get<VulkanOptions>(backend_options).to_c();
             c_opt.backend_options = &vk_opt.header;
         } else if (std::holds_alternative<GlOptions>(backend_options)) {
             gl_opt = std::get<GlOptions>(backend_options).to_c();
             c_opt.backend_options = &gl_opt.header;
+        } else if (std::holds_alternative<OpenClOptions>(backend_options)) {
+            cl_opt = std::get<OpenClOptions>(backend_options).to_c();
+            c_opt.backend_options = &cl_opt.header;
         }
         return fn(c_opt);
     }

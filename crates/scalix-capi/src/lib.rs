@@ -61,6 +61,7 @@ pub enum ScalixBackendType {
     Hw2d = 4,
     Cpu = 5,
     Passthrough = 6,
+    OpenCL = 7,
 }
 
 impl From<ScalixBackendType> for BackendType {
@@ -73,6 +74,7 @@ impl From<ScalixBackendType> for BackendType {
             ScalixBackendType::Hw2d => BackendType::Hw2d,
             ScalixBackendType::Cpu => BackendType::Cpu,
             ScalixBackendType::Passthrough => BackendType::Passthrough,
+            ScalixBackendType::OpenCL => BackendType::OpenCL,
         }
     }
 }
@@ -435,6 +437,7 @@ pub unsafe extern "C" fn scalix_engine_get_backend_name(
         match (*engine).inner.backend_type() {
             BackendType::Vulkan => c"Vulkan".as_ptr() as *const std::ffi::c_char,
             BackendType::OpenGL => c"OpenGL".as_ptr() as *const std::ffi::c_char,
+            BackendType::OpenCL => c"OpenCL".as_ptr() as *const std::ffi::c_char,
             BackendType::Npu => c"NPU".as_ptr() as *const std::ffi::c_char,
             BackendType::Hw2d => c"Hardware 2D".as_ptr() as *const std::ffi::c_char,
             BackendType::Cpu => c"CPU (Fallback)".as_ptr() as *const std::ffi::c_char,
@@ -457,6 +460,7 @@ pub unsafe extern "C" fn scalix_engine_get_backend_type(
             BackendType::Auto => ScalixBackendType::Auto,
             BackendType::Vulkan => ScalixBackendType::Vulkan,
             BackendType::OpenGL => ScalixBackendType::OpenGL,
+            BackendType::OpenCL => ScalixBackendType::OpenCL,
             BackendType::Npu => ScalixBackendType::Npu,
             BackendType::Hw2d => ScalixBackendType::Hw2d,
             BackendType::Cpu => ScalixBackendType::Cpu,
