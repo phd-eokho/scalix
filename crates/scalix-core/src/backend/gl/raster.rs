@@ -14,7 +14,6 @@ const FRAGMENT_SHADER_BILINEAR_BODY: &str = include_str!("shaders/raster_bilinea
 const FRAGMENT_SHADER_BICUBIC_BODY: &str = include_str!("shaders/raster_bicubic.frag");
 const FRAGMENT_SHADER_AREA_BODY: &str = include_str!("shaders/raster_area.frag");
 
-
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
 

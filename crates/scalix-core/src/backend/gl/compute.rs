@@ -12,7 +12,6 @@ use crate::types::{FilterMode, ImageDesc, ImageDescMut, Result, ScalixError};
 const COMPUTE_SHADER_BODY: &str = include_str!("shaders/compute_sampler.comp");
 const COMPUTE_SHADER_AREA_BODY: &str = include_str!("shaders/compute_area.comp");
 
-
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
 
