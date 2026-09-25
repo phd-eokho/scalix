@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-**Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered exclusively for modern **Linux (x86_64)** and **Android (aarch64 / armv7)** platforms.
+**Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered exclusively for modern **Linux (x86_64)** and **Android (aarch64)** platforms (compiled library).
 
 Designed with a **headless-first and offscreen-first** architecture, Scalix provides a unified interface across **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, and **Dedicated 2D HW Engines (V4L2 M2M / DRM)**. CPU fallback and host SIMD operations are delegated to third-party image processing libraries (e.g. OpenCV).
 
@@ -24,7 +24,7 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
 * **Strict 64-Byte Memory Alignment:** 64-byte buffer alignment (`SCALIX_REQUIRED_ALIGNMENT_BYTES = 64`) across all descriptors, enabling optimal AVX-512 / ARM Neon SIMD vectorization and DMA-BUF hardware compatibility.
 * **Zero-Copy Memory Subsystem:** First-class support for Linux **DMA-BUF** and Android **AHardwareBuffer** across GPU, 2D hardware blitters, and V4L2.
 * **Multi-Language APIs:** Core engine with stable **C ABI** (`libscalix.so` / `scalix.h`), idiomatic **C++20** wrapper (`scalix.hpp`), and native **Rust** crate.
-* **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic, and hierarchical mipchain downscaling.
+* **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic, Lanczos-3, Area (pixel box relation), and hierarchical mipchain downscaling.
 
 ---
 
@@ -33,8 +33,8 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
 This matrix tracks the hardware backends, memory subsystems, and platform capabilities supported by Scalix, along with their active verification status.
 
 #### Legend
-* `✔` **Verified & Tested:** Fully implemented and validated with automated test suite and benchmarks.
-* `◐` **Compiled / In Progress:** Cross-compiled or validated in CI, pending physical hardware runtime test.
+* `✔` **Verified & Tested:** Fully implemented and validated with automated test suite and benchmarks on the test environment.
+* `◐` **Compiled / In Progress:** Cross-compiled or library build validated; runtime execution pending physical hardware test.
 * `○` **Planned / Unverified:** Supported by architectural specification, pending implementation and test verification.
 * `—` **Deferred / N/A:** Planned for future milestone or not applicable for the target platform.
 
@@ -42,10 +42,10 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 ### 1. Hardware Backends & Accelerators
 
-| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 Dev Host | Linux (x86_64) | Android (aarch64 / armv7) |
+| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (AMD / NVIDIA / Intel / Mesa Lavapipe) | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
-| **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (AMD / NVIDIA / Intel / Mesa Lavapipe) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | ○ Mock / Loopback | ○ Hardware Req. | — |
 | **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | ○ Mock / CPU | ○ OpenVINO | ○ QNN / NNAPI |
 
@@ -53,18 +53,18 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 ### 2. Memory & Zero-Copy Subsystems
 
-| Feature | Interface / Handle | Bare-Metal Linux (x86_64) | WSL2 (Ubuntu 22.04) | Android (aarch64 / armv7, API 26+) |
+| Feature | Interface / Handle | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Bare-Metal Linux (x86_64) | Android (aarch64, API 26+) |
 | :--- | :--- | :---: | :---: | :---: |
-| **64-Byte Aligned Host Memory** | Contiguous 64-byte aligned CPU memory (RGB/RGBA) | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
-| **Triple-Buffered Staging Ring** | 3-slot pinned / mapped staging buffer ring with hysteresis | ✔ Verified | ✔ Verified | ◐ Compiled (Unverified) |
-| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | ○ Supported | ◐ Fallback | — |
-| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | — | — | ◐ Compiled (Unverified) |
+| **64-Byte Aligned Host Memory** | Contiguous 64-byte aligned CPU memory (RGB/RGBA) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **Triple-Buffered Staging Ring** | 3-slot pinned / mapped staging buffer ring with hysteresis | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | ◐ Fallback (Verified) | ○ Supported (Unverified) | — |
+| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | — | — | ◐ Compiled Library (Unverified) |
 
 > [!NOTE]
 > **Current Verification & Target Platform Status**
-> - **Linux (x86_64):** Verified on NVIDIA GPU (via Vulkan driver) and automated CI pipeline with Mesa Lavapipe Vulkan software rasterizer.
-> - **WSL2 (Windows Subsystem for Linux 2):** Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Linux `dma-buf` automatically falls back to 64-byte aligned host staging memory.
-> - **Android (aarch64 / armv7):** Android NDK cross-compilation (`cargo-ndk`) and dynamic library generation are validated in CI. However, runtime GPU execution, Vulkan drivers, and `AHardwareBuffer` zero-copy DMA sharing are **not yet verified** on physical Android hardware or emulators.
+> - **WSL2 (Ubuntu 24.04, NVIDIA GPU):** The primary and currently tested development platform. Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Linux `dma-buf` automatically falls back to 64-byte aligned host staging memory.
+> - **Linux (x86_64 Bare-Metal):** Compiled and architected for native Linux execution (DMA-Heap and DRM GEM dumb buffer support), but not yet verified on physical bare-metal hardware.
+> - **Android (aarch64):** Android NDK cross-compilation (`cargo-ndk`) and compiled library generation (`libscalix.so` / `libscalix.a`) are supported for `aarch64` (API 26+). Legacy `armeabiv7` is **not supported**. Runtime GPU execution and physical `AHardwareBuffer` DMA sharing are **unverified** on physical Android hardware.
 
 ---
 
@@ -80,8 +80,8 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 > [!NOTE]
 > **Filter Algorithm Reference Implementations**
-> - **Bicubic (`FilterMode::Bicubic`):** Implements 2D separable Catmull-Rom cubic spline interpolation ($a = -0.5$) across a $4 \times 4$ tap neighborhood ([Keys, 1981](https://doi.org/10.1109/TASSP.1981.1163711)).
-> - **Lanczos3 (`FilterMode::Lanczos3`):** Implements 2D separable 3-lobe sinc-windowed sinc filtering ($a = 3$, $L(x) = \text{sinc}(x)\text{sinc}(x/3)$) across a $6 \times 6$ tap window with dynamic weight normalization to prevent DC energy drift ([Lanczos, 1956](https://archive.org/details/appliedanalysis0000corn); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
+> - **Bicubic (`FilterMode::Bicubic`):** Implements 2D separable Catmull-Rom cubic spline interpolation (`a = -0.5`) across a 4×4 tap neighborhood ([Keys, 1981](https://doi.org/10.1109/TASSP.1981.1163711)).
+> - **Lanczos3 (`FilterMode::Lanczos3`):** Implements 2D separable 3-lobe sinc-windowed sinc filtering (`a = 3`, `L(x) = sinc(x) · sinc(x/3)`) across a 6×6 tap window with dynamic weight normalization to prevent DC energy drift ([Lanczos, 1956](https://archive.org/details/appliedanalysis0000corn); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
 > - **Area (`FilterMode::Area`):** Implements pixel area relation / box averaging with exact subpixel 2D bounding area overlap integration across source texels, preserving total pixel energy without aliasing ([Crow, 1984](https://doi.org/10.1145/964965.808599); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
 > - **Strategy Routing (`VulkanStrategy::Auto`):** Direct compute kernels are selected for packed 24-bit (`RGB888` / `BGR888`) to avoid CPU-host expansion bottlenecks. For 32-bit `RGBA8888`, hardware fixed-function `Blit` is preferred for `Nearest` and `Bilinear` workloads for maximum raw fill-rate throughput, while `Bicubic`, `Lanczos3`, and `Area` dispatch to GPU `Compute`.
 
@@ -89,50 +89,53 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 ## Quick Start & API Preview
 
-### C++20 API (`<scalix/scalix.hpp>`)
+### 1. Basic Image Resize (C++20 & Pure C ABI)
+
+#### C++20 API (`<scalix/scalix.hpp>`)
 
 ```cpp
 #include <scalix/scalix.hpp>
 
 int main() {
-    // 1. Initialize Scalix Engine
+    // 1. Initialize Scalix Engine (Auto selects Vulkan hardware backend)
     scalix::Engine engine(scalix::Backend::Auto);
-    engine.set_profiling(true); // Optional hardware latency profiling
 
     scalix::ImageDesc src{
         .width = 3840, .height = 2160, .stride_bytes = 3840 * 4,
-        .format = scalix::PixelFormat::Rgba8888, .host_ptr = src_data
+        .format = scalix::PixelFormat::Rgba8888, .host_ptr = src_ptr,
+        .data_len = 3840 * 2160 * 4, .dma_buf_fd = -1
     };
 
     scalix::ImageDesc dst{
         .width = 320, .height = 320, .stride_bytes = 320 * 4,
-        .format = scalix::PixelFormat::Rgba8888, .host_ptr = dst_data
+        .format = scalix::PixelFormat::Rgba8888, .host_ptr = dst_ptr,
+        .data_len = 320 * 320 * 4, .dma_buf_fd = -1
     };
 
-    // Configure dynamic resize options (Strategy: Blit, Raster, LodPyramid)
+    // Configure dynamic resize options (Strategy: Blit, Raster, LodPyramid, Compute)
     const scalix::ResizeOptions options = scalix::ResizeOptions::with_vulkan(
         scalix::Filter::Bilinear,
         scalix::Strategy::LodPyramid,
-        2 // Hierarchical anti-aliased downscale
+        2 // Hierarchical anti-aliased downscale (max mip levels = 2)
     );
 
-    // Mode A: Synchronous
+    // Mode A: Synchronous (Blocking)
     engine.resize(src, dst, options);
 
-    // Mode B: Asynchronous Task
+    // Mode B: Asynchronous Task (Zero-Copy handle polling & timeout wait)
     auto task = engine.resize_async(src, dst, options);
-    task.wait(); // Wait for completion
+    task.wait(1000); // Wait up to 1000ms for completion
 
-    // Mode C: Callback-driven
+    // Mode C: Callback-driven (Dispatched to worker thread pool)
     engine.resize_callback(src, dst, options, [](int status) {
-        // Handle completion on worker thread pool
+        // Handle completion asynchronously
     });
 
     return 0;
 }
 ```
 
-### Pure C ABI (`<scalix/scalix.h>`)
+#### Pure C ABI (`<scalix/scalix.h>`)
 
 ```c
 #include <scalix/scalix.h>
@@ -140,9 +143,11 @@ int main() {
 ScalixEngine* engine = scalix_engine_create(SCALIX_BACKEND_AUTO);
 
 ScalixImageDesc src = { .width = 3840, .height = 2160, .stride_bytes = 3840 * 4,
-                        .format = SCALIX_FORMAT_RGBA8888, .host_ptr = src_ptr, .dma_buf_fd = -1 };
+                        .format = SCALIX_FORMAT_RGBA8888, .host_ptr = src_ptr,
+                        .data_len = 3840 * 2160 * 4, .dma_buf_fd = -1 };
 ScalixImageDesc dst = { .width = 320, .height = 320, .stride_bytes = 320 * 4,
-                        .format = SCALIX_FORMAT_RGBA8888, .host_ptr = dst_ptr, .dma_buf_fd = -1 };
+                        .format = SCALIX_FORMAT_RGBA8888, .host_ptr = dst_ptr,
+                        .data_len = 320 * 320 * 4, .dma_buf_fd = -1 };
 
 ScalixVulkanOptions vk_opts = {
     .header = {
@@ -166,6 +171,80 @@ scalix_engine_destroy(engine);
 
 ---
 
+### 2. Advanced: Zero-Copy Hardware DMA Buffers (`DmaBuffer`)
+
+Allocate hardware DMA memory (Linux DMA-Heap / DRM GEM Dumb or Android `AHardwareBuffer`) and execute scaling without intermediate CPU-GPU staging copies:
+
+```cpp
+#include <scalix/scalix.hpp>
+#include <iostream>
+
+void process_dma_pipeline(scalix::Engine& engine) {
+    constexpr uint32_t src_w = 3840, src_h = 2160;
+    constexpr uint32_t dst_w = 320, dst_h = 320;
+
+    // 1. Allocate hardware DMA buffers (Auto: DMA-Heap -> DRM GEM Dumb -> Android AHB)
+    scalix::DmaBuffer src_dma(src_w, src_h, scalix::PixelFormat::Rgba8888);
+    scalix::DmaBuffer dst_dma(dst_w, dst_h, scalix::PixelFormat::Rgba8888);
+
+    // 2. Safe CPU write: with_write handles sync_start(true) and sync_end(true) RAII
+    src_dma.with_write([](uint8_t* host_ptr, size_t size) {
+        // Decode camera/video frame directly into mapped DMA memory
+    });
+
+    // 3. Obtain zero-copy image descriptors referencing DMA file descriptors (fd)
+    auto src_desc = src_dma.as_image_desc();
+    auto dst_desc = dst_dma.as_image_desc();
+
+    // 4. Execute GPU scaling directly on hardware DMA buffers
+    const auto options = scalix::ResizeOptions::with_vulkan(
+        scalix::Filter::Lanczos3,
+        scalix::Strategy::Compute
+    );
+    engine.resize(src_desc, dst_desc, options);
+
+    // 5. Safe CPU read: with_read handles sync_start(false) and sync_end(false) RAII
+    dst_dma.with_read([](const uint8_t* host_ptr, size_t size) {
+        // Access scaled frame with invalid cache lines refreshed
+    });
+}
+```
+
+---
+
+### 3. Advanced: GPU Latency Profiling & Custom Thread Naming
+
+Enable zero-overhead GPU hardware timestamp profiling and configure dedicated Linux thread names (`<prefix>/scx-hw`, `<prefix>/scx-w<id>`):
+
+```cpp
+#include <scalix/scalix.hpp>
+#include <iostream>
+
+void run_profiled_resizer() {
+    // Initialize engine with custom thread prefix (enforces Linux 15-char comm limit)
+    scalix::Engine engine(scalix::Backend::Auto, "infer");
+
+    // Enable hardware timestamp query pools and stage latency tracking
+    engine.set_profiling(true);
+
+    // Execute resize...
+    // engine.resize(src, dst, options);
+
+    // Query high-precision execution metrics
+    if (const auto p = engine.last_profile()) {
+        std::cout << "[Scalix Hardware Latency Breakdown]\n";
+        std::cout << "  Host Unpack       : " << p->host_unpack_ms << " ms\n";
+        std::cout << "  GPU Staging Upload: " << p->gpu_upload_ms << " ms\n";
+        std::cout << "  GPU Core Scaling  : " << p->gpu_pure_blit_ms << " ms\n";
+        std::cout << "  GPU Readback      : " << p->gpu_download_ms << " ms\n";
+        std::cout << "  Driver/HW Sync    : " << p->driver_sync_ms << " ms\n";
+        std::cout << "  Total Wall-Clock  : " << p->total_wall_ms << " ms\n";
+    }
+}
+```
+
+---
+
 ## Building & Testing
 
 ### Prerequisites
@@ -174,9 +253,9 @@ scalix_engine_destroy(engine);
 * **Image Codec Libraries:** `libjpeg-dev` / `libjpeg-turbo8-dev` (for JPEG I/O examples)
 * **Benchmark & Comparison Libraries:** `libopencv-dev` (required for benchmarks comparing Scalix execution latency against OpenCV CPU/GPU operations)
 * **GPU Backend Libraries:**
-  * **Vulkan (P0):** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
-  * **OpenGL / GLES (P1):** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
-* **Android Cross-Compilation (Optional):** Android NDK (r27+ recommended, API Level 26+) and `cargo-ndk`
+  * **Vulkan:** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
+  * **OpenGL / GLES:** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
+* **Android Cross-Compilation (Optional):** Android NDK (r27+ recommended, API Level 26+, `aarch64-linux-android`) and `cargo-ndk` (Note: `armeabiv7` is not supported)
 
 > [!NOTE]
 > `libopencv-dev` is required for benchmarking workloads (`cpp_benchmark`) to provide side-by-side execution time comparisons between Scalix hardware pipelines and standard OpenCV image processing operations (`cv::resize`, `cv::warpAffine`).
@@ -232,25 +311,26 @@ make -C examples clean
 
 Scalix provides unified zero-copy DMA buffer allocation across supported target environments:
 
-### 1. Bare-Metal Linux (x86_64, Kernel 5.6+)
+### 1. Bare-Metal Linux (x86_64, Kernel 5.6+ - Unverified)
 * **Allocators:** Uses **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) with fallback to **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128` via GEM PRIME).
 * **Permissions:** Ensure the executing user is added to `render` and `video` groups:
   ```bash
   sudo usermod -aG render,video $USER
   ```
 
-### 2. WSL2 (Windows Subsystem for Linux 2: Ubuntu 22.04, NVIDIA GPU + AMD CPU)
-* **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12 for offscreen rendering.
-* **DMA Allocation Behavior & Limitation:** Linux `dma-buf` is **not yet verified to work** on WSL2. Stock WSL2 kernels do not provide `/dev/dma_heap`, and DRM GEM dumb buffer allocations often fail or lack PRIME hardware export support across the `/dev/dxg` virtual translation layer. Scalix's runtime allocator probing detects this DMA failure automatically and safely falls back to host memory staging buffers. Testing true zero-copy DMA requires bare-metal Linux with native DRM render nodes.
+### 2. WSL2 (Windows Subsystem for Linux 2: Ubuntu 24.04, NVIDIA GPU)
+* **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12 for offscreen rendering (currently tested platform).
+* **DMA Allocation Behavior & Limitation:** Linux `dma-buf` is **not yet supported** across the `/dev/dxg` virtual translation layer. Stock WSL2 kernels do not provide `/dev/dma_heap`, and DRM GEM dumb buffer allocations often fail or lack PRIME hardware export support. Scalix's runtime allocator probing detects this DMA failure automatically and safely falls back to host memory staging buffers. Testing true zero-copy DMA requires bare-metal Linux with native DRM render nodes.
 
-### 3. Android (API Level 26+, `aarch64` / `armv7`)
+### 3. Android (API Level 26+, `aarch64`)
 * **Allocator:** Native **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`).
-* **Platform Gating:** Compiled for `aarch64-linux-android` and `armv7-linux-androideabi` (`-landroid`) with NDK r27+. Android symbols are never linked or exposed on Linux builds.
+* **Platform Gating:** Compiled for `aarch64-linux-android` (`-landroid`) with NDK r27+ as a compiled library. Legacy `armeabiv7` is not supported. Android symbols are never linked or exposed on Linux builds.
 
 ---
 
 ## License
 
-This project is licensed under the terms of the **MIT License**. See the [LICENSE](file:///home/duty/workspace/scalix/LICENSE) file for details.
+This project is licensed under the terms of the **MIT License**. See the [LICENSE](LICENSE) file for details.
+
 
 
