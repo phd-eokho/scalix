@@ -9,70 +9,9 @@ use super::context::*;
 use crate::profiler::{ProfileMetrics, Profiler};
 use crate::types::{FilterMode, ImageDesc, ImageDescMut, Result, ScalixError};
 
-const COMPUTE_SHADER_BODY: &str = r#"
-layout(local_size_x = 16, local_size_y = 16) in;
-layout(binding = 0) uniform sampler2D uSrcTexture;
-layout(binding = 1, rgba8) uniform writeonly highp image2D uDstImage;
+const COMPUTE_SHADER_BODY: &str = include_str!("shaders/compute_sampler.comp");
+const COMPUTE_SHADER_AREA_BODY: &str = include_str!("shaders/compute_area.comp");
 
-void main() {
-    ivec2 dstCoord = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 dstSize = imageSize(uDstImage);
-    if (dstCoord.x >= dstSize.x || dstCoord.y >= dstSize.y) {
-        return;
-    }
-
-    vec2 uv = (vec2(dstCoord) + 0.5) / vec2(dstSize);
-    vec4 color = texture(uSrcTexture, uv);
-    imageStore(uDstImage, dstCoord, color);
-}
-"#;
-
-const COMPUTE_SHADER_AREA_BODY: &str = r#"
-layout(local_size_x = 16, local_size_y = 16) in;
-layout(binding = 0) uniform sampler2D uSrcTexture;
-layout(binding = 1, rgba8) uniform writeonly highp image2D uDstImage;
-uniform vec2 uSrcSize;
-
-void main() {
-    ivec2 dstCoord = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 dstSize = imageSize(uDstImage);
-    if (dstCoord.x >= dstSize.x || dstCoord.y >= dstSize.y) {
-        return;
-    }
-
-    vec2 scale = uSrcSize / vec2(dstSize);
-    float x0 = float(dstCoord.x) * scale.x;
-    float x1 = float(dstCoord.x + 1) * scale.x;
-    float y0 = float(dstCoord.y) * scale.y;
-    float y1 = float(dstCoord.y + 1) * scale.y;
-
-    int sx_min = int(floor(x0));
-    int sx_max = int(floor(x1));
-    sx_max -= int(float(sx_max) == x1 && sx_max > sx_min);
-
-    int sy_min = int(floor(y0));
-    int sy_max = int(floor(y1));
-    sy_max -= int(float(sy_max) == y1 && sy_max > sy_min);
-
-    vec4 sum_col = vec4(0.0);
-    float total_weight = 0.0;
-
-    for (int sy = sy_min; sy <= sy_max; ++sy) {
-        float wy = max(0.0, min(float(sy) + 1.0, y1) - max(float(sy), y0));
-        int cy = clamp(sy, 0, int(uSrcSize.y) - 1);
-        for (int sx = sx_min; sx <= sx_max; ++sx) {
-            float wx = max(0.0, min(float(sx) + 1.0, x1) - max(float(sx), x0));
-            float w = wx * wy;
-            int cx = clamp(sx, 0, int(uSrcSize.x) - 1);
-            sum_col += texelFetch(uSrcTexture, ivec2(cx, cy), 0) * w;
-            total_weight += w;
-        }
-    }
-
-    vec4 color = (total_weight > 0.0) ? (sum_col / total_weight) : texelFetch(uSrcTexture, ivec2(clamp(sx_min, 0, int(uSrcSize.x) - 1), clamp(sy_min, 0, int(uSrcSize.y) - 1)), 0);
-    imageStore(uDstImage, dstCoord, color);
-}
-"#;
 
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
