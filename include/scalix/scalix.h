@@ -41,7 +41,8 @@ typedef enum ScalixBackendType {
     SCALIX_BACKEND_NPU         = 3,
     SCALIX_BACKEND_HW2D        = 4,
     SCALIX_BACKEND_CPU         = 5,
-    SCALIX_BACKEND_PASSTHROUGH = 6
+    SCALIX_BACKEND_PASSTHROUGH = 6,
+    SCALIX_BACKEND_OPENCL      = 7
 } ScalixBackendType;
 
 /// @brief Execution pipeline strategy.
@@ -106,10 +107,16 @@ typedef struct ScalixGlOptions {
     uint32_t max_mip_levels; ///< 0 = automatic / unlimited, >0 = limit mipchain depth
 } ScalixGlOptions;
 
+/// @brief OpenCL backend options.
+typedef struct ScalixOpenClOptions {
+    ScalixBackendOptions header;
+    ScalixStrategy strategy;
+} ScalixOpenClOptions;
+
 /// @brief Dynamic resize options.
 typedef struct ScalixResizeOptions {
     ScalixFilterMode filter;
-    const ScalixBackendOptions* backend_options; ///< Optional pointer to backend-specific options (e.g. ScalixVulkanOptions / ScalixGlOptions)
+    const ScalixBackendOptions* backend_options; ///< Optional pointer to backend-specific options (e.g. ScalixVulkanOptions / ScalixGlOptions / ScalixOpenClOptions)
 } ScalixResizeOptions;
 
 /// @brief Image descriptor representing memory layout and geometry.

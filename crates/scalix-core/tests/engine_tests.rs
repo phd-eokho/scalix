@@ -1152,3 +1152,103 @@ fn test_dma_allocator_types() {
     let read_val = buf.with_read(|slice| slice[0]);
     assert_eq!(read_val.unwrap(), 0x42);
 }
+
+#[test]
+fn test_opencl_backend_resizing_and_filters() {
+    use scalix_core::{OpenClBackend, ResizeOptions};
+
+    let backend_res = OpenClBackend::new();
+    if backend_res.is_err() {
+        eprintln!("OpenCL unavailable on this system, skipping test");
+        return;
+    }
+    let backend = backend_res.unwrap();
+    assert_eq!(backend.backend_type(), BackendType::OpenCL);
+    assert!(backend.is_available());
+
+    let src_w = 64;
+    let src_h = 64;
+    let dst_w = 32;
+    let dst_h = 32;
+
+    // Test RGBA8888 across all filters
+    let fmt = PixelFormat::Rgba8888;
+    let src_stride = fmt.min_stride(src_w).unwrap();
+    let dst_stride = fmt.min_stride(dst_w).unwrap();
+
+    let mut src_buf = AlignedBuffer::new(src_stride * (src_h as usize)).unwrap();
+    for (i, b) in src_buf.as_mut_slice().iter_mut().enumerate() {
+        *b = ((i * 7) % 255) as u8;
+    }
+    let mut dst_buf = AlignedBuffer::new(dst_stride * (dst_h as usize)).unwrap();
+
+    let src_desc = ImageDesc::new(src_w, src_h, src_stride, fmt, &src_buf).unwrap();
+
+    for &filter in &[
+        FilterMode::Nearest,
+        FilterMode::Bilinear,
+        FilterMode::Bicubic,
+        FilterMode::Lanczos3,
+        FilterMode::Area,
+    ] {
+        dst_buf.as_mut_slice().fill(0);
+        {
+            let mut dst_desc =
+                ImageDescMut::new(dst_w, dst_h, dst_stride, fmt, &mut dst_buf).unwrap();
+            let opts = ResizeOptions::new(filter);
+            let res = backend.process(&src_desc, &mut dst_desc, &opts);
+            assert!(
+                res.is_ok(),
+                "OpenCL RGBA8888 {:?} filter failed: {:?}",
+                filter,
+                res.err()
+            );
+        }
+        assert_ne!(
+            dst_buf.as_slice()[0],
+            0,
+            "OpenCL RGBA8888 {:?} output must not be black",
+            filter
+        );
+    }
+
+    // Test RGB888 packed format
+    let rgb_fmt = PixelFormat::Rgb888;
+    let rgb_src_stride = rgb_fmt.min_stride(src_w).unwrap();
+    let rgb_dst_stride = rgb_fmt.min_stride(dst_w).unwrap();
+
+    let mut rgb_src = AlignedBuffer::new(rgb_src_stride * (src_h as usize)).unwrap();
+    for (i, b) in rgb_src.as_mut_slice().iter_mut().enumerate() {
+        *b = ((i * 13) % 255) as u8;
+    }
+    let mut rgb_dst = AlignedBuffer::new(rgb_dst_stride * (dst_h as usize)).unwrap();
+    let rgb_src_desc = ImageDesc::new(src_w, src_h, rgb_src_stride, rgb_fmt, &rgb_src).unwrap();
+
+    for &filter in &[
+        FilterMode::Nearest,
+        FilterMode::Bilinear,
+        FilterMode::Bicubic,
+        FilterMode::Lanczos3,
+        FilterMode::Area,
+    ] {
+        rgb_dst.as_mut_slice().fill(0);
+        {
+            let mut rgb_dst_desc =
+                ImageDescMut::new(dst_w, dst_h, rgb_dst_stride, rgb_fmt, &mut rgb_dst).unwrap();
+            let opts = ResizeOptions::new(filter);
+            let res = backend.process(&rgb_src_desc, &mut rgb_dst_desc, &opts);
+            assert!(
+                res.is_ok(),
+                "OpenCL RGB888 {:?} filter failed: {:?}",
+                filter,
+                res.err()
+            );
+        }
+        assert_ne!(
+            rgb_dst.as_slice()[0],
+            0,
+            "OpenCL RGB888 {:?} output must not be black",
+            filter
+        );
+    }
+}

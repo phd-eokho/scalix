@@ -10,6 +10,10 @@ pub use backend::gl::{
     EglContext, GlBackend, GlBlitter, GlComputeResizer, GlLodDownscaler, GlOptions,
     GlRasterResizer, GlStrategy,
 };
+pub use backend::opencl::{
+    OpenClBackend, OpenClComputeResizer, OpenClContext, OpenClOptions, OpenClStagingRing,
+    OpenClStrategy,
+};
 pub use backend::vulkan::{
     ComputeKernel, ComputePushConsts, VulkanBackend, VulkanComputeResizer, VulkanOptions,
     VulkanStrategy,

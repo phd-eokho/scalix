@@ -4,27 +4,28 @@
 
 **Scalix**는 최신 **Linux (x86_64)** 및 **Android (aarch64)** 플랫폼(컴파일 라이브러리)을 위해 설계된 고성능 하드웨어 가속 이미지 스케일링 및 리샘플링 엔진입니다.
 
-**Headless 및 Offscreen 전용** 아키텍처로 설계되어 디스플레이 서버 없이도 **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **NPU / Neural Accelerators**, **2D HW Engines (V4L2 M2M / DRM)** 전반에 걸쳐 통합된 인터페이스를 제공합니다. CPU Fallback 및 Host SIMD 연산은 OpenCV 등 서드파티 이미지 처리 라이브러리로 위임됩니다.
+**Headless 및 Offscreen 전용** 아키텍처로 설계되어 디스플레이 서버 없이도 **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **OpenCL (Direct Compute)**, **NPU / Neural Accelerators**, **2D HW Engines (V4L2 M2M / DRM)** 전반에 걸쳐 통합된 인터페이스를 제공합니다. CPU Fallback 및 Host SIMD 연산은 OpenCV 등 서드파티 이미지 처리 라이브러리로 위임됩니다.
 
 ---
 
 ## 주요 기능
 
-* **Headless & Offscreen Native:** X11이나 Wayland 같은 디스플레이 서버 없이 백그라운드 워커, 클라우드 서버, 임베디드 파이프라인에서 순수 Offscreen GPU 워크로드를 수행합니다.
-* **Vulkan Offscreen 렌더링 전략:**
-  * **Hardware Blit (`Blit`):** Shader 오버헤드 없이 최대 처리량을 제공하는 고정 기능(Fixed-Function) 2D Blitter.
-  * **Offscreen Raster Graphics (`Raster`):** Vertex/Fragment Shader 및 하드웨어 Bilinear/Trilinear Sampler를 사용하는 완전한 그래픽스 파이프라인.
-  * **Hierarchical LoD Pyramid (`LodPyramid`):** 극단적인 다운스케일(>4×) 환경에서 계단 현상(Aliasing)과 모아레(Moiré) 왜곡을 제거하기 위한 2×2 박스 필터링 기반 Multi-Pass 다운스케일러 (조절 가능한 `max_mip_levels` 지원).
-* **GPU Compute Shader 가속:** GPU 상에서 직접 Packed RGB888 Unpack 및 Repack 패스를 수행하는 전용 컴퓨트 파이프라인(`VulkanRgbCompute`)을 제공하여 CPU 메모리 변환 병목을 제거합니다.
-* **Ring-Buffered Staging Allocator:** 슬롯별 `VkFence` 동기화와 히스테리시스 기반 메모리 자동 축소 정책(<50% 용량 기준)을 갖춘 Triple Buffering Staging 링(`VulkanStagingRing`, 3 슬롯)을 통해 CPU/GPU 간 원활한 파이프라이닝을 지원합니다.
+* **Headless & Offscreen Native:** X11이나 Wayland 같은 디스플레이 서버 없이 백그라운드 워커, 클라우드 서버, 임베디드 파이프라인에서 Vulkan, OpenGL/EGL, OpenCL 전반에 걸쳐 순수 Offscreen GPU 워크로드를 수행합니다.
+* **통합 멀티 백엔드 하드웨어 가속:**
+  * **Vulkan 백엔드 (`Backend::Vulkan`):** 고정 기능 2D `Blit`, 프로그래머블 `Raster` 그래픽스, 계층형 Anti-Aliasing `LodPyramid` (다단계 박스 필터링 다운스케일러), 직접 `Compute` 셰이더를 통한 정밀한 저수준 GPU 제어.
+  * **OpenGL / GLES 백엔드 (`Backend::OpenGL`):** EGL Headless 및 Framebuffer Object(FBO)를 기반으로 Vulkan이 지원되지 않는 환경에서도 GLES 3.1+ Compute 및 FBO Blit을 통한 범용 오프스크린 가속 지원.
+  * **OpenCL 백엔드 (`Backend::OpenCL`):** 동적 런타임 로딩(`dlopen`/`dlsym`) 기반의 순수 컴퓨트 커널 파이프라인(`clEnqueueNDRangeKernel`)으로 이기종 컴퓨팅 및 모바일/Android 런타임에 최적화.
+  * **전용 2D HW & NPU (확장형 아키텍처):** Zero-Copy DMA-BUF 하드웨어 스케일링(V4L2 M2M, DRM) 및 신경망 전처리 가속기를 수용할 수 있는 확장 가능한 엔진 구조.
+* **GPU Compute Shader 가속:** GPU 상에서 직접 Packed RGB888 Unpack/Repack 및 고차 리샘플러(Bicubic, Lanczos-3, Area)를 수행하여 CPU 메모리 변환 병목을 제거합니다.
+* **Ring-Buffered Staging Allocator:** 슬롯별 Fence/Event 동기화와 히스테리시스 기반 메모리 자동 축소 정책(<50% 용량 기준)을 갖춘 Triple Buffering Staging 링(`VulkanStagingRing`, `GlStagingRing`, `OpenClStagingRing`)을 통해 CPU/GPU 간 원활한 파이프라이닝을 지원합니다.
 * **유연한 실행 모델:**
   * **동기식 (Synchronous / Blocking):** CLI 도구 및 결정론적 파이프라인을 위한 직접 블로킹 실행.
   * **비동기식 (Zero-Copy Task):** 복사 없는 디스크립터 디스패치(`resize_async_raw`) 및 논블로킹 폴링/타임아웃 대기.
-  * **콜백 기반 (Callback-Driven):** 스트리밍, 카메라, UI 파이프라인을 위한 이벤트 기반 프레임 완료 콜백.
+  * **콜백 기반 (Callback-Driven):** 백그라운드 스레드 풀로 디스패치되는 이벤트 기반 프레임 완료 콜백.
 * **엄격한 64바이트 메모리 정렬:** 모든 디스크립터에 64바이트 버퍼 정렬(`SCALIX_REQUIRED_ALIGNMENT_BYTES = 64`)을 강제하여 AVX-512 / ARM Neon SIMD 벡터화 및 DMA-BUF 하드웨어 호환성을 보장합니다.
 * **Zero-Copy 메모리 서브시스템:** GPU, 2D 하드웨어 Blitter, V4L2 간 Linux **DMA-BUF** 및 Android **AHardwareBuffer** 네이티브 지원.
 * **다국어 API 바인딩:** 안정적인 **C ABI** (`libscalix.so` / `scalix.h`), 현대적인 **C++20** 래퍼 (`scalix.hpp`), 네이티브 **Rust** 크레이트 제공.
-* **포괄적인 필터 제품군:** Nearest Neighbor, Bilinear, Bicubic, Lanczos-3, Area (픽셀 박스 면적 관계), 및 계층형 Mipchain 다운스케일링.
+* **포괄적인 필터 제품군:** Nearest Neighbor, Bilinear, Bicubic (Catmull-Rom 4×4), Lanczos-3 (3-lobe sinc 6×6), Area (픽셀 박스 면적 관계), 및 계층형 Mipchain 다운스케일링.
 
 ---
 
@@ -42,12 +43,13 @@
 
 ### 1. 하드웨어 백엔드 및 가속기
 
-| Backend Provider | Subsystem / API | Host / Silicon Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64) |
+| Backend Provider | Subsystem / API | Host / Platform Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (AMD / NVIDIA / Intel / Mesa Lavapipe) | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (Vulkan 1.1+) | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
 | **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
-| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Rockchip RGA, NXP PXP, Allwinner G2D | ○ Mock / Loopback | ○ Hardware Req. | — |
-| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Qualcomm HTP, Intel NPU, MediaTek APU | ○ Mock / CPU | ○ OpenVINO | ○ QNN / NNAPI |
+| **OpenCL** | Direct Compute (`clEnqueueNDRangeKernel`) | OpenCL 1.2+ / 3.0 (Linux / Android) | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
+| **2D HW Blitter** | V4L2 M2M / DRM Scaler | Linux 2D HW Engines | ○ Mock / Loopback | ○ Hardware Req. | — |
+| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Neural Accelerators | ○ Mock / CPU | ○ OpenVINO | ○ Supported (미검증) |
 
 ---
 
@@ -82,8 +84,27 @@
 > **필터 알고리즘 레퍼런스 구현 (Reference Implementation)**
 > - **Bicubic (`FilterMode::Bicubic`):** `a = -0.5` 기반 2D 분리형 Catmull-Rom 3차 스플라인 보간 적용 (4×4 탭 윈도우) ([Keys, 1981](https://doi.org/10.1109/TASSP.1981.1163711)).
 > - **Lanczos3 (`FilterMode::Lanczos3`):** 밝기 왜곡을 방지하기 위한 동적 가중치 정규화가 적용된 3-lobe sinc 윈도우 sinc 필터 (`a = 3`, `L(x) = sinc(x) · sinc(x/3)`) 기반 6×6 탭 윈도우 보간 ([Lanczos, 1956](https://archive.org/details/appliedanalysis0000corn); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
-> - **Area (`FilterMode::Area`):** 소스 텍셀에 대한 서브픽셀 2D 경계 영역 오버랩 가중치를 정확히 적분하는 픽셀 영역 관계(Box Average) 보간 적용 (에너지 보존 및 에일리어싱 방지) ([Crow, 1984](https://doi.org/10.1145/964965.808599); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
+> - **Area (`FilterMode::Area`):** 소스 텍셀에 대한 서브픽셀 2D 경계 영역 오버랩 가중치를 정확히 계산하는 픽셀 영역 관계(Box Average) 보간 적용 — 2D Continuous Subpixel Box Integration 기반 (에너지 보존 및 에일리어싱 방지) ([Crow, 1984](https://doi.org/10.1145/964965.808599); [Turkowski, 1990](https://dl.acm.org/doi/10.5555/90767.90797)).
 > - **전략 자동 라우팅 (`VulkanStrategy::Auto`):** CPU 호스트 포맷 변환 병목을 방지하기 위해 24-bit 패킹 포맷(`RGB888` / `BGR888`)은 Fused GPU `Compute`로 직행합니다. 32-bit `RGBA8888`의 `Nearest` 및 `Bilinear`는 최대 필레이트 처리를 위해 하드웨어 `Blit` 명령을 우선 사용하며, `Bicubic`, `Lanczos3`, `Area` 고차 필터는 GPU `Compute` 파이프라인으로 디스패치됩니다.
+
+### 4. 백엔드별 필터 및 실행 전략 분류
+
+Scalix는 GPU 및 컴퓨트 런타임에서 사용 가능한 다양한 하드웨어 실행 파이프라인을 활용하면서 통합된 표준 필터 모드 추상화를 제공합니다:
+
+| 카테고리 | 필터 모드 | 수학적 / 알고리즘 모델 | Vulkan 실행 경로 | OpenGL / EGL 실행 경로 | OpenCL 실행 경로 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Nearest** | `FilterMode::Nearest` | 0차 홀드 (최근접 이웃) | `Blit`, `Raster`, `Compute` | `Blit`, `Raster`, `Compute` | `Compute` |
+| **Bilinear** | `FilterMode::Bilinear` | 1차 텐트 필터 (선형) | `Blit`, `Raster`, `Compute` | `Blit`, `Raster`, `Compute` | `Compute` |
+| **계층형 LoD** | `Strategy::LodPyramid` | 다중 패스 Mipchain 축소 | `Lod Full`, `Lod 2-Pass` | `Lod Full`, `Lod 2-Pass` | — *(그래픽스 HW 전용)* |
+| **Bicubic** | `FilterMode::Bicubic` | Catmull-Rom 4×4 스플라인 ($a = -0.5$) | `Compute` | `Compute` | `Compute` |
+| **Lanczos-3** | `FilterMode::Lanczos3` | 3-Lobe Sinc 윈도우 ($6\times 6$, $a = 3$) | `Compute` | `Compute` | `Compute` |
+| **Area** | `FilterMode::Area` | 2D 연속 서브픽셀 박스 오버랩 | `Compute` | `Raster`, `Compute` | `Compute` |
+| **Auto (적응형)** | `Strategy::Auto` | 엔진 패스트패스 동적 선택기 | `Auto` | `Auto` | `Auto` |
+
+> [!TIP]
+> **그래픽스 vs. 직접 컴퓨트 구현 하이라이트**
+> - **계층형 LoD 다운스케일링:** 그래픽스 백엔드(Vulkan / OpenGL)에서만 제공되며, 하드웨어 텍스처 Mipchain 생성(`vkCmdBlitImage` / `glGenerateMipmap`)을 활용한 앨리어싱 없는 다중 옥타브 축소를 지원합니다.
+> - **Area Box Integration:** 모든 백엔드에서 직접 2D 컴퓨트 커널(`VulkanComputeResizer`, `GlComputeResizer`, `OpenClComputeResizer`)을 통해 실행되며, OpenGL은 전용 프래그먼트 셰이더 래스터라이제이션(`raster_area.frag`)도 추가로 지원합니다.
 
 ---
 
@@ -255,6 +276,7 @@ void run_profiled_resizer() {
 * **GPU 백엔드 라이브러리:**
   * **Vulkan:** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
   * **OpenGL / GLES:** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
+  * **OpenCL:** `ocl-icd-libopencl1`, `mesa-opencl-icd`, `pocl-opencl-icd`
 * **Android 크로스 컴파일 (선택 사항):** Android NDK (r27+ 권장, API 레벨 26+, `aarch64-linux-android`) 및 `cargo-ndk` (참고: `armeabiv7`은 미지원)
 
 ### 1. Rust 코어 및 C ABI 라이브러리 빌드
@@ -283,7 +305,7 @@ make -C examples
 # 전체 예제 실행 (libjpeg-turbo 기반 sample.jpg JPEG 처리 포함)
 make -C examples run
 
-# 모든 성능 벤치마크 실행 (플랫폼에서 지원하는 모든 백엔드: Vulkan & OpenGL/EGL)
+# 모든 성능 벤치마크 실행 (플랫폼에서 지원하는 모든 백엔드: Vulkan, OpenGL/EGL, OpenCL)
 make -C examples benchmark
 
 # 다중 해상도 성능 벤치마크 실행 (Vulkan)
@@ -292,6 +314,9 @@ make -C examples benchmark_vulkan
 # 다중 해상도 성능 벤치마크 실행 (OpenGL/EGL)
 make -C examples benchmark_gl
 
+# 다중 해상도 성능 벤치마크 실행 (OpenCL)
+make -C examples benchmark_opencl
+
 # 예제 빌드 산출물 정리
 make -C examples clean
 ```
@@ -299,8 +324,9 @@ make -C examples clean
 #### 개별 예제 안내:
 * **`cpp_basic`**: 동기식, 비동기 콜백 및 Zero-Copy DMA 버퍼 사전 할당 데모.
 * **`cpp_jpeg`**: `libjpeg-turbo`를 사용하여 [`assets/sample.jpg`](assets/sample.jpg)를 메모리 맵핑된 DMA 버퍼로 직접 디코딩하고, Scalix 파이프라인(`blit`, `raster`, `lod [max_mip_levels]`)을 실행한 후 결과 JPEG를 저장.
-* **`cpp_benchmark`**: 4K UHD, 1080p, 720p 입력을 320×320 텐서로 다운스케일링하는 **Vulkan** 다중 해상도 마이크로 벤치마크.
+* **`cpp_benchmark_vulkan`**: 4K UHD, 1080p, 720p 입력을 320×320 텐서로 다운스케일링하는 **Vulkan** 다중 해상도 마이크로 벤치마크.
 * **`cpp_benchmark_gl`**: 4K UHD, 1080p, 720p 입력을 320×320 텐서로 다운스케일링하는 **OpenGL / EGL** 다중 해상도 마이크로 벤치마크.
+* **`cpp_benchmark_opencl`**: 4K UHD, 1080p, 720p 입력을 320×320 텐서로 다운스케일링하는 **OpenCL** 다중 해상도 마이크로 벤치마크.
 
 ---
 
