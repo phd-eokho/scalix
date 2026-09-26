@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-**Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered exclusively for modern **Linux (x86_64)** and **Android (aarch64)** platforms (compiled library).
+**Scalix** is an extensible, high-performance, hardware-accelerated image scaling and resampling engine engineered for modern **Linux (x86_64)** and **Android (aarch64, API 33+/14+)** platforms (compiled library).
 
 Designed with a **headless-first and offscreen-first** architecture, Scalix provides a unified interface across **Vulkan Compute**, **OpenGL / GLES (EGL Headless)**, **OpenCL (Direct Compute)**, **NPU / Neural Accelerators**, and **Dedicated 2D HW Engines (V4L2 M2M / DRM)**. CPU fallback and host SIMD operations are delegated to third-party image processing libraries (e.g. OpenCV).
 
@@ -23,7 +23,8 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
   * **Asynchronous (Zero-Copy Task):** Non-blocking polling and timeout waits with zero-copy descriptor dispatch (`resize_async_raw`).
   * **Callback-Driven:** Event-driven frame completion callbacks dispatched to a background thread pool for streaming, camera, and UI pipelines.
 * **Strict 64-Byte Memory Alignment:** 64-byte buffer alignment (`SCALIX_REQUIRED_ALIGNMENT_BYTES = 64`) across all descriptors, enabling optimal AVX-512 / ARM Neon SIMD vectorization and DMA-BUF hardware compatibility.
-* **Zero-Copy Memory Subsystem:** First-class support for Linux **DMA-BUF** and Android **AHardwareBuffer** across GPU, 2D hardware blitters, and V4L2.
+* **Zero-Copy Memory Subsystem:** First-class support for Linux **DMA-BUF** and Android **AHardwareBuffer** & **DMA-BUF Heaps (`/dev/dma_heap/*`)** across GPU, 2D hardware blitters, and V4L2.
+* **Dual-Mode Android Architecture:** Seamless support for both **NDK Mode** (`AHardwareBuffer` for apps) and **Vendor Mode** (raw `/dev/dma_heap/*` and file descriptor importing for HALs/daemons).
 * **Multi-Language APIs:** Core engine with stable **C ABI** (`libscalix.so` / `scalix.h`), idiomatic **C++20** wrapper (`scalix.hpp`), and native **Rust** crate.
 * **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic (Catmull-Rom 4×4), Lanczos-3 (3-lobe sinc 6×6), Area (pixel box relation), and hierarchical LoD mipchain downscaling.
 
@@ -43,30 +44,31 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 ### 1. Hardware Backends & Accelerators
 
-| Backend Provider | Subsystem / API | Host / Platform Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64) |
+| Backend Provider | Subsystem / API | Host / Platform Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64, API 34+) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
 | **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (Vulkan 1.1+) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **OpenCL** | Direct Compute (`clEnqueueNDRangeKernel`) | OpenCL 1.2+ / 3.0 (Linux / Android) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **2D HW Blitter** | V4L2 M2M / DRM Scaler | Linux 2D HW Engines | ○ Mock / Loopback | ○ Hardware Req. | — |
-| **NPU / AI Engine** | NNAPI / QNN / OpenVINO | Neural Accelerators | ○ Mock / CPU | ○ OpenVINO | ○ Supported (Unverified) |
+| **NPU / AI Engine** | QNN / OpenVINO / Vendor NPU | Neural Accelerators | ○ Mock / CPU | ○ OpenVINO | ○ Supported (Unverified) |
 
 ---
 
 ### 2. Memory & Zero-Copy Subsystems
 
-| Feature | Interface / Handle | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Bare-Metal Linux (x86_64) | Android (aarch64, API 26+) |
+| Feature | Interface / Handle | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Bare-Metal Linux (x86_64) | Android (API 33+/14+, aarch64) |
 | :--- | :--- | :---: | :---: | :---: |
 | **64-Byte Aligned Host Memory** | Contiguous 64-byte aligned CPU memory (RGB/RGBA) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **Triple-Buffered Staging Ring** | 3-slot pinned / mapped staging buffer ring with hysteresis | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
-| **Linux DMA-BUF** | `dma_buf_fd` (Vulkan / EGL / DRM PRIME zero-copy) | ◐ Fallback (Verified) | ○ Supported (Unverified) | — |
-| **AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop | — | — | ◐ Compiled Library (Unverified) |
+| **Linux & Android DMA-BUF** | `dma_buf_fd` (DMA-BUF Heaps `/dev/dma_heap/*` zero-copy) | ◐ Fallback (Verified) | ○ Supported (Unverified) | ◐ Compiled Library (Unverified) |
+| **Raw DMA-BUF Import** | `from_fd(fd, ...)` / `scalix_dma_buffer_from_fd` | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **Android AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop (NDK mode) | — | — | ◐ Compiled Library (Unverified) |
 
 > [!NOTE]
 > **Current Verification & Target Platform Status**
 > - **WSL2 (Ubuntu 24.04, NVIDIA GPU):** The primary and currently tested development platform. Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Linux `dma-buf` automatically falls back to 64-byte aligned host staging memory.
 > - **Linux (x86_64 Bare-Metal):** Compiled and architected for native Linux execution (DMA-Heap and DRM GEM dumb buffer support), but not yet verified on physical bare-metal hardware.
-> - **Android (aarch64):** Android NDK cross-compilation (`cargo-ndk`) and compiled library generation (`libscalix.so` / `libscalix.a`) are supported for `aarch64` (API 26+). Legacy `armeabiv7` is **not supported**. Runtime GPU execution and physical `AHardwareBuffer` DMA sharing are **unverified** on physical Android hardware.
+> - **Android (aarch64, API 34+):** Android NDK cross-compilation (`cargo-ndk`) and compiled library generation (`libscalix.so` / `libscalix.a`) are supported across **NDK** and **Vendor** variants. Standalone vendor mode operates on pure Linux DMA-BUF Heaps without NDK runtime dependencies. Physical hardware testing is pending.
 
 ---
 
@@ -279,7 +281,7 @@ void run_profiled_resizer() {
   * **Vulkan:** `libvulkan-dev`, `vulkan-tools`, `mesa-vulkan-drivers`
   * **OpenGL / GLES:** `libegl1-mesa-dev`, `libgles2-mesa-dev`, `libgl1-mesa-dev`
   * **OpenCL:** `ocl-icd-libopencl1`, `mesa-opencl-icd`, `pocl-opencl-icd`
-* **Android Cross-Compilation (Optional):** Android NDK (r27+ recommended, API Level 26+, `aarch64-linux-android`) and `cargo-ndk` (Note: `armeabiv7` is not supported)
+* **Android Cross-Compilation (Optional):** Android NDK (r27+ recommended, API Level 26+, `aarch64-linux-android`) and `cargo-ndk`
 
 > [!NOTE]
 > `libopencv-dev` is required for benchmarking workloads (`cpp_benchmark_vulkan`, `cpp_benchmark_gl`, `cpp_benchmark_opencl`) to provide side-by-side execution time comparisons between Scalix hardware pipelines and standard OpenCV image processing operations (`cv::resize`, `cv::warpAffine`).
@@ -341,6 +343,7 @@ Scalix provides unified zero-copy DMA buffer allocation across supported target 
 
 ### 1. Bare-Metal Linux (x86_64, Kernel 5.6+ - Unverified)
 * **Allocators:** Uses **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) with fallback to **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128` via GEM PRIME).
+* **Raw FD Import:** Supports wrapping external DMA-BUF file descriptors via `DmaBuffer::from_fd()`.
 * **Permissions:** Ensure the executing user is added to `render` and `video` groups:
   ```bash
   sudo usermod -aG render,video $USER
@@ -350,9 +353,12 @@ Scalix provides unified zero-copy DMA buffer allocation across supported target 
 * **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12 for offscreen rendering (currently tested platform).
 * **DMA Allocation Behavior & Limitation:** Linux `dma-buf` is **not yet supported** across the `/dev/dxg` virtual translation layer. Stock WSL2 kernels do not provide `/dev/dma_heap`, and DRM GEM dumb buffer allocations often fail or lack PRIME hardware export support. Scalix's runtime allocator probing detects this DMA failure automatically and safely falls back to host memory staging buffers. Testing true zero-copy DMA requires bare-metal Linux with native DRM render nodes.
 
-### 3. Android (API Level 26+, `aarch64`)
-* **Allocator:** Native **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`).
-* **Platform Gating:** Compiled for `aarch64-linux-android` (`-landroid`) with NDK r27+ as a compiled library. Legacy `armeabiv7` is not supported. Android symbols are never linked or exposed on Linux builds.
+### 3. Android (API 33+ / 14+, `aarch64`)
+* **Dual-Mode Architecture:**
+  * **NDK Mode:** Uses **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`) for app and framework zero-copy sharing.
+  * **Vendor Mode:** Uses **Linux DMA-BUF Heaps** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) via direct POSIX `ioctl(DMA_HEAP_IOCTL_ALLOC)` with zero external `.so` dependencies (no `libdmabufheap.so` or `dlopen` required).
+  * **Zero-Copy FD Import:** External pipelines (Camera V4L2, DRM, custom DSP/NPU) pass raw `dma_buf_fd` handles directly into `DmaBuffer::from_fd()`.
+* **Platform Gating & Build:** Cross-compiled via NDK r27c (Platform 34) for `aarch64-linux-android` in both NDK and Vendor variants.
 
 ---
 

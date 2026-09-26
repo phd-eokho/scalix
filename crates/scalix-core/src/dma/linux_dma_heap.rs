@@ -71,10 +71,13 @@ impl LinuxDmaHeapAllocator {
                 heap_flags: 0,
             };
 
+            // NOTE: ioctl request numbers are standard Linux kernel ABI values (e.g. _IOWR('H', 0x0, ...)).
+            // Bionic libc (Android) types `request` as `c_int` (i32), whereas Glibc/Musl (Linux) types it as `c_ulong`.
+            // Casting with `as _` preserves the 32-bit opcode bit pattern across both platforms.
             let ret = unsafe {
                 libc::ioctl(
                     file.as_raw_fd(),
-                    DMA_HEAP_IOCTL_ALLOC,
+                    DMA_HEAP_IOCTL_ALLOC as _,
                     &mut alloc_data as *mut DmaHeapAllocationData,
                 )
             };

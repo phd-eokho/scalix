@@ -131,7 +131,7 @@ impl AndroidAhbAllocator {
             | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE
             | AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT;
 
-        let mut desc = AHardwareBuffer_Desc {
+        let desc = AHardwareBuffer_Desc {
             width,
             height,
             layers: 1,

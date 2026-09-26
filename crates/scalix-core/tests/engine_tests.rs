@@ -313,6 +313,10 @@ fn test_dma_buffer_lifecycle_and_probing() {
     // Dimension validation test
     assert!(DmaBuffer::allocate_dimensions(ImageDimensions::new(0, 64), format).is_err());
     assert!(DmaBuffer::allocate_dimensions(ImageDimensions::new(64, 0), format).is_err());
+
+    // Test raw DMA-BUF importer error handling
+    assert!(DmaBuffer::from_raw_dma_buf(-1, ImageDimensions::new(64, 64), format, None).is_err());
+    assert!(DmaBuffer::from_raw_dma_buf(999, ImageDimensions::new(0, 64), format, None).is_err());
 }
 
 #[test]

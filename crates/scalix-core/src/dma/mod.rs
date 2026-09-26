@@ -3,7 +3,7 @@
 //! Provides platform-gated, hardware-backed DMA buffer allocation and memory mapping
 //! for zero-copy data pipelines across CPU, Vulkan, OpenGL/EGL, and V4L2 accelerators.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub mod linux_dma_heap;
 
 #[cfg(target_os = "linux")]
@@ -16,9 +16,9 @@ pub mod linux_drm;
 pub mod android_ahb;
 
 use std::os::fd::RawFd;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use std::os::fd::{AsRawFd, OwnedFd};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use std::ptr::NonNull;
 
 use crate::types::{ImageDesc, ImageDescMut, ImageDimensions, PixelFormat, Result, ScalixError};
@@ -31,36 +31,36 @@ pub enum DmaSyncFlags {
     ReadWrite,
 }
 
-// Linux DMA-BUF ioctl sync structure and flags
-#[cfg(target_os = "linux")]
+// Linux/Android DMA-BUF ioctl sync structure and flags
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[repr(C)]
 struct DmaBufSync {
     flags: u64,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const DMA_BUF_SYNC_READ: u64 = 1 << 0;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const DMA_BUF_SYNC_WRITE: u64 = 1 << 1;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const DMA_BUF_SYNC_RW: u64 = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const DMA_BUF_SYNC_START: u64 = 0 << 2;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const DMA_BUF_SYNC_END: u64 = 1 << 2;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const DMA_BUF_IOCTL_SYNC: libc::c_ulong = 0x40086200;
 
 /// Unified hardware DMA allocation descriptor.
 pub struct DmaAllocation {
-    #[cfg(target_os = "linux")]
-    pub fd: OwnedFd,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub fd: Option<OwnedFd>,
 
     #[cfg(all(
         target_os = "android",
         any(target_arch = "aarch64", target_arch = "arm")
     ))]
-    pub ahb_handle: std::ptr::NonNull<std::ffi::c_void>,
+    pub ahb_handle: Option<std::ptr::NonNull<std::ffi::c_void>>,
 
     pub host_ptr: std::ptr::NonNull<u8>,
     pub size: usize,
@@ -77,7 +77,7 @@ pub trait DmaAllocator: Send + Sync {
     fn allocate(&self, dimensions: ImageDimensions, format: PixelFormat) -> Result<DmaAllocation>;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn mmap_fd(fd: &OwnedFd, size: usize) -> Result<NonNull<u8>> {
     let host_ptr = unsafe {
         libc::mmap(
@@ -90,7 +90,7 @@ fn mmap_fd(fd: &OwnedFd, size: usize) -> Result<NonNull<u8>> {
         )
     };
 
-    if host_ptr == libc::MAP_FAILED {
+    if host_ptr == libc::MAP_FAILED || host_ptr.is_null() {
         let errno = std::io::Error::last_os_error();
         return Err(ScalixError::DmaMapFailed(format!("mmap failed: {errno}")));
     }
@@ -99,7 +99,7 @@ fn mmap_fd(fd: &OwnedFd, size: usize) -> Result<NonNull<u8>> {
         .ok_or_else(|| ScalixError::DmaMapFailed("mmap returned null pointer".to_string()))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 impl DmaAllocator for linux_dma_heap::LinuxDmaHeapAllocator {
     #[inline]
     fn name(&self) -> &'static str {
@@ -115,7 +115,12 @@ impl DmaAllocator for linux_dma_heap::LinuxDmaHeapAllocator {
         let (fd, size, stride) = Self::allocate_dimensions(dimensions, format)?;
         let host_ptr = mmap_fd(&fd, size)?;
         Ok(DmaAllocation {
-            fd,
+            fd: Some(fd),
+            #[cfg(all(
+                target_os = "android",
+                any(target_arch = "aarch64", target_arch = "arm")
+            ))]
+            ahb_handle: None,
             host_ptr,
             size,
             stride,
@@ -139,7 +144,7 @@ impl DmaAllocator for linux_drm::LinuxDrmAllocator {
         let (fd, size, stride) = Self::allocate_dimensions(dimensions, format)?;
         let host_ptr = mmap_fd(&fd, size)?;
         Ok(DmaAllocation {
-            fd,
+            fd: Some(fd),
             host_ptr,
             size,
             stride,
@@ -173,7 +178,8 @@ impl DmaAllocator for android_ahb::AndroidAhbAllocator {
             )
         })?;
         Ok(DmaAllocation {
-            ahb_handle,
+            fd: None,
+            ahb_handle: Some(ahb_handle),
             host_ptr,
             size,
             stride,
@@ -195,8 +201,9 @@ pub enum DmaAllocatorType {
 
 /// Represents an allocated, memory-mapped hardware DMA buffer.
 pub struct DmaBuffer {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fd: Option<OwnedFd>,
+    imported_fd: RawFd,
 
     #[cfg(all(
         target_os = "android",
@@ -211,6 +218,7 @@ pub struct DmaBuffer {
     format: PixelFormat,
     allocator_type: DmaAllocatorType,
     is_host_aligned: bool,
+    is_imported: bool,
 }
 
 // DmaBuffer owns the memory mapping and underlying kernel fd/handle
@@ -228,13 +236,17 @@ impl DmaBuffer {
         allocator_type: DmaAllocatorType,
     ) -> Self {
         Self {
-            #[cfg(target_os = "linux")]
-            fd: Some(alloc.fd),
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            fd: alloc.fd,
+            imported_fd: -1,
             #[cfg(all(
                 target_os = "android",
                 any(target_arch = "aarch64", target_arch = "arm")
             ))]
-            ahb_handle: alloc.ahb_handle.as_ptr(),
+            ahb_handle: alloc
+                .ahb_handle
+                .map(|h| h.as_ptr())
+                .unwrap_or(std::ptr::null_mut()),
             host_ptr: alloc.host_ptr.as_ptr(),
             size: alloc.size,
             dimensions,
@@ -242,6 +254,90 @@ impl DmaBuffer {
             format,
             allocator_type,
             is_host_aligned: false,
+            is_imported: false,
+        }
+    }
+
+    /// Wraps an externally provided raw Linux / Android DMA-BUF file descriptor with layout metadata.
+    ///
+    /// Maps the DMA-BUF memory for CPU host access and manages DMA-BUF cache sync ioctls.
+    /// Does not take ownership of closing `fd` on drop.
+    pub fn from_raw_dma_buf(
+        fd: RawFd,
+        dimensions: ImageDimensions,
+        format: PixelFormat,
+        stride_bytes: Option<usize>,
+    ) -> Result<Self> {
+        if dimensions.is_empty() {
+            return Err(ScalixError::InvalidDimensions {
+                width: dimensions.width,
+                height: dimensions.height,
+            });
+        }
+        if fd < 0 {
+            return Err(ScalixError::DmaAllocationFailed(
+                "Invalid negative DMA-BUF file descriptor".to_string(),
+            ));
+        }
+
+        let stride = match stride_bytes {
+            Some(s) => {
+                let min = format.min_stride(dimensions.width)?;
+                if s < min {
+                    return Err(ScalixError::InvalidStride {
+                        stride: s,
+                        min_stride: min,
+                    });
+                }
+                s
+            }
+            None => format.min_stride(dimensions.width)?,
+        };
+        let size = format.min_buffer_size_dims(dimensions, stride)?;
+
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            let host_ptr = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    fd,
+                    0,
+                )
+            };
+
+            if host_ptr == libc::MAP_FAILED || host_ptr.is_null() {
+                let errno = std::io::Error::last_os_error();
+                return Err(ScalixError::DmaMapFailed(format!(
+                    "mmap of external DMA-BUF fd {fd} failed: {errno}"
+                )));
+            }
+
+            Ok(Self {
+                fd: None,
+                imported_fd: fd,
+                #[cfg(all(
+                    target_os = "android",
+                    any(target_arch = "aarch64", target_arch = "arm")
+                ))]
+                ahb_handle: std::ptr::null_mut(),
+                host_ptr: host_ptr as *mut u8,
+                size,
+                dimensions,
+                stride,
+                format,
+                allocator_type: DmaAllocatorType::DmaHeap,
+                is_host_aligned: false,
+                is_imported: true,
+            })
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            Err(ScalixError::DmaUnavailable(
+                "DMA-BUF import is only supported on Linux and Android".to_string(),
+            ))
         }
     }
 
@@ -296,14 +392,34 @@ impl DmaBuffer {
                     any(target_arch = "aarch64", target_arch = "arm")
                 ))]
                 {
+                    // 1. Try AHardwareBuffer (NDK mode)
                     let ahb_allocator = android_ahb::AndroidAhbAllocator;
-                    let alloc = ahb_allocator.allocate(dimensions, format)?;
-                    Ok(Self::from_allocation(
-                        alloc,
-                        dimensions,
-                        format,
-                        DmaAllocatorType::AndroidAhb,
-                    ))
+                    match ahb_allocator.allocate(dimensions, format) {
+                        Ok(alloc) => Ok(Self::from_allocation(
+                            alloc,
+                            dimensions,
+                            format,
+                            DmaAllocatorType::AndroidAhb,
+                        )),
+                        Err(ahb_err) => {
+                            log::debug!("AHB allocation failed: {ahb_err}, probing DMA-Heap for Vendor mode...");
+                            // 2. Try DMA-Heap (/dev/dma_heap/*) for pure Vendor mode
+                            let heap_allocator = linux_dma_heap::LinuxDmaHeapAllocator;
+                            match heap_allocator.allocate(dimensions, format) {
+                                Ok(alloc) => Ok(Self::from_allocation(
+                                    alloc,
+                                    dimensions,
+                                    format,
+                                    DmaAllocatorType::DmaHeap,
+                                )),
+                                Err(heap_err) => {
+                                    Err(ScalixError::DmaUnavailable(format!(
+                                        "All Android DMA allocators failed. AHB: [{ahb_err}], DMA-Heap: [{heap_err}]"
+                                    )))
+                                }
+                            }
+                        }
+                    }
                 }
                 #[cfg(not(any(
                     target_os = "linux",
@@ -319,7 +435,7 @@ impl DmaBuffer {
                 }
             }
             DmaAllocatorType::DmaHeap => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 {
                     let heap_allocator = linux_dma_heap::LinuxDmaHeapAllocator;
                     let alloc = heap_allocator.allocate(dimensions, format)?;
@@ -330,10 +446,10 @@ impl DmaBuffer {
                         DmaAllocatorType::DmaHeap,
                     ))
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "android")))]
                 {
                     Err(ScalixError::DmaUnavailable(
-                        "DMA-Heap allocator is only available on Linux".to_string(),
+                        "DMA-Heap allocator is only available on Linux and Android".to_string(),
                     ))
                 }
             }
@@ -402,8 +518,9 @@ impl DmaBuffer {
                     std::ptr::write_bytes(aligned_ptr as *mut u8, 0, size);
                 }
                 Ok(Self {
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "android"))]
                     fd: None,
+                    imported_fd: -1,
                     #[cfg(all(
                         target_os = "android",
                         any(target_arch = "aarch64", target_arch = "arm")
@@ -416,6 +533,7 @@ impl DmaBuffer {
                     format,
                     allocator_type: DmaAllocatorType::HostAligned,
                     is_host_aligned: true,
+                    is_imported: false,
                 })
             }
         }
@@ -451,17 +569,48 @@ impl DmaBuffer {
         self.allocator_type
     }
 
-    /// Returns the kernel DMA-BUF file descriptor on Linux, or -1 on platforms without an fd.
+    /// Returns true if this buffer was imported from an external DMA-BUF file descriptor.
+    #[inline]
+    #[must_use]
+    pub const fn is_imported(&self) -> bool {
+        self.is_imported
+    }
+
+    /// Returns the kernel DMA-BUF file descriptor on Linux/Android, or -1 on platforms without an fd.
     #[inline]
     #[must_use]
     pub fn fd(&self) -> RawFd {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            self.fd.as_ref().map(|f| f.as_raw_fd()).unwrap_or(-1)
+            if let Some(ref f) = self.fd {
+                f.as_raw_fd()
+            } else {
+                self.imported_fd
+            }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
             -1
+        }
+    }
+
+    /// Returns the raw Android AHardwareBuffer handle on Android, or null on other platforms.
+    #[inline]
+    #[must_use]
+    pub fn ahb_handle(&self) -> *mut std::ffi::c_void {
+        #[cfg(all(
+            target_os = "android",
+            any(target_arch = "aarch64", target_arch = "arm")
+        ))]
+        {
+            self.ahb_handle
+        }
+        #[cfg(not(all(
+            target_os = "android",
+            any(target_arch = "aarch64", target_arch = "arm")
+        )))]
+        {
+            std::ptr::null_mut()
         }
     }
 
@@ -524,19 +673,21 @@ impl DmaBuffer {
 
     /// Signals the start of CPU access for cache coherency.
     pub fn sync_start(&self, flags: DmaSyncFlags) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            if let Some(ref fd) = self.fd {
+            let raw_fd = self.fd();
+            if raw_fd >= 0 {
                 let sync_flags = match flags {
                     DmaSyncFlags::Read => DMA_BUF_SYNC_READ | DMA_BUF_SYNC_START,
                     DmaSyncFlags::Write => DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_START,
                     DmaSyncFlags::ReadWrite => DMA_BUF_SYNC_RW | DMA_BUF_SYNC_START,
                 };
                 let mut sync = DmaBufSync { flags: sync_flags };
+                // NOTE: Cast to `as _` because libc::ioctl `request` is c_int on Android and c_ulong on Linux
                 let ret = unsafe {
                     libc::ioctl(
-                        fd.as_raw_fd(),
-                        DMA_BUF_IOCTL_SYNC,
+                        raw_fd,
+                        DMA_BUF_IOCTL_SYNC as _,
                         &mut sync as *mut DmaBufSync,
                     )
                 };
@@ -549,7 +700,7 @@ impl DmaBuffer {
             }
             Ok(())
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
             let _ = flags;
             Ok(())
@@ -558,19 +709,21 @@ impl DmaBuffer {
 
     /// Signals the completion of CPU access to flush/invalidate caches for hardware accelerator visibility.
     pub fn sync_end(&self, flags: DmaSyncFlags) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            if let Some(ref fd) = self.fd {
+            let raw_fd = self.fd();
+            if raw_fd >= 0 {
                 let sync_flags = match flags {
                     DmaSyncFlags::Read => DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END,
                     DmaSyncFlags::Write => DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_END,
                     DmaSyncFlags::ReadWrite => DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END,
                 };
                 let mut sync = DmaBufSync { flags: sync_flags };
+                // NOTE: Cast to `as _` because libc::ioctl `request` is c_int on Android and c_ulong on Linux
                 let ret = unsafe {
                     libc::ioctl(
-                        fd.as_raw_fd(),
-                        DMA_BUF_IOCTL_SYNC,
+                        raw_fd,
+                        DMA_BUF_IOCTL_SYNC as _,
                         &mut sync as *mut DmaBufSync,
                     )
                 };
@@ -583,7 +736,7 @@ impl DmaBuffer {
             }
             Ok(())
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
             let _ = flags;
             Ok(())
@@ -665,17 +818,6 @@ impl Drop for DmaBuffer {
             return;
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            if !self.host_ptr.is_null() && self.host_ptr != libc::MAP_FAILED as *mut u8 {
-                unsafe {
-                    libc::munmap(self.host_ptr as *mut libc::c_void, self.size);
-                }
-                self.host_ptr = std::ptr::null_mut();
-            }
-            // self.fd is closed automatically by OwnedFd drop
-        }
-
         #[cfg(all(
             target_os = "android",
             any(target_arch = "aarch64", target_arch = "arm")
@@ -691,7 +833,19 @@ impl Drop for DmaBuffer {
                     android_ahb::AHardwareBuffer_release(self.ahb_handle);
                     self.ahb_handle = std::ptr::null_mut();
                 }
+                return;
             }
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            if !self.host_ptr.is_null() && self.host_ptr != libc::MAP_FAILED as *mut u8 {
+                unsafe {
+                    libc::munmap(self.host_ptr as *mut libc::c_void, self.size);
+                }
+                self.host_ptr = std::ptr::null_mut();
+            }
+            // self.fd (if any) is closed automatically when OwnedFd drops
         }
     }
 }
