@@ -142,6 +142,33 @@ public:
         }
     }
 
+    /// @brief Wraps an externally provided Linux / Android DMA-BUF file descriptor.
+    /// @param fd Raw DMA-BUF file descriptor.
+    /// @param width Buffer width in pixels.
+    /// @param height Buffer height in pixels.
+    /// @param stride_bytes Row stride in bytes (pass 0 for default min stride).
+    /// @param format Pixel format.
+    /// @return DmaBuffer instance wrapping the mapped DMA-BUF.
+    [[nodiscard]] static DmaBuffer from_fd(
+        int fd,
+        uint32_t width,
+        uint32_t height,
+        size_t stride_bytes = 0,
+        PixelFormat format = PixelFormat::Rgba8888
+    ) {
+        ScalixDmaBuffer* handle = scalix_dma_buffer_from_fd(
+            fd,
+            width,
+            height,
+            stride_bytes,
+            static_cast<ScalixPixelFormat>(format)
+        );
+        if (!handle) {
+            throw std::runtime_error("Failed to import external DMA-BUF fd: " + std::to_string(fd));
+        }
+        return DmaBuffer(handle);
+    }
+
     ~DmaBuffer() {
         if (handle_) {
             scalix_dma_buffer_free(handle_);
@@ -173,6 +200,10 @@ public:
 
     [[nodiscard]] int fd() const noexcept {
         return handle_ ? scalix_dma_buffer_get_fd(handle_) : -1;
+    }
+
+    [[nodiscard]] void* ahb_handle() const noexcept {
+        return handle_ ? scalix_dma_buffer_get_ahb_handle(handle_) : nullptr;
     }
 
     [[nodiscard]] uint8_t* host_ptr() const noexcept {
@@ -256,6 +287,7 @@ public:
     }
 
 private:
+    explicit DmaBuffer(ScalixDmaBuffer* handle) noexcept : handle_(handle) {}
     ScalixDmaBuffer* handle_{nullptr};
 };
 

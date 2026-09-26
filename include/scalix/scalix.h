@@ -329,6 +329,25 @@ ScalixDmaBuffer* scalix_dma_buffer_allocate_with_type(
     ScalixAllocatorType allocator_type
 );
 
+/// @brief Wraps an externally allocated Linux / Android DMA-BUF file descriptor.
+///
+/// Maps the underlying memory into user-space virtual memory for zero-copy DMA access.
+/// Does not take ownership of closing the provided fd.
+///
+/// @param fd Raw Linux/Android DMA-BUF file descriptor.
+/// @param width Image buffer width in pixels.
+/// @param height Image buffer height in pixels.
+/// @param stride_bytes Row stride in bytes (pass 0 for default minimum stride).
+/// @param format Pixel format of the buffer.
+/// @return ScalixDmaBuffer* Pointer to created DMA buffer handle, or NULL on failure.
+ScalixDmaBuffer* scalix_dma_buffer_from_fd(
+    int fd,
+    uint32_t width,
+    uint32_t height,
+    size_t stride_bytes,
+    ScalixPixelFormat format
+);
+
 /// @brief Returns the allocator type that backed the DMA buffer.
 /// @param buffer Pointer to DMA buffer handle.
 /// @return ScalixAllocatorType value.
@@ -338,10 +357,15 @@ ScalixAllocatorType scalix_dma_buffer_get_allocator_type(const ScalixDmaBuffer* 
 /// @param buffer Pointer to DMA buffer handle to release.
 void scalix_dma_buffer_free(ScalixDmaBuffer* buffer);
 
-/// @brief Returns the underlying Linux DMA-BUF file descriptor (or -1 if not applicable).
+/// @brief Returns the underlying Linux/Android DMA-BUF file descriptor (or -1 if not backed by fd).
 /// @param buffer Pointer to DMA buffer handle.
 /// @return File descriptor or -1.
 int scalix_dma_buffer_get_fd(const ScalixDmaBuffer* buffer);
+
+/// @brief Returns the raw Android AHardwareBuffer handle (or NULL if not on Android NDK backend).
+/// @param buffer Pointer to DMA buffer handle.
+/// @return AHardwareBuffer* pointer or NULL.
+void* scalix_dma_buffer_get_ahb_handle(const ScalixDmaBuffer* buffer);
 
 /// @brief Returns the memory-mapped CPU virtual address pointer.
 /// @param buffer Pointer to DMA buffer handle.

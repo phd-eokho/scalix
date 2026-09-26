@@ -199,8 +199,16 @@ fn test_c_api_dma_buffer() {
             assert_eq!(desc.width, 32);
             assert_eq!(desc.height, 32);
 
+            let ahb = scalix_dma_buffer_get_ahb_handle(dma_buf);
+            #[cfg(not(target_os = "android"))]
+            assert!(ahb.is_null());
+
             scalix_dma_buffer_free(dma_buf);
         }
+
+        // Test invalid negative fd returns null
+        let invalid_buf = scalix_dma_buffer_from_fd(-1, 32, 32, 0, ScalixPixelFormat::Rgba8888);
+        assert!(invalid_buf.is_null());
     }
 }
 

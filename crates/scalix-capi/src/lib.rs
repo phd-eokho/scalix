@@ -893,6 +893,33 @@ pub unsafe extern "C" fn scalix_dma_buffer_allocate_with_type(
 
 #[no_mangle]
 #[must_use]
+pub unsafe extern "C" fn scalix_dma_buffer_from_fd(
+    fd: i32,
+    width: u32,
+    height: u32,
+    stride_bytes: usize,
+    format: ScalixPixelFormat,
+) -> *mut ScalixDmaBuffer {
+    ffi_catch!(std::ptr::null_mut(), {
+        let stride_opt = if stride_bytes > 0 {
+            Some(stride_bytes)
+        } else {
+            None
+        };
+        match scalix_core::DmaBuffer::from_raw_dma_buf(
+            fd,
+            scalix_core::ImageDimensions::new(width, height),
+            format.into(),
+            stride_opt,
+        ) {
+            Ok(buf) => Box::into_raw(Box::new(ScalixDmaBuffer { inner: buf })),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_get_allocator_type(
     buffer: *const ScalixDmaBuffer,
 ) -> ScalixAllocatorType {
@@ -921,6 +948,19 @@ pub unsafe extern "C" fn scalix_dma_buffer_get_fd(buffer: *const ScalixDmaBuffer
             return -1;
         }
         (*buffer).inner.fd()
+    })
+}
+
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn scalix_dma_buffer_get_ahb_handle(
+    buffer: *const ScalixDmaBuffer,
+) -> *mut c_void {
+    ffi_catch!(std::ptr::null_mut(), {
+        if buffer.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*buffer).inner.ahb_handle()
     })
 }
 
