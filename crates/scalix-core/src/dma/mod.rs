@@ -683,8 +683,9 @@ impl DmaBuffer {
                     DmaSyncFlags::ReadWrite => DMA_BUF_SYNC_RW | DMA_BUF_SYNC_START,
                 };
                 let mut sync = DmaBufSync { flags: sync_flags };
+                // NOTE: Cast to `as _` because libc::ioctl `request` is c_int on Android and c_ulong on Linux
                 let ret = unsafe {
-                    libc::ioctl(raw_fd, DMA_BUF_IOCTL_SYNC, &mut sync as *mut DmaBufSync)
+                    libc::ioctl(raw_fd, DMA_BUF_IOCTL_SYNC as _, &mut sync as *mut DmaBufSync)
                 };
                 if ret != 0 {
                     let err = std::io::Error::last_os_error();
@@ -714,8 +715,9 @@ impl DmaBuffer {
                     DmaSyncFlags::ReadWrite => DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END,
                 };
                 let mut sync = DmaBufSync { flags: sync_flags };
+                // NOTE: Cast to `as _` because libc::ioctl `request` is c_int on Android and c_ulong on Linux
                 let ret = unsafe {
-                    libc::ioctl(raw_fd, DMA_BUF_IOCTL_SYNC, &mut sync as *mut DmaBufSync)
+                    libc::ioctl(raw_fd, DMA_BUF_IOCTL_SYNC as _, &mut sync as *mut DmaBufSync)
                 };
                 if ret != 0 {
                     let err = std::io::Error::last_os_error();
