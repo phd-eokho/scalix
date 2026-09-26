@@ -76,11 +76,11 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 | Pixel Format (In / Out) | `Nearest` | `Bilinear` | `Bicubic` | `Lanczos3` | `Area` | `LodPyramid` (Downscale) | Default `Auto` Strategy |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`RGB888` / `BGR888` (24-bit)** | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Raster` / `Compute` (✔) | **`Compute`** (Fused 24-bit pass) |
-| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` (✔) | `Blit` / `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `LodPyramid` (✔) | **`Blit`** (Fast-path) / **`Compute`** (High-Order) |
-| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
-| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
-| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` (◐) | `Raster` / `Blit` (◐) | — | — | — | — | **`Raster`** (Y/UV planar pass) |
+| **`RGB888` / `BGR888` (24-bit)** | `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `Raster` / `Compute` ✔ | **`Compute`** (Fused 24-bit pass) |
+| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` ✔ | `Blit` / `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `LodPyramid` ✔ | **`Blit`** (Fast-path) / **`Compute`** (High-Order) |
+| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` ✔ | `Blit` / `Raster` ✔ | `Raster` ◐ | `Raster` ◐ | `Raster` ◐ | `Raster` ✔ | **`Blit`** |
+| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` ✔ | `Blit` / `Raster` ✔ | `Raster` ◐ | `Raster` ◐ | `Raster` ◐ | `Raster` ✔ | **`Blit`** |
+| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` ◐ | `Raster` / `Blit` ◐ | — | — | — | — | **`Raster`** (Y/UV planar pass) |
 
 > [!NOTE]
 > **Filter Algorithm Reference Implementations**

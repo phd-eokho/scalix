@@ -76,11 +76,11 @@
 
 | 픽셀 포맷 (In / Out) | `Nearest` | `Bilinear` | `Bicubic` | `Lanczos3` | `Area` | `LodPyramid` (축소) | 기본 `Auto` 전략 매핑 |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`RGB888` / `BGR888` (24-bit)** | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Raster` / `Compute` (✔) | **`Compute`** (Fused 24-bit 전용 패스) |
-| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` (✔) | `Blit` / `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `Compute` (✔) | `LodPyramid` (✔) | **`Blit`** (고속 패스) / **`Compute`** (고차 필터) |
-| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
-| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` (✔) | `Blit` / `Raster` (✔) | `Raster` (◐) | `Raster` (◐) | `Raster` (◐) | `Raster` (✔) | **`Blit`** |
-| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` (◐) | `Raster` / `Blit` (◐) | — | — | — | — | **`Raster`** (Y/UV 평면 분할 패스) |
+| **`RGB888` / `BGR888` (24-bit)** | `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `Raster` / `Compute` ✔ | **`Compute`** (Fused 24-bit 전용 패스) |
+| **`RGBA8888` / `BGRA8888` (32-bit)** | `Blit` / `Compute` ✔ | `Blit` / `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `Compute` ✔ | `LodPyramid` ✔ | **`Blit`** (고속 패스) / **`Compute`** (고차 필터) |
+| **`R8` / `RG88` (Single/Dual Ch)** | `Blit` / `Raster` ✔ | `Blit` / `Raster` ✔ | `Raster` ◐ | `Raster` ◐ | `Raster` ◐ | `Raster` ✔ | **`Blit`** |
+| **`RGBA16F` / `RGBA32F` (HDR/Float)** | `Blit` / `Raster` ✔ | `Blit` / `Raster` ✔ | `Raster` ◐ | `Raster` ◐ | `Raster` ◐ | `Raster` ✔ | **`Blit`** |
+| **`NV12` / `YUV420p` (Semi/Planar)** | `Raster` / `Blit` ◐ | `Raster` / `Blit` ◐ | — | — | — | — | **`Raster`** (Y/UV 평면 분할 패스) |
 
 > [!NOTE]
 > **필터 알고리즘 레퍼런스 구현 (Reference Implementation)**
