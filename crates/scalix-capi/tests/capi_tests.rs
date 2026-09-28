@@ -48,6 +48,8 @@ fn test_c_api_sync_passthrough() {
 
         scalix_engine_destroy(engine);
     }
+
+
 }
 
 #[test]
@@ -280,5 +282,18 @@ fn test_c_api_sync_with_backend_options() {
         assert_eq!(dst_data.as_slice(), src_data.as_slice());
 
         scalix_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_c_api_dma_probe_functions() {
+    unsafe {
+        let alloc_type = scalix_dma_probe_allocator();
+        let is_hw = scalix_dma_is_hardware_available();
+        if is_hw {
+            assert_ne!(alloc_type, ScalixAllocatorType::HostAligned);
+        } else {
+            assert_eq!(alloc_type, ScalixAllocatorType::HostAligned);
+        }
     }
 }

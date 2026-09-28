@@ -145,18 +145,21 @@ void TableReporter::print_resolution_summary_table(
 }
 
 void probe_and_print_dma_status() {
-    bool has_dma = false;
-    try {
-        scalix::DmaBuffer probe(64, 64, scalix::PixelFormat::Rgba8888);
-        has_dma = (probe.fd() >= 0);
-    } catch (...) {
-        has_dma = false;
-    }
-
-    if (has_dma) {
-        cout << MSG_DMA_ACTIVE << endl;
-    } else {
-        cout << MSG_DMA_STAGING << endl;
+    const auto detected = scalix::DmaBuffer::probe_allocator();
+    switch (detected) {
+        case scalix::AllocatorType::DmaHeap:
+            cout << "[Hardware DMA Status: Native Zero-Copy DMA Active (Linux DMA-Heap: /dev/dma_heap/*)]" << endl;
+            break;
+        case scalix::AllocatorType::DrmDumb:
+            cout << "[Hardware DMA Status: Native Zero-Copy DMA Active (Linux DRM GEM Dumb: /dev/dri/renderD*)]" << endl;
+            break;
+        case scalix::AllocatorType::AndroidAhb:
+            cout << "[Hardware DMA Status: Native Zero-Copy DMA Active (Android AHardwareBuffer)]" << endl;
+            break;
+        case scalix::AllocatorType::HostAligned:
+        default:
+            cout << MSG_DMA_STAGING << endl;
+            break;
     }
 }
 
@@ -211,6 +214,195 @@ SampleImageData load_or_generate_sample(
     return result;
 }
 
+namespace {
+
+struct BenchmarkContextStorage final {
+    std::unique_ptr<scalix::DmaBuffer> src_dma;
+    std::unique_ptr<scalix::DmaBuffer> dst_sync_dma;
+    std::unique_ptr<scalix::DmaBuffer> dst_async_dma;
+    scalix::AlignedVector<uint8_t> dst_sync_host;
+    scalix::AlignedVector<uint8_t> dst_async_host;
+};
+
+void ingest_dma_rgb888(void* raw, const uint8_t* src, size_t len, uint32_t /*w*/, uint32_t /*h*/) {
+    auto* s = static_cast<BenchmarkContextStorage*>(raw);
+    s->src_dma->with_write([&](uint8_t* ptr, size_t size) {
+        if (ptr && src && len > 0) {
+            memcpy(ptr, src, std::min(size, len));
+        }
+    });
+}
+
+void ingest_dma_rgba8888(void* raw, const uint8_t* src, size_t len, uint32_t w, uint32_t h) {
+    auto* s = static_cast<BenchmarkContextStorage*>(raw);
+    s->src_dma->with_write([&](uint8_t* ptr, size_t /*size*/) {
+        if (ptr && src && len > 0) {
+            const size_t num_pixels = static_cast<size_t>(w) * h;
+            uint32_t* dst_u32 = reinterpret_cast<uint32_t*>(ptr);
+            const size_t bulk_pixels = num_pixels > 0 ? num_pixels - 1 : 0;
+            for (size_t p = 0; p < bulk_pixels; ++p) {
+                uint32_t word;
+                memcpy(&word, src + p * 3, sizeof(uint32_t));
+                dst_u32[p] = (word & 0x00FFFFFFu) | 0xFF000000u;
+            }
+            if (num_pixels > 0) {
+                const size_t last_p = num_pixels - 1;
+                const uint8_t* s_last = src + last_p * 3;
+                dst_u32[last_p] = static_cast<uint32_t>(s_last[0]) |
+                                 (static_cast<uint32_t>(s_last[1]) << 8) |
+                                 (static_cast<uint32_t>(s_last[2]) << 16) |
+                                 0xFF000000u;
+            }
+        }
+    });
+}
+
+void ingest_host_rgb888(void* /*raw*/, const uint8_t* /*src*/, size_t /*len*/, uint32_t /*w*/, uint32_t /*h*/) {
+    // No-op: host src_desc points directly to pre-allocated host memory
+}
+
+void wait_dma(void* raw, scalix::Task& task) {
+    auto* s = static_cast<BenchmarkContextStorage*>(raw);
+    task.wait(0, s->dst_async_dma->host_ptr(), s->dst_async_dma->size());
+}
+
+void wait_host(void* raw, scalix::Task& task) {
+    auto* s = static_cast<BenchmarkContextStorage*>(raw);
+    task.wait(0, s->dst_async_host.data(), s->dst_async_host.size());
+}
+
+void save_dma_rgb888(void* raw, std::string_view path, uint32_t w, uint32_t h) {
+    auto* s = static_cast<BenchmarkContextStorage*>(raw);
+    s->dst_sync_dma->with_read([&](const uint8_t* ptr, size_t) {
+        static_cast<void>(JpegIO::encode_rgb888(path, w, h, ptr, s->dst_sync_dma->stride(), VERIFY_JPEG_QUALITY));
+    });
+}
+
+void save_dma_rgba8888(void* raw, std::string_view path, uint32_t w, uint32_t h) {
+    auto* s = static_cast<BenchmarkContextStorage*>(raw);
+    s->dst_sync_dma->with_read([&](const uint8_t* ptr, size_t) {
+        static_cast<void>(JpegIO::encode_rgba8888(path, w, h, ptr, s->dst_sync_dma->stride(), VERIFY_JPEG_QUALITY));
+    });
+}
+
+void save_host_rgb888(void* raw, std::string_view path, uint32_t w, uint32_t h) {
+    auto* s = static_cast<BenchmarkContextStorage*>(raw);
+    const size_t stride = static_cast<size_t>(w) * 3;
+    static_cast<void>(JpegIO::encode_rgb888(path, w, h, s->dst_sync_host.data(), stride, VERIFY_JPEG_QUALITY));
+}
+
+/// @brief Execution context delegator decoupling memory management from benchmarking loops.
+struct BenchmarkContext final {
+    using IngestFn = void(*)(void*, const uint8_t*, size_t, uint32_t, uint32_t);
+    using WaitFn   = void(*)(void*, scalix::Task&);
+    using SaveFn   = void(*)(void*, std::string_view, uint32_t, uint32_t);
+
+    std::shared_ptr<BenchmarkContextStorage> storage;
+    scalix::ImageDesc src_desc{};
+    scalix::ImageDesc dst_sync_desc{};
+    scalix::ImageDesc dst_async_desc{};
+    IngestFn ingest_fn{nullptr};
+    WaitFn   wait_fn{nullptr};
+    SaveFn   save_fn{nullptr};
+
+    void ingest(const scalix::AlignedVector<uint8_t>& src, uint32_t w, uint32_t h) const {
+        if (ingest_fn) ingest_fn(storage.get(), src.data(), src.size(), w, h);
+    }
+    void wait(scalix::Task& task) const {
+        if (wait_fn) wait_fn(storage.get(), task);
+    }
+    void save_jpeg(std::string_view path, uint32_t w, uint32_t h) const {
+        if (save_fn && !path.empty()) save_fn(storage.get(), path, w, h);
+    }
+
+    static BenchmarkContext create(
+        uint32_t src_w, uint32_t src_h,
+        uint32_t dst_w, uint32_t dst_h,
+        const uint8_t* host_src_ptr
+    ) {
+        BenchmarkContext ctx;
+        ctx.storage = std::make_shared<BenchmarkContextStorage>();
+
+        const auto allocator = scalix::DmaBuffer::probe_allocator();
+        bool dma_allocated = false;
+
+        if (allocator != scalix::AllocatorType::HostAligned) {
+            // 1. Try native RGB888 DMA-BUF
+            try {
+                ctx.storage->src_dma = std::make_unique<scalix::DmaBuffer>(src_w, src_h, scalix::PixelFormat::Rgb888);
+                ctx.storage->dst_sync_dma = std::make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgb888);
+                ctx.storage->dst_async_dma = std::make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgb888);
+                ctx.ingest_fn = &ingest_dma_rgb888;
+                ctx.wait_fn = &wait_dma;
+                ctx.save_fn = &save_dma_rgb888;
+                dma_allocated = true;
+            } catch (...) {
+                // 2. Fallback to RGBA8888 DMA-BUF (DRM Dumb drivers requiring 32bpp)
+                try {
+                    ctx.storage->src_dma = std::make_unique<scalix::DmaBuffer>(src_w, src_h, scalix::PixelFormat::Rgba8888);
+                    ctx.storage->dst_sync_dma = std::make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888);
+                    ctx.storage->dst_async_dma = std::make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888);
+                    ctx.ingest_fn = &ingest_dma_rgba8888;
+                    ctx.wait_fn = &wait_dma;
+                    ctx.save_fn = &save_dma_rgba8888;
+                    dma_allocated = true;
+                } catch (...) {
+                    dma_allocated = false;
+                }
+            }
+        }
+
+        if (dma_allocated) {
+            ctx.src_desc = ctx.storage->src_dma->as_image_desc();
+            ctx.dst_sync_desc = ctx.storage->dst_sync_dma->as_image_desc();
+            ctx.dst_async_desc = ctx.storage->dst_async_dma->as_image_desc();
+        } else {
+            const size_t src_stride = static_cast<size_t>(src_w) * 3;
+            const size_t dst_stride = static_cast<size_t>(dst_w) * 3;
+            const size_t src_size = src_stride * src_h;
+            const size_t dst_size = dst_stride * dst_h;
+
+            ctx.storage->dst_sync_host.resize(dst_size, 0);
+            ctx.storage->dst_async_host.resize(dst_size, 0);
+
+            ctx.src_desc = scalix::ImageDesc{
+                .width = src_w,
+                .height = src_h,
+                .stride_bytes = src_stride,
+                .format = scalix::PixelFormat::Rgb888,
+                .host_ptr = const_cast<uint8_t*>(host_src_ptr),
+                .data_len = src_size,
+                .dma_buf_fd = -1,
+            };
+            ctx.dst_sync_desc = scalix::ImageDesc{
+                .width = dst_w,
+                .height = dst_h,
+                .stride_bytes = dst_stride,
+                .format = scalix::PixelFormat::Rgb888,
+                .host_ptr = ctx.storage->dst_sync_host.data(),
+                .data_len = dst_size,
+                .dma_buf_fd = -1,
+            };
+            ctx.dst_async_desc = scalix::ImageDesc{
+                .width = dst_w,
+                .height = dst_h,
+                .stride_bytes = dst_stride,
+                .format = scalix::PixelFormat::Rgb888,
+                .host_ptr = ctx.storage->dst_async_host.data(),
+                .data_len = dst_size,
+                .dma_buf_fd = -1,
+            };
+            ctx.ingest_fn = &ingest_host_rgb888;
+            ctx.wait_fn = &wait_host;
+            ctx.save_fn = &save_host_rgb888;
+        }
+
+        return ctx;
+    }
+};
+
+} // anonymous namespace
+
 StrategyBenchmarkResult benchmark_strategy(
     scalix::Engine& engine,
     string_view method_name,
@@ -224,11 +416,6 @@ StrategyBenchmarkResult benchmark_strategy(
     size_t num_frames,
     string_view output_filename
 ) {
-    const size_t src_stride = static_cast<size_t>(src_w) * 3;
-    const size_t dst_stride = static_cast<size_t>(dst_w) * 3;
-    const size_t src_size = src_stride * src_h;
-    const size_t dst_size = dst_stride * dst_h;
-
     StrategyBenchmarkResult result{
         .method_name = string(method_name),
         .description = string(description),
@@ -243,60 +430,31 @@ StrategyBenchmarkResult benchmark_strategy(
         .output_file = string(output_filename),
     };
 
-    scalix::AlignedVector<uint8_t> dst_sync(dst_size, 0);
-    scalix::AlignedVector<uint8_t> dst_async(dst_size, 0);
-
-    scalix::ImageDesc src_desc{
-        .width = src_w,
-        .height = src_h,
-        .stride_bytes = src_stride,
-        .format = scalix::PixelFormat::Rgb888,
-        .host_ptr = const_cast<uint8_t*>(src_buffer.data()),
-        .data_len = src_size,
-        .dma_buf_fd = -1,
-    };
-
-    scalix::ImageDesc dst_sync_desc{
-        .width = dst_w,
-        .height = dst_h,
-        .stride_bytes = dst_stride,
-        .format = scalix::PixelFormat::Rgb888,
-        .host_ptr = dst_sync.data(),
-        .data_len = dst_size,
-        .dma_buf_fd = -1,
-    };
-
-    scalix::ImageDesc dst_async_desc{
-        .width = dst_w,
-        .height = dst_h,
-        .stride_bytes = dst_stride,
-        .format = scalix::PixelFormat::Rgb888,
-        .host_ptr = dst_async.data(),
-        .data_len = dst_size,
-        .dma_buf_fd = -1,
-    };
+    // Instantiate execution context delegator (configured once based on control signal)
+    auto ctx = BenchmarkContext::create(src_w, src_h, dst_w, dst_h, src_buffer.data());
+    ctx.ingest(src_buffer, src_w, src_h);
 
     try {
         // Warmup runs
         for (size_t w = 0; w < 2; ++w) {
-            engine.resize(src_desc, dst_sync_desc, options);
+            engine.resize(ctx.src_desc, ctx.dst_sync_desc, options);
         }
 
-        // 1. Synchronous Benchmark
+        // 1. Synchronous Benchmark (Straight-line execution)
         result.sync = PreciseTimer::measure(num_frames, [&](size_t) {
-            engine.resize(src_desc, dst_sync_desc, options);
+            engine.resize(ctx.src_desc, ctx.dst_sync_desc, options);
         });
 
-        // 2. Asynchronous Benchmark
+        // 2. Asynchronous Benchmark (Delegated task synchronization)
         vector<scalix::Task> tasks;
         tasks.reserve(num_frames);
 
         const auto async_measured = PreciseTimer::measure(1, [&](size_t) {
             for (size_t i = 0; i < num_frames; ++i) {
-                tasks.push_back(engine.resize_async(src_desc, dst_async_desc, options));
+                tasks.push_back(engine.resize_async(ctx.src_desc, ctx.dst_async_desc, options));
             }
             for (size_t i = 0; i < num_frames; ++i) {
-                tasks[i].wait(0, dst_async.data(), dst_size);
+                ctx.wait(tasks[i]);
             }
         });
         result.async = MetricStats::from_duration(async_measured.total_ms, num_frames);
@@ -308,7 +466,7 @@ StrategyBenchmarkResult benchmark_strategy(
         double acc_download = 0.0, acc_repack = 0.0, acc_sync = 0.0, acc_wall = 0.0;
 
         for (size_t p = 0; p < PROFILING_ROUNDS; ++p) {
-            engine.resize(src_desc, dst_sync_desc, options);
+            engine.resize(ctx.src_desc, ctx.dst_sync_desc, options);
             if (const auto prof = engine.last_profile()) {
                 acc_unpack += prof->host_unpack_ms;
                 acc_upload += prof->gpu_upload_ms;
@@ -329,10 +487,8 @@ StrategyBenchmarkResult benchmark_strategy(
         result.profile.driver_sync_ms = acc_sync / PROFILING_ROUNDS;
         result.profile.total_wall_ms = acc_wall / PROFILING_ROUNDS;
 
-        // Save output verification JPEG
-        if (!output_filename.empty()) {
-            static_cast<void>(JpegIO::encode_rgb888(output_filename, dst_w, dst_h, dst_sync.data(), dst_stride, VERIFY_JPEG_QUALITY));
-        }
+        // Save output verification JPEG via delegate
+        ctx.save_jpeg(output_filename, dst_w, dst_h);
 
         result.success = true;
     } catch (const exception& e) {
@@ -468,14 +624,25 @@ static optional<ResolutionBenchmarkResult> run_single_dma_benchmark(
 
     try {
         for (size_t i = 0; i < num_frames; ++i) {
-            auto src_buf = make_unique<scalix::DmaBuffer>(src_w, src_h, scalix::PixelFormat::Rgba8888);
+            unique_ptr<scalix::DmaBuffer> src_buf;
+            unique_ptr<scalix::DmaBuffer> dst_sync;
+            unique_ptr<scalix::DmaBuffer> dst_async;
+            try {
+                src_buf = make_unique<scalix::DmaBuffer>(src_w, src_h, scalix::PixelFormat::Rgb888);
+                dst_sync = make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgb888);
+                dst_async = make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgb888);
+            } catch (...) {
+                src_buf = make_unique<scalix::DmaBuffer>(src_w, src_h, scalix::PixelFormat::Rgba8888);
+                dst_sync = make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888);
+                dst_async = make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888);
+            }
             const uint8_t pattern = static_cast<uint8_t>((i * 17 + 0x33) & 0xFF);
             src_buf->with_write([pattern](uint8_t* ptr, size_t size) {
                 if (ptr && size > 0) memset(ptr, pattern, size);
             });
             src_buffers.push_back(move(src_buf));
-            dst_sync_buffers.push_back(make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888));
-            dst_async_buffers.push_back(make_unique<scalix::DmaBuffer>(dst_w, dst_h, scalix::PixelFormat::Rgba8888));
+            dst_sync_buffers.push_back(move(dst_sync));
+            dst_async_buffers.push_back(move(dst_async));
         }
     } catch (const exception& e) {
         cout << "  [DMA Allocation Not Supported on Host]: " << e.what() << endl;

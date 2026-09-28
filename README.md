@@ -344,10 +344,20 @@ Scalix provides unified zero-copy DMA buffer allocation across supported target 
 ### 1. Bare-Metal Linux (x86_64, Kernel 5.6+ - Unverified)
 * **Allocators:** Uses **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) with fallback to **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128` via GEM PRIME).
 * **Raw FD Import:** Supports wrapping external DMA-BUF file descriptors via `DmaBuffer::from_fd()`.
-* **Permissions:** Ensure the executing user is added to `render` and `video` groups:
-  ```bash
-  sudo usermod -aG render,video $USER
-  ```
+* **Device Node Permissions & Udev Rules:** By default, Linux DMA-Heap device nodes (`/dev/dma_heap/*`) and DRM render nodes require specific user permissions:
+  1. **User Group Access:** Add your user account to the `render` and `video` groups:
+     ```bash
+     sudo usermod -aG render,video $USER
+     ```
+  2. **Persistent Udev Rule for DMA-Heap (`/dev/dma_heap/*`):** Create a udev rule to automatically configure read/write permissions on device discovery:
+     ```bash
+     echo 'SUBSYSTEM=="dma_heap", MODE="0666"' | sudo tee /etc/udev/rules.d/99-dma-heap.rules
+     sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=dma_heap
+     ```
+  3. **Temporary / Testing Access:**
+     ```bash
+     sudo chmod 666 /dev/dma_heap/* /dev/dri/renderD*
+     ```
 
 ### 2. WSL2 (Windows Subsystem for Linux 2: Ubuntu 24.04, NVIDIA GPU)
 * **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12 for offscreen rendering (currently tested platform).

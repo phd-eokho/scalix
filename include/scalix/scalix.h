@@ -351,6 +351,14 @@ ScalixDmaBuffer* scalix_dma_buffer_from_fd(
 /// @brief Returns the allocator type that backed the DMA buffer.
 /// @param buffer Pointer to DMA buffer handle.
 /// @return ScalixAllocatorType value.
+/// @brief Probes system hardware DMA subsystem and returns the detected allocator type.
+/// @return ScalixAllocatorType (e.g. SCALIX_ALLOCATOR_DMA_HEAP, SCALIX_ALLOCATOR_DRM_DUMB, or SCALIX_ALLOCATOR_HOST_ALIGNED).
+ScalixAllocatorType scalix_dma_probe_allocator(void);
+
+/// @brief Checks whether hardware zero-copy DMA buffers are supported on the host.
+/// @return True if hardware DMA (DMA-Heap, DRM, or AHB) is supported.
+bool scalix_dma_is_hardware_available(void);
+
 ScalixAllocatorType scalix_dma_buffer_get_allocator_type(const ScalixDmaBuffer* buffer);
 
 /// @brief Releases a DMA buffer and unmaps its virtual memory.

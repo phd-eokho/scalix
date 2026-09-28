@@ -339,10 +339,20 @@ Scalix는 지원되는 실행 환경 전반에서 통합된 Zero-Copy DMA 버퍼
 ### 1. Bare-Metal Linux (x86_64, 커널 5.6+ - 미검증)
 * **할당자(Allocators):** **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`)을 사용하며, 부재 시 **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128`, GEM PRIME 기반)로 자동 Fallback.
 * **외부 FD 임포트:** `DmaBuffer::from_fd()`를 통해 외부 DMA-BUF 파일 디스크립터를 Zero-Copy 래핑 지원.
-* **권한 설정:** 실행 사용자가 `render` 및 `video` 그룹에 추가되어 있어야 합니다:
-  ```bash
-  sudo usermod -aG render,video $USER
-  ```
+* **디바이스 노드 권한 및 Udev 설정:** 기본적으로 Linux DMA-Heap 디바이스 노드(`/dev/dma_heap/*`) 및 DRM 노드는 root 권한으로 생성되므로 적절한 권한 부여가 필요합니다:
+  1. **사용자 그룹 추가:** 실행 사용자를 `render` 및 `video` 그룹에 추가:
+     ```bash
+     sudo usermod -aG render,video $USER
+     ```
+  2. **DMA-Heap Udev 영구 규칙 생성 (`/dev/dma_heap/*`):**
+     ```bash
+     echo 'SUBSYSTEM=="dma_heap", MODE="0666"' | sudo tee /etc/udev/rules.d/99-dma-heap.rules
+     sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=dma_heap
+     ```
+  3. **임시/테스트 권한 부여:**
+     ```bash
+     sudo chmod 666 /dev/dma_heap/* /dev/dri/renderD*
+     ```
 
 ### 2. WSL2 (Windows Subsystem for Linux 2: Ubuntu 24.04, NVIDIA GPU)
 * **GPU 가속:** Microsoft DirectX 브리지 (`/dev/dxg`) 및 Mesa Vulkan/D3D12를 통해 오프스크린 렌더링을 완벽 지원 (현재 검증된 개발 환경).

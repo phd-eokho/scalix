@@ -920,6 +920,22 @@ pub unsafe extern "C" fn scalix_dma_buffer_from_fd(
 
 #[no_mangle]
 #[must_use]
+pub unsafe extern "C" fn scalix_dma_probe_allocator() -> ScalixAllocatorType {
+    ffi_catch!(ScalixAllocatorType::HostAligned, {
+        scalix_core::DmaBuffer::probe_available_allocator().into()
+    })
+}
+
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn scalix_dma_is_hardware_available() -> bool {
+    ffi_catch!(false, {
+        scalix_core::DmaBuffer::is_hardware_dma_available()
+    })
+}
+
+#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn scalix_dma_buffer_get_allocator_type(
     buffer: *const ScalixDmaBuffer,
 ) -> ScalixAllocatorType {

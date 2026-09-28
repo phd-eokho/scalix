@@ -131,13 +131,30 @@ impl LinuxDrmAllocator {
                 size: 0,
             };
 
-            let ret = unsafe {
+            let mut ret = unsafe {
                 libc::ioctl(
                     drm_fd,
                     DRM_IOCTL_MODE_CREATE_DUMB,
                     &mut create_dumb as *mut DrmModeCreateDumb,
                 )
             };
+
+            // If 24-bit dumb buffer creation is rejected by the DRM driver (common on desktop GPUs),
+            // fallback to 32-bit bpp dumb buffer allocation.
+            if ret != 0 && bpp == 24 {
+                log::debug!(
+                    "DRM_IOCTL_MODE_CREATE_DUMB with bpp=24 failed on {}, falling back to bpp=32",
+                    path
+                );
+                create_dumb.bpp = 32;
+                ret = unsafe {
+                    libc::ioctl(
+                        drm_fd,
+                        DRM_IOCTL_MODE_CREATE_DUMB,
+                        &mut create_dumb as *mut DrmModeCreateDumb,
+                    )
+                };
+            }
 
             if ret != 0 {
                 let errno = std::io::Error::last_os_error();
