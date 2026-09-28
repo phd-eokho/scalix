@@ -562,6 +562,41 @@ impl DmaBuffer {
         Self::allocate_dimensions(ImageDimensions::new(width, height), format)
     }
 
+    /// Probes the host system and returns the highest-priority hardware DMA allocator available,
+    /// or `DmaAllocatorType::HostAligned` if no hardware DMA driver node is accessible.
+    #[must_use]
+    pub fn probe_available_allocator() -> DmaAllocatorType {
+        #[cfg(target_os = "linux")]
+        {
+            if linux_dma_heap::LinuxDmaHeapAllocator::is_available() {
+                return DmaAllocatorType::DmaHeap;
+            }
+            if linux_drm::LinuxDrmAllocator::is_available() {
+                return DmaAllocatorType::DrmDumb;
+            }
+        }
+        #[cfg(all(
+            target_os = "android",
+            any(target_arch = "aarch64", target_arch = "arm")
+        ))]
+        {
+            if android_ahb::AndroidAhbAllocator::is_available() {
+                return DmaAllocatorType::AndroidAhb;
+            }
+            if linux_dma_heap::LinuxDmaHeapAllocator::is_available() {
+                return DmaAllocatorType::DmaHeap;
+            }
+        }
+        DmaAllocatorType::HostAligned
+    }
+
+    /// Returns true if hardware zero-copy DMA allocation is supported on this platform.
+    #[inline]
+    #[must_use]
+    pub fn is_hardware_dma_available() -> bool {
+        Self::probe_available_allocator() != DmaAllocatorType::HostAligned
+    }
+
     /// Returns the allocator type used to back this buffer.
     #[inline]
     #[must_use]

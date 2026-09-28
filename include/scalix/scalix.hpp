@@ -194,6 +194,14 @@ public:
         return *this;
     }
 
+    [[nodiscard]] static AllocatorType probe_allocator() noexcept {
+        return static_cast<AllocatorType>(scalix_dma_probe_allocator());
+    }
+
+    [[nodiscard]] static bool is_hardware_dma_available() noexcept {
+        return scalix_dma_is_hardware_available();
+    }
+
     [[nodiscard]] AllocatorType allocator_type() const noexcept {
         return handle_ ? static_cast<AllocatorType>(scalix_dma_buffer_get_allocator_type(handle_)) : AllocatorType::Auto;
     }
@@ -216,6 +224,18 @@ public:
 
     [[nodiscard]] size_t stride() const noexcept {
         return handle_ ? scalix_dma_buffer_get_stride(handle_) : 0;
+    }
+
+    [[nodiscard]] PixelFormat format() const noexcept {
+        return as_image_desc().format;
+    }
+
+    [[nodiscard]] uint32_t width() const noexcept {
+        return as_image_desc().width;
+    }
+
+    [[nodiscard]] uint32_t height() const noexcept {
+        return as_image_desc().height;
     }
 
     void sync_start(bool is_write = true) {
