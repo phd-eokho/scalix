@@ -48,8 +48,6 @@ fn test_c_api_sync_passthrough() {
 
         scalix_engine_destroy(engine);
     }
-
-
 }
 
 #[test]
