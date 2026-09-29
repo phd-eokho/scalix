@@ -1256,3 +1256,70 @@ fn test_opencl_backend_resizing_and_filters() {
         );
     }
 }
+
+#[test]
+fn test_gpu_topology_probing_and_classification() {
+    use scalix_core::{GpuDeviceKind, GpuTopology, GpuTopologyInfo};
+
+    let topology = GpuTopology::probe();
+    println!("Discovered system GPU topology: {:?}", topology);
+
+    // Ensure topology fields are populated consistently
+    assert!(!topology.driver_name.is_empty() || topology.device_kind == GpuDeviceKind::Unknown);
+
+    if topology.is_dgpu() {
+        assert_eq!(topology.device_kind, GpuDeviceKind::Discrete);
+        assert!(topology.requires_async_dma_staging());
+        assert!(!topology.is_unified_memory());
+    }
+
+    if topology.is_integrated() {
+        assert_eq!(topology.device_kind, GpuDeviceKind::Integrated);
+        assert!(!topology.requires_async_dma_staging());
+        assert!(topology.is_unified_memory());
+    }
+
+    // Test synthetic dGPU and UMA topology descriptors
+    let dgpu_info = GpuTopologyInfo {
+        device_kind: GpuDeviceKind::Discrete,
+        device_name: "NVIDIA RTX 4090".to_string(),
+        driver_name: "nvidia".to_string(),
+        pci_vendor_id: Some(0x10de),
+        pci_device_id: Some(0x2684),
+    };
+    assert!(dgpu_info.is_dgpu());
+    assert!(!dgpu_info.is_integrated());
+    assert!(!dgpu_info.is_unified_memory());
+    assert!(dgpu_info.requires_async_dma_staging());
+
+    let uma_info = GpuTopologyInfo {
+        device_kind: GpuDeviceKind::Integrated,
+        device_name: "Apple M3 Max GPU".to_string(),
+        driver_name: "metal".to_string(),
+        pci_vendor_id: Some(0x106b),
+        pci_device_id: None,
+    };
+    assert!(!uma_info.is_dgpu());
+    assert!(uma_info.is_integrated());
+    assert!(uma_info.is_unified_memory());
+    assert!(!uma_info.requires_async_dma_staging());
+}
+
+#[test]
+fn test_dgpu_writeback_memory_validation() {
+    use scalix_core::{GpuDeviceKind, GpuTopologyInfo};
+
+    let dgpu_info = GpuTopologyInfo {
+        device_kind: GpuDeviceKind::Discrete,
+        device_name: "Discrete PCIe GPU".to_string(),
+        driver_name: "amdgpu".to_string(),
+        pci_vendor_id: Some(0x1002),
+        pci_device_id: Some(0x73bf),
+    };
+
+    // Validating host-visible pinned memory on dGPU (should not trigger warning)
+    dgpu_info.validate_writeback_memory(false, true);
+
+    // Validating device-local non-host-visible memory on dGPU (triggers performance warning)
+    dgpu_info.validate_writeback_memory(true, false);
+}

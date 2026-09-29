@@ -199,6 +199,72 @@ pub enum FilterMode {
     Passthrough = 100,
 }
 
+/// GPU Device architecture classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(C)]
+pub enum GpuDeviceKind {
+    #[default]
+    Unknown = 0,
+    /// Discrete PCIe GPU with dedicated VRAM (e.g., NVIDIA RTX, AMD Radeon, Intel Arc)
+    Discrete = 1,
+    /// Integrated GPU / SoC Unified Memory (e.g., Apple Silicon, ARM Mali, Rockchip, Intel Iris Xe)
+    Integrated = 2,
+    /// Virtual GPU / Software rasterizer (e.g., VirtIO-GPU, llvmpipe, SwiftShader)
+    Virtual = 3,
+}
+
+/// Discovered hardware topology details.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GpuTopologyInfo {
+    pub device_kind: GpuDeviceKind,
+    pub device_name: String,
+    pub driver_name: String,
+    pub pci_vendor_id: Option<u32>,
+    pub pci_device_id: Option<u32>,
+}
+
+impl GpuTopologyInfo {
+    /// Returns true if this device is a discrete GPU with dedicated VRAM.
+    #[inline]
+    #[must_use]
+    pub fn is_dgpu(&self) -> bool {
+        self.device_kind == GpuDeviceKind::Discrete
+    }
+
+    /// Returns true if this device is an integrated GPU / SoC with unified memory.
+    #[inline]
+    #[must_use]
+    pub fn is_integrated(&self) -> bool {
+        self.device_kind == GpuDeviceKind::Integrated
+    }
+
+    /// Returns true if this device uses a unified memory architecture (UMA).
+    #[inline]
+    #[must_use]
+    pub fn is_unified_memory(&self) -> bool {
+        self.is_integrated()
+    }
+
+    /// Returns true if this device benefits from host-to-VRAM asynchronous DMA staging.
+    #[inline]
+    #[must_use]
+    pub fn requires_async_dma_staging(&self) -> bool {
+        self.is_dgpu()
+    }
+
+    /// Validates destination writeback memory location.
+    /// Logs a warning if writeback memory is placed in non-host-visible VRAM on a dGPU.
+    #[inline]
+    pub fn validate_writeback_memory(&self, is_device_local: bool, is_host_visible: bool) {
+        if self.is_dgpu() && is_device_local && !is_host_visible {
+            log::warn!(
+                "[PERF WARNING] Writeback destination memory is allocated directly on VRAM (DEVICE_LOCAL) without HOST_VISIBLE for discrete GPU '{}'. Direct CPU readback will suffer severe PCIe bus latency stalls. Ensure pinned host memory staging is used for readback.",
+                self.device_name
+            );
+        }
+    }
+}
+
 /// Hardware backend providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]

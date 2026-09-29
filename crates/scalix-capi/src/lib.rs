@@ -1095,3 +1095,30 @@ pub unsafe extern "C" fn scalix_dma_buffer_sync_end(
         }
     })
 }
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalixGpuDeviceKind {
+    Unknown = 0,
+    Discrete = 1,
+    Integrated = 2,
+    Virtual = 3,
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn scalix_probe_gpu_device_kind() -> ScalixGpuDeviceKind {
+    let info = scalix_core::GpuTopology::probe();
+    match info.device_kind {
+        scalix_core::GpuDeviceKind::Discrete => ScalixGpuDeviceKind::Discrete,
+        scalix_core::GpuDeviceKind::Integrated => ScalixGpuDeviceKind::Integrated,
+        scalix_core::GpuDeviceKind::Virtual => ScalixGpuDeviceKind::Virtual,
+        scalix_core::GpuDeviceKind::Unknown => ScalixGpuDeviceKind::Unknown,
+    }
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn scalix_probe_gpu_is_discrete() -> bool {
+    scalix_core::GpuTopology::probe().is_dgpu()
+}

@@ -42,6 +42,12 @@ impl GpuBuffer {
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
     ) -> Result<Self> {
+        let is_device_local = properties.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let is_host_visible = properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE);
+        if usage.contains(vk::BufferUsageFlags::TRANSFER_DST) && !is_host_visible {
+            ctx.topology.validate_writeback_memory(is_device_local, is_host_visible);
+        }
+
         let device = &ctx.device;
         let buf_info = vk::BufferCreateInfo {
             size,

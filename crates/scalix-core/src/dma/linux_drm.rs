@@ -189,6 +189,14 @@ impl LinuxDrmAllocator {
 
             if ret_prime == 0 && prime_handle.fd >= 0 {
                 let dma_fd = unsafe { OwnedFd::from_raw_fd(prime_handle.fd as RawFd) };
+                let topology = crate::topology::GpuTopology::probe_drm_sysfs();
+                if topology.is_dgpu() {
+                    log::warn!(
+                        "[PERF WARNING] Allocated DRM dumb DMA-BUF on discrete GPU '{}' ({}). Direct CPU read access will cause PCIe bus stalls. For discrete GPUs, consider using pinned host DMA-BUF or asynchronous DMA staging.",
+                        topology.device_name,
+                        path
+                    );
+                }
                 return Ok((dma_fd, size, pitch));
             } else {
                 let errno = std::io::Error::last_os_error();
