@@ -1,6 +1,7 @@
 //! Headless Vulkan Context Initialization & Device Management
 
-use crate::types::{Result, ScalixError};
+use crate::topology::GpuTopology;
+use crate::types::{GpuTopologyInfo, Result, ScalixError};
 use ash::{vk, Device, Entry, Instance};
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ pub struct VulkanContext {
     pub command_pool: vk::CommandPool,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub timestamp_period: f32,
+    pub topology: GpuTopologyInfo,
 }
 
 unsafe impl Send for VulkanContext {}
@@ -141,6 +143,7 @@ impl VulkanContext {
 
         let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
         let timestamp_period = device_properties.limits.timestamp_period;
+        let topology = GpuTopology::probe_from_vulkan(&instance, physical_device);
 
         Ok(Arc::new(Self {
             entry,
@@ -152,7 +155,15 @@ impl VulkanContext {
             command_pool,
             memory_properties,
             timestamp_period,
+            topology,
         }))
+    }
+
+    /// Returns true if the underlying Vulkan device is a discrete GPU with dedicated VRAM.
+    #[inline]
+    #[must_use]
+    pub fn is_dgpu(&self) -> bool {
+        self.topology.is_dgpu()
     }
 
     /// Finds a compatible memory type index matching the required memory type bits and properties.

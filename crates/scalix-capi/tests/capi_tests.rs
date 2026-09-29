@@ -295,3 +295,13 @@ fn test_c_api_dma_probe_functions() {
         }
     }
 }
+
+#[test]
+fn test_c_api_gpu_topology_probe() {
+    let kind = scalix_probe_gpu_device_kind();
+    let is_discrete = scalix_probe_gpu_is_discrete();
+
+    if is_discrete {
+        assert_eq!(kind, ScalixGpuDeviceKind::Discrete);
+    }
+}
