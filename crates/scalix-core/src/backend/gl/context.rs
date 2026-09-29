@@ -282,7 +282,9 @@ impl EglContext {
                 libc::dlsym(egl_lib, c"eglGetProcAddress".as_ptr() as *const c_char);
             let egl_get_proc_address: Option<EglGetProcAddressFn> =
                 if !egl_get_proc_address_ptr.is_null() {
-                    Some(std::mem::transmute(egl_get_proc_address_ptr))
+                    Some(std::mem::transmute::<*mut c_void, EglGetProcAddressFn>(
+                        egl_get_proc_address_ptr,
+                    ))
                 } else {
                     None
                 };
