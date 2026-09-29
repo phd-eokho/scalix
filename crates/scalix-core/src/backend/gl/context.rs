@@ -257,9 +257,17 @@ impl EglContext {
             }
 
             let gl_lib = libc::dlopen(
-                c"libGL.so.1".as_ptr() as *const c_char,
+                c"libOpenGL.so.0".as_ptr() as *const c_char,
                 libc::RTLD_LAZY | libc::RTLD_GLOBAL,
             );
+            let gl_lib = if gl_lib.is_null() {
+                libc::dlopen(
+                    c"libGL.so.1".as_ptr() as *const c_char,
+                    libc::RTLD_LAZY | libc::RTLD_GLOBAL,
+                )
+            } else {
+                gl_lib
+            };
             let gl_lib = if gl_lib.is_null() {
                 libc::dlopen(
                     c"libGLESv2.so.2".as_ptr() as *const c_char,
@@ -272,21 +280,39 @@ impl EglContext {
             type EglGetProcAddressFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
             let egl_get_proc_address_ptr =
                 libc::dlsym(egl_lib, c"eglGetProcAddress".as_ptr() as *const c_char);
-            if egl_get_proc_address_ptr.is_null() {
-                libc::dlclose(egl_lib);
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
-                }
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
-            let egl_get_proc_address: EglGetProcAddressFn =
-                std::mem::transmute(egl_get_proc_address_ptr);
+            let egl_get_proc_address: Option<EglGetProcAddressFn> =
+                if !egl_get_proc_address_ptr.is_null() {
+                    Some(std::mem::transmute(egl_get_proc_address_ptr))
+                } else {
+                    None
+                };
 
-            let load_symbol = |name: &str| -> *mut c_void {
+            // Core EGL 1.0-1.4 symbols MUST be loaded via dlsym to avoid libglvnd dummy GL dispatch stubs
+            let load_egl_core_symbol = |name: &str| -> *mut c_void {
                 let c_name = CString::new(name).unwrap();
-                let mut ptr = egl_get_proc_address(c_name.as_ptr());
+                libc::dlsym(egl_lib, c_name.as_ptr())
+            };
+
+            // EGL extension symbols (or EGL 1.5) can be resolved via dlsym or eglGetProcAddress
+            let load_egl_ext_symbol = |name: &str| -> *mut c_void {
+                let c_name = CString::new(name).unwrap();
+                let mut ptr = libc::dlsym(egl_lib, c_name.as_ptr());
+                if ptr.is_null() {
+                    if let Some(egpa) = egl_get_proc_address {
+                        ptr = egpa(c_name.as_ptr());
+                    }
+                }
+                ptr
+            };
+
+            // OpenGL client API symbols are resolved via eglGetProcAddress or libOpenGL/libGL/libGLESv2 dlsym
+            let load_gl_symbol = |name: &str| -> *mut c_void {
+                let c_name = CString::new(name).unwrap();
+                let mut ptr = if let Some(egpa) = egl_get_proc_address {
+                    egpa(c_name.as_ptr())
+                } else {
+                    std::ptr::null_mut()
+                };
                 if ptr.is_null() && !gl_lib.is_null() {
                     ptr = libc::dlsym(gl_lib, c_name.as_ptr());
                 }
@@ -323,7 +349,7 @@ impl EglContext {
                 unsafe extern "C" fn(EGLDisplay, EGLSurface, EGLSurface, EGLContext) -> EGLBoolean;
 
             let egl_get_display: Option<EglGetDisplayFn> = {
-                let ptr = load_symbol("eglGetDisplay");
+                let ptr = load_egl_core_symbol("eglGetDisplay");
                 if !ptr.is_null() {
                     Some(std::mem::transmute::<*mut c_void, EglGetDisplayFn>(ptr))
                 } else {
@@ -331,7 +357,7 @@ impl EglContext {
                 }
             };
             let egl_get_platform_display: Option<EglGetPlatformDisplayFn> = {
-                let ptr = load_symbol("eglGetPlatformDisplay");
+                let ptr = load_egl_ext_symbol("eglGetPlatformDisplay");
                 if !ptr.is_null() {
                     Some(std::mem::transmute::<*mut c_void, EglGetPlatformDisplayFn>(
                         ptr,
@@ -341,7 +367,7 @@ impl EglContext {
                 }
             };
             let egl_get_platform_display_ext: Option<EglGetPlatformDisplayExtFn> = {
-                let ptr = load_symbol("eglGetPlatformDisplayEXT");
+                let ptr = load_egl_ext_symbol("eglGetPlatformDisplayEXT");
                 if !ptr.is_null() {
                     Some(std::mem::transmute::<*mut c_void, EglGetPlatformDisplayExtFn>(ptr))
                 } else {
@@ -349,7 +375,7 @@ impl EglContext {
                 }
             };
             let egl_query_devices_ext: Option<EglQueryDevicesExtFn> = {
-                let ptr = load_symbol("eglQueryDevicesEXT");
+                let ptr = load_egl_ext_symbol("eglQueryDevicesEXT");
                 if !ptr.is_null() {
                     Some(std::mem::transmute::<*mut c_void, EglQueryDevicesExtFn>(
                         ptr,
@@ -359,22 +385,73 @@ impl EglContext {
                 }
             };
 
+            let egl_init_ptr = load_egl_core_symbol("eglInitialize");
+            if egl_init_ptr.is_null() {
+                if !gl_lib.is_null() {
+                    libc::dlclose(gl_lib);
+                }
+                libc::dlclose(egl_lib);
+                return Err(ScalixError::BackendUnavailable(
+                    crate::types::BackendType::OpenGL,
+                ));
+            }
             let egl_initialize: EglInitializeFn =
-                std::mem::transmute::<*mut c_void, EglInitializeFn>(load_symbol("eglInitialize"));
+                std::mem::transmute::<*mut c_void, EglInitializeFn>(egl_init_ptr);
+
+            let egl_bind_api_ptr = load_egl_core_symbol("eglBindAPI");
+            if egl_bind_api_ptr.is_null() {
+                if !gl_lib.is_null() {
+                    libc::dlclose(gl_lib);
+                }
+                libc::dlclose(egl_lib);
+                return Err(ScalixError::BackendUnavailable(
+                    crate::types::BackendType::OpenGL,
+                ));
+            }
             let egl_bind_api: EglBindApiFn =
-                std::mem::transmute::<*mut c_void, EglBindApiFn>(load_symbol("eglBindAPI"));
+                std::mem::transmute::<*mut c_void, EglBindApiFn>(egl_bind_api_ptr);
+
+            let egl_choose_config_ptr = load_egl_core_symbol("eglChooseConfig");
+            if egl_choose_config_ptr.is_null() {
+                if !gl_lib.is_null() {
+                    libc::dlclose(gl_lib);
+                }
+                libc::dlclose(egl_lib);
+                return Err(ScalixError::BackendUnavailable(
+                    crate::types::BackendType::OpenGL,
+                ));
+            }
             let egl_choose_config: EglChooseConfigFn =
-                std::mem::transmute::<*mut c_void, EglChooseConfigFn>(load_symbol(
-                    "eglChooseConfig",
+                std::mem::transmute::<*mut c_void, EglChooseConfigFn>(egl_choose_config_ptr);
+
+            let egl_create_context_ptr = load_egl_core_symbol("eglCreateContext");
+            if egl_create_context_ptr.is_null() {
+                if !gl_lib.is_null() {
+                    libc::dlclose(gl_lib);
+                }
+                libc::dlclose(egl_lib);
+                return Err(ScalixError::BackendUnavailable(
+                    crate::types::BackendType::OpenGL,
                 ));
+            }
             let egl_create_context: EglCreateContextFn =
-                std::mem::transmute::<*mut c_void, EglCreateContextFn>(load_symbol(
-                    "eglCreateContext",
+                std::mem::transmute::<*mut c_void, EglCreateContextFn>(egl_create_context_ptr);
+
+            let egl_make_current_ptr = load_egl_core_symbol("eglMakeCurrent");
+            if egl_make_current_ptr.is_null() {
+                if !gl_lib.is_null() {
+                    libc::dlclose(gl_lib);
+                }
+                libc::dlclose(egl_lib);
+                return Err(ScalixError::BackendUnavailable(
+                    crate::types::BackendType::OpenGL,
                 ));
+            }
             let egl_make_current: EglMakeCurrentFn =
-                std::mem::transmute::<*mut c_void, EglMakeCurrentFn>(load_symbol("eglMakeCurrent"));
+                std::mem::transmute::<*mut c_void, EglMakeCurrentFn>(egl_make_current_ptr);
+
             let egl_destroy_context: Option<EglDestroyContextFn> = {
-                let ptr = load_symbol("eglDestroyContext");
+                let ptr = load_egl_core_symbol("eglDestroyContext");
                 if !ptr.is_null() {
                     Some(std::mem::transmute::<*mut c_void, EglDestroyContextFn>(ptr))
                 } else {
@@ -382,7 +459,7 @@ impl EglContext {
                 }
             };
             let egl_terminate: Option<EglTerminateFn> = {
-                let ptr = load_symbol("eglTerminate");
+                let ptr = load_egl_core_symbol("eglTerminate");
                 if !ptr.is_null() {
                     Some(std::mem::transmute::<*mut c_void, EglTerminateFn>(ptr))
                 } else {
@@ -411,43 +488,46 @@ impl EglContext {
             let mut major: EGLint = 0;
             let mut minor: EGLint = 0;
 
-            // Strategy 1: Surfaceless MESA (Headless / CI / Servers)
-            let surfaceless_display =
-                get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY);
-            if surfaceless_display != EGL_NO_DISPLAY
-                && egl_initialize(surfaceless_display, &mut major, &mut minor) == EGL_TRUE
-            {
-                display = surfaceless_display;
-            }
-
-            // Strategy 2: EGL Device EXT (Hardware / Software GPUs directly)
-            if display == EGL_NO_DISPLAY {
-                if let Some(query_devices) = egl_query_devices_ext {
-                    let mut devices: [EGLDeviceEXT; 8] = [std::ptr::null_mut(); 8];
-                    let mut num_devices: EGLint = 0;
-                    if query_devices(8, devices.as_mut_ptr(), &mut num_devices) == EGL_TRUE
-                        && num_devices > 0
-                    {
-                        for &device in devices.iter().take(num_devices as usize) {
-                            let dev_display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
-                            if dev_display != EGL_NO_DISPLAY
-                                && egl_initialize(dev_display, &mut major, &mut minor) == EGL_TRUE
-                            {
-                                display = dev_display;
-                                break;
-                            }
+            // Strategy 1: EGL Device EXT (Priority 1: Native Discrete GPUs / NVIDIA / AMD / Intel directly)
+            if let Some(query_devices) = egl_query_devices_ext {
+                let mut devices: [EGLDeviceEXT; 8] = [std::ptr::null_mut(); 8];
+                let mut num_devices: EGLint = 0;
+                if query_devices(8, devices.as_mut_ptr(), &mut num_devices) == EGL_TRUE
+                    && num_devices > 0
+                {
+                    for &device in devices.iter().take(num_devices as usize) {
+                        let dev_display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
+                        if dev_display != EGL_NO_DISPLAY
+                            && egl_initialize(dev_display, &mut major, &mut minor) == EGL_TRUE
+                        {
+                            display = dev_display;
+                            log::debug!("Acquired EGL display via EGL_PLATFORM_DEVICE_EXT");
+                            break;
                         }
                     }
                 }
             }
 
-            // Strategy 3: GBM Platform (Headless DRM / Linux Render Nodes)
+            // Strategy 2: GBM Platform (Headless DRM / Linux Render Nodes)
             if display == EGL_NO_DISPLAY {
                 let gbm_display = get_platform_display(EGL_PLATFORM_GBM_KHR, EGL_DEFAULT_DISPLAY);
                 if gbm_display != EGL_NO_DISPLAY
                     && egl_initialize(gbm_display, &mut major, &mut minor) == EGL_TRUE
                 {
                     display = gbm_display;
+                    log::debug!("Acquired EGL display via EGL_PLATFORM_GBM_KHR");
+                }
+            }
+
+            // Strategy 3: Surfaceless MESA (Headless Fallback / CI / VM Software Rasterizers)
+            if display == EGL_NO_DISPLAY {
+                let surfaceless_display =
+                    get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY);
+                if surfaceless_display != EGL_NO_DISPLAY
+                    && egl_initialize(surfaceless_display, &mut major, &mut minor) == EGL_TRUE
+                {
+                    display = surfaceless_display;
+                    log::debug!("Acquired EGL display via EGL_PLATFORM_SURFACELESS_MESA");
                 }
             }
 
@@ -459,6 +539,7 @@ impl EglContext {
                         && egl_initialize(def_display, &mut major, &mut minor) == EGL_TRUE
                     {
                         display = def_display;
+                        log::debug!("Acquired EGL display via eglGetDisplay default");
                     }
                 }
             }
@@ -598,12 +679,24 @@ impl EglContext {
             }
 
             if egl_make_current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context) == EGL_FALSE {
-                log::warn!("eglMakeCurrent surfaceless returned false");
+                if let Some(f) = egl_destroy_context {
+                    let _ = f(display, context);
+                }
+                if let Some(f) = egl_terminate {
+                    let _ = f(display);
+                }
+                if !gl_lib.is_null() {
+                    libc::dlclose(gl_lib);
+                }
+                libc::dlclose(egl_lib);
+                return Err(ScalixError::ExecutionFailed(
+                    "eglMakeCurrent failed during headless OpenGL initialization".to_string(),
+                ));
             }
 
             macro_rules! get_gl_fn {
                 ($name:expr, $t:ty) => {{
-                    let ptr = load_symbol($name);
+                    let ptr = load_gl_symbol($name);
                     if ptr.is_null() {
                         return Err(ScalixError::ExecutionFailed(format!(
                             "Missing GL symbol: {}",
@@ -616,7 +709,7 @@ impl EglContext {
 
             macro_rules! get_optional_gl_fn {
                 ($name:expr, $t:ty) => {{
-                    let ptr = load_symbol($name);
+                    let ptr = load_gl_symbol($name);
                     if ptr.is_null() {
                         None
                     } else {
@@ -839,8 +932,13 @@ impl EglContext {
             .lock()
             .map_err(|_| ScalixError::ExecutionFailed("EGL context mutex poisoned".to_string()))?;
         unsafe {
-            let _ =
+            let res =
                 (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, self.context);
+            if res == EGL_FALSE {
+                return Err(ScalixError::ExecutionFailed(
+                    "eglMakeCurrent failed to bind EGL context to active thread".to_string(),
+                ));
+            }
         }
         Ok(EglContextGuard {
             ctx: self,
