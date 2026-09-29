@@ -293,7 +293,11 @@ fn test_dma_buffer_lifecycle_and_probing() {
             assert_eq!(desc.height, height);
             assert_eq!(desc.data[0], 0xDE);
             assert_eq!(desc.data[1], 0xAD);
-            assert!(desc.dma_buf_fd.is_some());
+            if dma_buf.allocator_type() != scalix_core::DmaAllocatorType::HostAligned {
+                assert!(desc.dma_buf_fd.is_some());
+            } else {
+                assert!(desc.dma_buf_fd.is_none());
+            }
             assert_eq!(dma_buf.dimensions(), ImageDimensions::new(width, height));
             assert_eq!(dma_buf.width(), width);
             assert_eq!(dma_buf.height(), height);
@@ -1322,4 +1326,25 @@ fn test_dgpu_writeback_memory_validation() {
 
     // Validating device-local non-host-visible memory on dGPU (triggers performance warning)
     dgpu_info.validate_writeback_memory(true, false);
+}
+
+#[test]
+fn test_auto_allocator_selection_with_topology() {
+    use scalix_core::{DmaAllocatorType, DmaBuffer, GpuTopology, PixelFormat};
+
+    let topology = GpuTopology::probe();
+    let probed_alloc = DmaBuffer::probe_available_allocator();
+
+    if topology.is_dgpu() {
+        // On a discrete GPU, Auto probe must NEVER return DRM Dumb to avoid PCIe read latency stalls
+        assert_ne!(probed_alloc, DmaAllocatorType::DrmDumb);
+    }
+
+    // Allocation in Auto mode should always succeed cleanly
+    let buf_res = DmaBuffer::allocate(16, 16, PixelFormat::Rgba8888);
+    assert!(buf_res.is_ok());
+    let buf = buf_res.unwrap();
+    if topology.is_dgpu() {
+        assert_ne!(buf.allocator_type(), DmaAllocatorType::DrmDumb);
+    }
 }
