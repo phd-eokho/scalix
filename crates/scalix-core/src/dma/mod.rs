@@ -354,86 +354,26 @@ impl DmaBuffer {
             });
         }
 
-        match alloc_type {
-            DmaAllocatorType::Auto => {
-                #[cfg(target_os = "linux")]
-                {
-                    let heap_allocator = linux_dma_heap::LinuxDmaHeapAllocator;
-                    match heap_allocator.allocate(dimensions, format) {
-                        Ok(alloc) => Ok(Self::from_allocation(
-                            alloc,
-                            dimensions,
-                            format,
-                            DmaAllocatorType::DmaHeap,
-                        )),
-                        Err(heap_err) => {
-                            log::debug!(
-                                "DMA-Heap allocation skipped: {heap_err}, trying DRM Dumb..."
-                            );
-                            let drm_allocator = linux_drm::LinuxDrmAllocator;
-                            match drm_allocator.allocate(dimensions, format) {
-                                Ok(alloc) => Ok(Self::from_allocation(
-                                    alloc,
-                                    dimensions,
-                                    format,
-                                    DmaAllocatorType::DrmDumb,
-                                )),
-                                Err(drm_err) => {
-                                    Err(ScalixError::DmaUnavailable(format!(
-                                        "All Linux DMA allocators failed. DMA-Heap: [{heap_err}], DRM: [{drm_err}]"
-                                    )))
-                                }
-                            }
-                        }
-                    }
+        // Early decision for Auto: probe best hardware allocator, with graceful fallback to HostAligned
+        if alloc_type == DmaAllocatorType::Auto {
+            let probed = Self::probe_available_allocator();
+            if probed != DmaAllocatorType::Auto && probed != DmaAllocatorType::HostAligned {
+                if let Ok(buf) = Self::allocate_dimensions_with_type(dimensions, format, probed) {
+                    return Ok(buf);
                 }
-                #[cfg(all(
-                    target_os = "android",
-                    any(target_arch = "aarch64", target_arch = "arm")
-                ))]
-                {
-                    // 1. Try AHardwareBuffer (NDK mode)
-                    let ahb_allocator = android_ahb::AndroidAhbAllocator;
-                    match ahb_allocator.allocate(dimensions, format) {
-                        Ok(alloc) => Ok(Self::from_allocation(
-                            alloc,
-                            dimensions,
-                            format,
-                            DmaAllocatorType::AndroidAhb,
-                        )),
-                        Err(ahb_err) => {
-                            log::debug!("AHB allocation failed: {ahb_err}, probing DMA-Heap for Vendor mode...");
-                            // 2. Try DMA-Heap (/dev/dma_heap/*) for pure Vendor mode
-                            let heap_allocator = linux_dma_heap::LinuxDmaHeapAllocator;
-                            match heap_allocator.allocate(dimensions, format) {
-                                Ok(alloc) => Ok(Self::from_allocation(
-                                    alloc,
-                                    dimensions,
-                                    format,
-                                    DmaAllocatorType::DmaHeap,
-                                )),
-                                Err(heap_err) => {
-                                    Err(ScalixError::DmaUnavailable(format!(
-                                        "All Android DMA allocators failed. AHB: [{ahb_err}], DMA-Heap: [{heap_err}]"
-                                    )))
-                                }
-                            }
-                        }
-                    }
-                }
-                #[cfg(not(any(
-                    target_os = "linux",
-                    all(
-                        target_os = "android",
-                        any(target_arch = "aarch64", target_arch = "arm")
-                    )
-                )))]
-                {
-                    Err(ScalixError::DmaUnavailable(
-                        "Hardware DMA buffer allocation is only supported on Linux (kernel 5.6+) and Android (API 26+)".to_string(),
-                    ))
-                }
+                log::debug!(
+                    "Hardware DMA allocator '{probed:?}' failed, falling back to HostAligned"
+                );
             }
+            return Self::allocate_dimensions_with_type(
+                dimensions,
+                format,
+                DmaAllocatorType::HostAligned,
+            );
+        }
+
+        match alloc_type {
+            DmaAllocatorType::Auto => unreachable!(),
             DmaAllocatorType::DmaHeap => {
                 #[cfg(any(target_os = "linux", target_os = "android"))]
                 {
@@ -571,7 +511,10 @@ impl DmaBuffer {
             if linux_dma_heap::LinuxDmaHeapAllocator::is_available() {
                 return DmaAllocatorType::DmaHeap;
             }
-            if linux_drm::LinuxDrmAllocator::is_available() {
+            // For DRM Dumb buffers: Only select DRM Dumb if the system has an integrated/SoC GPU (UMA).
+            // On discrete GPUs (PCIe), DRM Dumb allocates un-cached VRAM/GTT, causing severe PCIe CPU read stalls.
+            let topology = crate::topology::GpuTopology::probe();
+            if topology.is_integrated() && linux_drm::LinuxDrmAllocator::is_available() {
                 return DmaAllocatorType::DrmDumb;
             }
         }

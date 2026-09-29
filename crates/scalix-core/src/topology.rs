@@ -196,23 +196,24 @@ impl GpuTopology {
             let is_platform = subsystem.contains("platform");
             let is_pci = subsystem.contains("pci");
 
-            let device_kind = if is_platform {
-                // Platform drivers (v3d, panfrost, mali, msm) are SoC/UMA
-                GpuDeviceKind::Integrated
-            } else if is_pci {
-                match vendor_id {
-                    Some(pci_vendors::NVIDIA) | Some(pci_vendors::AMD) => GpuDeviceKind::Discrete,
-                    Some(pci_vendors::INTEL)
-                    | Some(pci_vendors::ARM)
-                    | Some(pci_vendors::QUALCOMM)
-                    | Some(pci_vendors::APPLE) => GpuDeviceKind::Integrated,
-                    _ => match driver.as_str() {
-                        "nouveau" | "nvidia" | "amdgpu" | "radeon" => GpuDeviceKind::Discrete,
-                        _ => GpuDeviceKind::Unknown,
-                    },
+            let device_kind = match (is_platform, is_pci, vendor_id, driver.as_str()) {
+                (true, _, _, _) => GpuDeviceKind::Integrated,
+                (_, true, Some(pci_vendors::NVIDIA | pci_vendors::AMD), _) => {
+                    GpuDeviceKind::Discrete
                 }
-            } else {
-                GpuDeviceKind::Unknown
+                (
+                    _,
+                    true,
+                    Some(
+                        pci_vendors::INTEL
+                        | pci_vendors::ARM
+                        | pci_vendors::QUALCOMM
+                        | pci_vendors::APPLE,
+                    ),
+                    _,
+                ) => GpuDeviceKind::Integrated,
+                (_, true, _, "nouveau" | "nvidia" | "amdgpu" | "radeon") => GpuDeviceKind::Discrete,
+                _ => GpuDeviceKind::Unknown,
             };
 
             let device_name = format!("{file_name} ({driver})");
