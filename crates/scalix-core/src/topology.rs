@@ -122,7 +122,10 @@ impl GpuTopology {
     }
 
     /// Probes GPU topology from an existing Vulkan instance and physical device.
-    pub fn probe_from_vulkan(instance: &ash::Instance, pdev: vk::PhysicalDevice) -> GpuTopologyInfo {
+    pub fn probe_from_vulkan(
+        instance: &ash::Instance,
+        pdev: vk::PhysicalDevice,
+    ) -> GpuTopologyInfo {
         let props = unsafe { instance.get_physical_device_properties(pdev) };
         let device_kind = match props.device_type {
             vk::PhysicalDeviceType::DISCRETE_GPU => GpuDeviceKind::Discrete,
@@ -166,7 +169,8 @@ impl GpuTopology {
                 None => continue,
             };
 
-            let sysfs_dev = std::path::PathBuf::from(format!("/sys/class/drm/{}/device", file_name));
+            let sysfs_dev =
+                std::path::PathBuf::from(format!("/sys/class/drm/{}/device", file_name));
             if !sysfs_dev.exists() {
                 continue;
             }

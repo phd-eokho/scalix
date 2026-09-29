@@ -24,7 +24,7 @@ pub use buffer::OwnedImage;
 pub use dma::{DmaAllocation, DmaAllocator, DmaAllocatorType, DmaBuffer, DmaSyncFlags};
 pub use engine::{Engine, EngineConfig};
 pub use profiler::{ActiveProfiler, NoopProfiler, ProfileMetrics, Profiler};
-pub use topology::{GpuTopology, pci_vendors};
+pub use topology::{pci_vendors, GpuTopology};
 pub use types::{
     AlignedBuffer, BackendOptions, BackendType, FilterMode, GpuDeviceKind, GpuTopologyInfo,
     ImageDesc, ImageDescMut, ImageDimensions, ImageGeometry, PixelFormat, ResizeOptions, Result,
