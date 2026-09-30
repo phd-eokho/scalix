@@ -48,6 +48,44 @@ pub const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
 pub const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
 pub const EGL_PLATFORM_ANDROID_KHR: u32 = 0x3141;
 
+pub const EGL_WIDTH: EGLint = 0x3057;
+pub const EGL_HEIGHT: EGLint = 0x3056;
+
+pub fn format_egl_error(code: EGLint) -> &'static str {
+    match code {
+        0x3000 => "EGL_SUCCESS (0x3000)",
+        0x3001 => "EGL_NOT_INITIALIZED (0x3001)",
+        0x3002 => "EGL_BAD_ACCESS (0x3002)",
+        0x3003 => "EGL_BAD_ALLOC (0x3003)",
+        0x3004 => "EGL_BAD_ATTRIBUTE (0x3004)",
+        0x3005 => "EGL_BAD_CONFIG (0x3005)",
+        0x3006 => "EGL_BAD_CONTEXT (0x3006)",
+        0x3007 => "EGL_BAD_CURRENT_SURFACE (0x3007)",
+        0x3008 => "EGL_BAD_DISPLAY (0x3008)",
+        0x3009 => "EGL_BAD_MATCH (0x3009)",
+        0x300A => "EGL_BAD_NATIVE_PIXMAP (0x300A)",
+        0x300B => "EGL_BAD_NATIVE_WINDOW (0x300B)",
+        0x300C => "EGL_BAD_PARAMETER (0x300C)",
+        0x300D => "EGL_BAD_SURFACE (0x300D)",
+        0x300E => "EGL_CONTEXT_LOST (0x300E)",
+        _ => "EGL_UNKNOWN_ERROR",
+    }
+}
+
+pub fn format_gl_error(code: u32) -> &'static str {
+    match code {
+        0 => "GL_NO_ERROR (0)",
+        0x0500 => "GL_INVALID_ENUM (0x0500)",
+        0x0501 => "GL_INVALID_VALUE (0x0501)",
+        0x0502 => "GL_INVALID_OPERATION (0x0502)",
+        0x0503 => "GL_STACK_OVERFLOW (0x0503)",
+        0x0504 => "GL_STACK_UNDERFLOW (0x0504)",
+        0x0505 => "GL_OUT_OF_MEMORY (0x0505)",
+        0x0506 => "GL_INVALID_FRAMEBUFFER_OPERATION (0x0506)",
+        _ => "GL_UNKNOWN_ERROR",
+    }
+}
+
 pub type EGLenum = u32;
 pub type EGLAttrib = isize;
 pub type EGLDeviceEXT = *mut c_void;
@@ -190,11 +228,18 @@ pub struct GlFunctions {
     // Buffer Mapping
     pub glMapBufferRange: Option<unsafe extern "C" fn(u32, isize, isize, u32) -> *mut c_void>,
     pub glUnmapBuffer: Option<unsafe extern "C" fn(u32) -> u8>,
+
+    // Error Reporting
+    pub glGetError: Option<unsafe extern "C" fn() -> u32>,
 }
 
 pub type EglMakeCurrentFn =
     unsafe extern "C" fn(EGLDisplay, EGLSurface, EGLSurface, EGLContext) -> EGLBoolean;
 pub type EglDestroyContextFn = unsafe extern "C" fn(EGLDisplay, EGLContext) -> EGLBoolean;
+pub type EglCreatePbufferSurfaceFn =
+    unsafe extern "C" fn(EGLDisplay, EGLConfig, *const EGLint) -> EGLSurface;
+pub type EglDestroySurfaceFn = unsafe extern "C" fn(EGLDisplay, EGLSurface) -> EGLBoolean;
+pub type EglGetErrorFn = unsafe extern "C" fn() -> EGLint;
 pub type EglTerminateFn = unsafe extern "C" fn(EGLDisplay) -> EGLBoolean;
 
 pub struct EglContext {
@@ -202,8 +247,11 @@ pub struct EglContext {
     gl_lib: *mut c_void,
     display: EGLDisplay,
     context: EGLContext,
+    pub surface: EGLSurface,
     egl_make_current: EglMakeCurrentFn,
     egl_destroy_context: Option<EglDestroyContextFn>,
+    egl_destroy_surface: Option<EglDestroySurfaceFn>,
+    egl_get_error: Option<EglGetErrorFn>,
     egl_terminate: Option<EglTerminateFn>,
     pub gl: GlFunctions,
     pub is_compute_supported: bool,
@@ -460,6 +508,30 @@ impl EglContext {
                     None
                 }
             };
+            let egl_create_pbuffer_surface: Option<EglCreatePbufferSurfaceFn> = {
+                let ptr = load_egl_core_symbol("eglCreatePbufferSurface");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglCreatePbufferSurfaceFn>(ptr))
+                } else {
+                    None
+                }
+            };
+            let egl_destroy_surface: Option<EglDestroySurfaceFn> = {
+                let ptr = load_egl_core_symbol("eglDestroySurface");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglDestroySurfaceFn>(ptr))
+                } else {
+                    None
+                }
+            };
+            let egl_get_error: Option<EglGetErrorFn> = {
+                let ptr = load_egl_core_symbol("eglGetError");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglGetErrorFn>(ptr))
+                } else {
+                    None
+                }
+            };
             let egl_terminate: Option<EglTerminateFn> = {
                 let ptr = load_egl_core_symbol("eglTerminate");
                 if !ptr.is_null() {
@@ -680,21 +752,44 @@ impl EglContext {
                 ));
             }
 
-            if egl_make_current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context) == EGL_FALSE {
-                if let Some(f) = egl_destroy_context {
-                    let _ = f(display, context);
-                }
-                if let Some(f) = egl_terminate {
-                    let _ = f(display);
-                }
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
-                }
-                libc::dlclose(egl_lib);
-                return Err(ScalixError::ExecutionFailed(
-                    "eglMakeCurrent failed during headless OpenGL initialization".to_string(),
-                ));
-            }
+            // Bind headless EGL context: prefer surfaceless (EGL_NO_SURFACE), fall back to 1x1 offscreen PBuffer
+            let surface =
+                if egl_make_current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context) == EGL_TRUE {
+                    EGL_NO_SURFACE
+                } else {
+                    let pbuffer_attribs = [EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE];
+                    let pbuffer = egl_create_pbuffer_surface
+                        .map(|create| create(display, config, pbuffer_attribs.as_ptr()))
+                        .unwrap_or(EGL_NO_SURFACE);
+
+                    if pbuffer != EGL_NO_SURFACE
+                        && egl_make_current(display, pbuffer, pbuffer, context) == EGL_TRUE
+                    {
+                        log::debug!("Bound headless EGL context via 1x1 PBuffer fallback");
+                        pbuffer
+                    } else {
+                        let err_code = egl_get_error.map_or(0, |f| f());
+                        if pbuffer != EGL_NO_SURFACE {
+                            if let Some(f) = egl_destroy_surface {
+                                let _ = f(display, pbuffer);
+                            }
+                        }
+                        if let Some(f) = egl_destroy_context {
+                            let _ = f(display, context);
+                        }
+                        if let Some(f) = egl_terminate {
+                            let _ = f(display);
+                        }
+                        if !gl_lib.is_null() {
+                            libc::dlclose(gl_lib);
+                        }
+                        libc::dlclose(egl_lib);
+                        return Err(ScalixError::ExecutionFailed(format!(
+                            "eglMakeCurrent failed during headless OpenGL initialization: {}",
+                            format_egl_error(err_code)
+                        )));
+                    }
+                };
 
             macro_rules! get_gl_fn {
                 ($name:expr, $t:ty) => {{
@@ -870,6 +965,7 @@ impl EglContext {
                     "glUnmapBuffer",
                     unsafe extern "C" fn(u32) -> u8
                 ),
+                glGetError: get_optional_gl_fn!("glGetError", unsafe extern "C" fn() -> u32),
             };
 
             let is_compute_supported =
@@ -886,10 +982,11 @@ impl EglContext {
             let is_gles = version_str.contains("OpenGL ES") || version_str.contains("ES");
 
             log::debug!(
-                "EGL/GL Context Initialized: Version '{}', is_gles = {}, compute = {}",
+                "EGL/GL Context Initialized: Version '{}', is_gles = {}, compute = {}, offscreen_pbuffer = {}",
                 version_str,
                 is_gles,
-                is_compute_supported
+                is_compute_supported,
+                surface != EGL_NO_SURFACE
             );
 
             // Unbind from creation thread so worker threads can bind it
@@ -900,8 +997,11 @@ impl EglContext {
                 gl_lib,
                 display,
                 context,
+                surface,
                 egl_make_current,
                 egl_destroy_context,
+                egl_destroy_surface,
+                egl_get_error,
                 egl_terminate,
                 gl,
                 is_compute_supported,
@@ -935,11 +1035,13 @@ impl EglContext {
             .map_err(|_| ScalixError::ExecutionFailed("EGL context mutex poisoned".to_string()))?;
         unsafe {
             let res =
-                (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, self.context);
+                (self.egl_make_current)(self.display, self.surface, self.surface, self.context);
             if res == EGL_FALSE {
-                return Err(ScalixError::ExecutionFailed(
-                    "eglMakeCurrent failed to bind EGL context to active thread".to_string(),
-                ));
+                let err_code = self.egl_get_error.map_or(0, |f| f());
+                return Err(ScalixError::ExecutionFailed(format!(
+                    "eglMakeCurrent failed to bind EGL context to active thread: {}",
+                    format_egl_error(err_code)
+                )));
             }
         }
         Ok(EglContextGuard {
@@ -958,6 +1060,12 @@ impl Drop for EglContext {
                 EGL_NO_SURFACE,
                 EGL_NO_CONTEXT,
             );
+            if self.surface != EGL_NO_SURFACE {
+                if let Some(f) = self.egl_destroy_surface {
+                    let _ = f(self.display, self.surface);
+                }
+                self.surface = EGL_NO_SURFACE;
+            }
             if let Some(f) = self.egl_destroy_context {
                 let _ = f(self.display, self.context);
             }
