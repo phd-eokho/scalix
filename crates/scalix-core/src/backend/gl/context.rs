@@ -563,11 +563,10 @@ impl EglContext {
                     EGL_NO_DISPLAY
                 };
 
-            let mut candidate_displays: Vec<(
-                EGLDisplay,
-                &'static str,
-                Option<(*mut c_void, i32)>,
-            )> = Vec::new();
+            type GbmHandle = (*mut c_void, i32);
+            type CandidateDisplay = (EGLDisplay, &'static str, Option<GbmHandle>);
+
+            let mut candidate_displays: Vec<CandidateDisplay> = Vec::new();
 
             // Strategy 1: EGL Device EXT (Native Discrete GPUs / NVIDIA / AMD / Intel directly)
             if let Some(query_devices) = egl_query_devices_ext {
@@ -579,7 +578,11 @@ impl EglContext {
                     for &device in devices.iter().take(num_devices as usize) {
                         let dev_display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
                         if dev_display != EGL_NO_DISPLAY {
-                            candidate_displays.push((dev_display, "EGL_PLATFORM_DEVICE_EXT", None));
+                            candidate_displays.push((
+                                dev_display,
+                                "EGL_PLATFORM_DEVICE_EXT",
+                                None,
+                            ));
                         }
                     }
                 }
@@ -602,7 +605,7 @@ impl EglContext {
             let gbm_destroy_device: Option<GbmDestroyDeviceFn> = if !gbm_lib.is_null() {
                 let ptr = libc::dlsym(gbm_lib, c"gbm_device_destroy".as_ptr() as *const c_char);
                 if !ptr.is_null() {
-                    Some(std::mem::transmute(ptr))
+                    Some(std::mem::transmute::<*mut c_void, GbmDestroyDeviceFn>(ptr))
                 } else {
                     None
                 }
@@ -615,7 +618,8 @@ impl EglContext {
                 let create_ptr =
                     libc::dlsym(gbm_lib, c"gbm_create_device".as_ptr() as *const c_char);
                 if !create_ptr.is_null() {
-                    let gbm_create_device: GbmCreateDeviceFn = std::mem::transmute(create_ptr);
+                    let gbm_create_device: GbmCreateDeviceFn =
+                        std::mem::transmute::<*mut c_void, GbmCreateDeviceFn>(create_ptr);
                     for &path in crate::dma::linux_drm::DRM_CANDIDATE_PATHS {
                         let c_path = CString::new(path).unwrap();
                         let fd = libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
