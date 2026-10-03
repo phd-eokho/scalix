@@ -578,11 +578,7 @@ impl EglContext {
                     for &device in devices.iter().take(num_devices as usize) {
                         let dev_display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
                         if dev_display != EGL_NO_DISPLAY {
-                            candidate_displays.push((
-                                dev_display,
-                                "EGL_PLATFORM_DEVICE_EXT",
-                                None,
-                            ));
+                            candidate_displays.push((dev_display, "EGL_PLATFORM_DEVICE_EXT", None));
                         }
                     }
                 }
