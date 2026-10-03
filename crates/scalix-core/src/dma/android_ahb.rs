@@ -4,11 +4,7 @@
     target_os = "android",
     any(target_arch = "aarch64", target_arch = "arm")
 ))]
-use {
-    crate::types::{ImageDimensions, PixelFormat, Result, ScalixError},
-    std::os::fd::{FromRawFd, OwnedFd, RawFd},
-    std::ptr::NonNull,
-};
+use crate::types::{ImageDimensions, PixelFormat, Result, ScalixError};
 
 #[cfg(all(
     target_os = "android",

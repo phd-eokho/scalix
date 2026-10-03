@@ -241,10 +241,15 @@ pub type EglCreatePbufferSurfaceFn =
 pub type EglDestroySurfaceFn = unsafe extern "C" fn(EGLDisplay, EGLSurface) -> EGLBoolean;
 pub type EglGetErrorFn = unsafe extern "C" fn() -> EGLint;
 pub type EglTerminateFn = unsafe extern "C" fn(EGLDisplay) -> EGLBoolean;
+pub type GbmDestroyDeviceFn = unsafe extern "C" fn(*mut c_void);
 
 pub struct EglContext {
     egl_lib: *mut c_void,
     gl_lib: *mut c_void,
+    gbm_lib: *mut c_void,
+    gbm_dev: *mut c_void,
+    gbm_fd: i32,
+    gbm_destroy_device: Option<GbmDestroyDeviceFn>,
     display: EGLDisplay,
     context: EGLContext,
     pub surface: EGLSurface,
@@ -558,238 +563,342 @@ impl EglContext {
                     EGL_NO_DISPLAY
                 };
 
-            let mut display = EGL_NO_DISPLAY;
-            let mut major: EGLint = 0;
-            let mut minor: EGLint = 0;
+            type GbmHandle = (*mut c_void, i32);
+            type CandidateDisplay = (EGLDisplay, &'static str, Option<GbmHandle>);
 
-            // Strategy 1: EGL Device EXT (Priority 1: Native Discrete GPUs / NVIDIA / AMD / Intel directly)
+            let mut candidate_displays: Vec<CandidateDisplay> = Vec::new();
+
+            // Strategy 1: EGL Device EXT (Native Discrete GPUs / NVIDIA / AMD / Intel directly)
             if let Some(query_devices) = egl_query_devices_ext {
-                let mut devices: [EGLDeviceEXT; 8] = [std::ptr::null_mut(); 8];
+                let mut devices: [EGLDeviceEXT; 16] = [std::ptr::null_mut(); 16];
                 let mut num_devices: EGLint = 0;
-                if query_devices(8, devices.as_mut_ptr(), &mut num_devices) == EGL_TRUE
+                if query_devices(16, devices.as_mut_ptr(), &mut num_devices) == EGL_TRUE
                     && num_devices > 0
                 {
                     for &device in devices.iter().take(num_devices as usize) {
                         let dev_display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
-                        if dev_display != EGL_NO_DISPLAY
-                            && egl_initialize(dev_display, &mut major, &mut minor) == EGL_TRUE
-                        {
-                            display = dev_display;
-                            log::debug!("Acquired EGL display via EGL_PLATFORM_DEVICE_EXT");
-                            break;
+                        if dev_display != EGL_NO_DISPLAY {
+                            candidate_displays.push((dev_display, "EGL_PLATFORM_DEVICE_EXT", None));
                         }
                     }
                 }
             }
 
-            // Strategy 2: GBM Platform (Headless DRM / Linux Render Nodes)
-            if display == EGL_NO_DISPLAY {
-                let gbm_display = get_platform_display(EGL_PLATFORM_GBM_KHR, EGL_DEFAULT_DISPLAY);
-                if gbm_display != EGL_NO_DISPLAY
-                    && egl_initialize(gbm_display, &mut major, &mut minor) == EGL_TRUE
-                {
-                    display = gbm_display;
-                    log::debug!("Acquired EGL display via EGL_PLATFORM_GBM_KHR");
+            // Strategy 2: GBM Platform (Headless DRM / Linux Render Nodes via libgbm)
+            #[cfg(target_os = "linux")]
+            let gbm_lib = {
+                let p = libc::dlopen(
+                    c"libgbm.so.1".as_ptr() as *const c_char,
+                    libc::RTLD_LAZY | libc::RTLD_LOCAL,
+                );
+                if p.is_null() {
+                    libc::dlopen(
+                        c"libgbm.so".as_ptr() as *const c_char,
+                        libc::RTLD_LAZY | libc::RTLD_LOCAL,
+                    )
+                } else {
+                    p
+                }
+            };
+            #[cfg(not(target_os = "linux"))]
+            let gbm_lib: *mut c_void = std::ptr::null_mut();
+
+            #[cfg(target_os = "linux")]
+            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = if !gbm_lib.is_null() {
+                let ptr = libc::dlsym(gbm_lib, c"gbm_device_destroy".as_ptr() as *const c_char);
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, GbmDestroyDeviceFn>(ptr))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            #[cfg(not(target_os = "linux"))]
+            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = None;
+
+            #[cfg(target_os = "linux")]
+            if !gbm_lib.is_null() {
+                type GbmCreateDeviceFn = unsafe extern "C" fn(i32) -> *mut c_void;
+                let create_ptr =
+                    libc::dlsym(gbm_lib, c"gbm_create_device".as_ptr() as *const c_char);
+                if !create_ptr.is_null() {
+                    let gbm_create_device: GbmCreateDeviceFn =
+                        std::mem::transmute::<*mut c_void, GbmCreateDeviceFn>(create_ptr);
+                    for &path in crate::dma::linux_drm::DRM_CANDIDATE_PATHS {
+                        let c_path = CString::new(path).unwrap();
+                        let fd = libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+                        if fd >= 0 {
+                            let gbm_dev = gbm_create_device(fd);
+                            if !gbm_dev.is_null() {
+                                let gbm_display =
+                                    get_platform_display(EGL_PLATFORM_GBM_KHR, gbm_dev);
+                                if gbm_display != EGL_NO_DISPLAY {
+                                    candidate_displays.push((
+                                        gbm_display,
+                                        "EGL_PLATFORM_GBM_KHR",
+                                        Some((gbm_dev, fd)),
+                                    ));
+                                } else {
+                                    if let Some(destroy) = gbm_destroy_device {
+                                        destroy(gbm_dev);
+                                    }
+                                    libc::close(fd);
+                                }
+                            } else {
+                                libc::close(fd);
+                            }
+                        }
+                    }
                 }
             }
 
             // Strategy 3: Surfaceless MESA (Headless Fallback / CI / VM Software Rasterizers)
-            if display == EGL_NO_DISPLAY {
-                let surfaceless_display =
-                    get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY);
-                if surfaceless_display != EGL_NO_DISPLAY
-                    && egl_initialize(surfaceless_display, &mut major, &mut minor) == EGL_TRUE
-                {
-                    display = surfaceless_display;
-                    log::debug!("Acquired EGL display via EGL_PLATFORM_SURFACELESS_MESA");
-                }
+            let surfaceless_display =
+                get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY);
+            if surfaceless_display != EGL_NO_DISPLAY {
+                candidate_displays.push((
+                    surfaceless_display,
+                    "EGL_PLATFORM_SURFACELESS_MESA",
+                    None,
+                ));
             }
 
             // Strategy 4: Standard default display fallback (X11 / Wayland / Android / Windows)
-            if display == EGL_NO_DISPLAY {
-                if let Some(egl_get_display) = egl_get_display {
-                    let def_display = egl_get_display(EGL_DEFAULT_DISPLAY);
-                    if def_display != EGL_NO_DISPLAY
-                        && egl_initialize(def_display, &mut major, &mut minor) == EGL_TRUE
-                    {
-                        display = def_display;
-                        log::debug!("Acquired EGL display via eglGetDisplay default");
-                    }
+            if let Some(egl_get_display) = egl_get_display {
+                let def_display = egl_get_display(EGL_DEFAULT_DISPLAY);
+                if def_display != EGL_NO_DISPLAY {
+                    candidate_displays.push((def_display, "eglGetDisplay default", None));
                 }
             }
 
-            if display == EGL_NO_DISPLAY {
-                libc::dlclose(egl_lib);
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
+            let mut display = EGL_NO_DISPLAY;
+            let mut context = EGL_NO_CONTEXT;
+            let mut surface = EGL_NO_SURFACE;
+            let mut bound_major: EGLint = 0;
+            let mut bound_minor: EGLint = 0;
+            let mut selected_gbm: Option<(*mut c_void, i32)> = None;
+
+            for (cand_display, cand_desc, cand_gbm) in candidate_displays.iter().copied() {
+                let mut major: EGLint = 0;
+                let mut minor: EGLint = 0;
+                if egl_initialize(cand_display, &mut major, &mut minor) == EGL_FALSE {
+                    continue;
                 }
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
 
-            log::debug!("Initialized headless EGL version {major}.{minor}");
+                let _ = egl_bind_api(EGL_OPENGL_API);
 
-            let _ = egl_bind_api(EGL_OPENGL_API);
-
-            let config_attribs = [
-                EGL_SURFACE_TYPE,
-                EGL_PBUFFER_BIT,
-                EGL_RED_SIZE,
-                8,
-                EGL_GREEN_SIZE,
-                8,
-                EGL_BLUE_SIZE,
-                8,
-                EGL_ALPHA_SIZE,
-                8,
-                EGL_NONE,
-            ];
-
-            let mut config: EGLConfig = std::ptr::null_mut();
-            let mut num_configs: EGLint = 0;
-            if egl_choose_config(
-                display,
-                config_attribs.as_ptr(),
-                &mut config,
-                1,
-                &mut num_configs,
-            ) == EGL_FALSE
-                || num_configs < 1
-            {
-                // Fallback to minimal config
-                let minimal_attribs = [EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE];
-                let _ = egl_choose_config(
-                    display,
-                    minimal_attribs.as_ptr(),
-                    &mut config,
-                    1,
-                    &mut num_configs,
-                );
-            }
-
-            if num_configs < 1 {
-                // Fallback to any config (e.g. for pure surfaceless)
-                let surfaceless_attribs = [EGL_NONE];
-                let _ = egl_choose_config(
-                    display,
-                    surfaceless_attribs.as_ptr(),
-                    &mut config,
-                    1,
-                    &mut num_configs,
-                );
-            }
-
-            let context_attribs_gl43 = [
-                EGL_CONTEXT_MAJOR_VERSION,
-                4,
-                EGL_CONTEXT_MINOR_VERSION,
-                3,
-                EGL_CONTEXT_OPENGL_PROFILE_MASK,
-                EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
-                EGL_NONE,
-            ];
-            let context_attribs_gl33 = [
-                EGL_CONTEXT_MAJOR_VERSION,
-                3,
-                EGL_CONTEXT_MINOR_VERSION,
-                3,
-                EGL_CONTEXT_OPENGL_PROFILE_MASK,
-                EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
-                EGL_NONE,
-            ];
-
-            let mut context = egl_create_context(
-                display,
-                config,
-                EGL_NO_CONTEXT,
-                context_attribs_gl43.as_ptr(),
-            );
-            if context == EGL_NO_CONTEXT {
-                context = egl_create_context(
-                    display,
-                    config,
-                    EGL_NO_CONTEXT,
-                    context_attribs_gl33.as_ptr(),
-                );
-            }
-            if context == EGL_NO_CONTEXT {
-                // Fallback to GLES 3.1 / 3.0 / default
-                let _ = egl_bind_api(EGL_OPENGL_ES_API);
-                let gles_attribs_31 = [
-                    EGL_CONTEXT_CLIENT_VERSION,
-                    3,
-                    EGL_CONTEXT_MINOR_VERSION,
-                    1,
+                let config_attribs = [
+                    EGL_SURFACE_TYPE,
+                    EGL_PBUFFER_BIT,
+                    EGL_RED_SIZE,
+                    8,
+                    EGL_GREEN_SIZE,
+                    8,
+                    EGL_BLUE_SIZE,
+                    8,
+                    EGL_ALPHA_SIZE,
+                    8,
                     EGL_NONE,
                 ];
-                context =
-                    egl_create_context(display, config, EGL_NO_CONTEXT, gles_attribs_31.as_ptr());
-                if context == EGL_NO_CONTEXT {
-                    let gles_attribs_30 = [EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE];
-                    context = egl_create_context(
-                        display,
-                        config,
-                        EGL_NO_CONTEXT,
-                        gles_attribs_30.as_ptr(),
+
+                let mut config: EGLConfig = std::ptr::null_mut();
+                let mut num_configs: EGLint = 0;
+                if egl_choose_config(
+                    cand_display,
+                    config_attribs.as_ptr(),
+                    &mut config,
+                    1,
+                    &mut num_configs,
+                ) == EGL_FALSE
+                    || num_configs < 1
+                {
+                    let minimal_attribs = [EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE];
+                    let _ = egl_choose_config(
+                        cand_display,
+                        minimal_attribs.as_ptr(),
+                        &mut config,
+                        1,
+                        &mut num_configs,
                     );
                 }
-                if context == EGL_NO_CONTEXT {
-                    context = egl_create_context(display, config, EGL_NO_CONTEXT, std::ptr::null());
+
+                if num_configs < 1 {
+                    let surfaceless_attribs = [EGL_NONE];
+                    let _ = egl_choose_config(
+                        cand_display,
+                        surfaceless_attribs.as_ptr(),
+                        &mut config,
+                        1,
+                        &mut num_configs,
+                    );
+                }
+
+                if num_configs < 1 {
+                    if let Some(f) = egl_terminate {
+                        let _ = f(cand_display);
+                    }
+                    continue;
+                }
+
+                let context_attribs_gl43 = [
+                    EGL_CONTEXT_MAJOR_VERSION,
+                    4,
+                    EGL_CONTEXT_MINOR_VERSION,
+                    3,
+                    EGL_CONTEXT_OPENGL_PROFILE_MASK,
+                    EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+                    EGL_NONE,
+                ];
+                let context_attribs_gl33 = [
+                    EGL_CONTEXT_MAJOR_VERSION,
+                    3,
+                    EGL_CONTEXT_MINOR_VERSION,
+                    3,
+                    EGL_CONTEXT_OPENGL_PROFILE_MASK,
+                    EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+                    EGL_NONE,
+                ];
+
+                let mut cand_context = egl_create_context(
+                    cand_display,
+                    config,
+                    EGL_NO_CONTEXT,
+                    context_attribs_gl43.as_ptr(),
+                );
+                if cand_context == EGL_NO_CONTEXT {
+                    cand_context = egl_create_context(
+                        cand_display,
+                        config,
+                        EGL_NO_CONTEXT,
+                        context_attribs_gl33.as_ptr(),
+                    );
+                }
+                if cand_context == EGL_NO_CONTEXT {
+                    let _ = egl_bind_api(EGL_OPENGL_ES_API);
+                    let gles_attribs_31 = [
+                        EGL_CONTEXT_CLIENT_VERSION,
+                        3,
+                        EGL_CONTEXT_MINOR_VERSION,
+                        1,
+                        EGL_NONE,
+                    ];
+                    cand_context = egl_create_context(
+                        cand_display,
+                        config,
+                        EGL_NO_CONTEXT,
+                        gles_attribs_31.as_ptr(),
+                    );
+                    if cand_context == EGL_NO_CONTEXT {
+                        let gles_attribs_30 = [EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE];
+                        cand_context = egl_create_context(
+                            cand_display,
+                            config,
+                            EGL_NO_CONTEXT,
+                            gles_attribs_30.as_ptr(),
+                        );
+                    }
+                    if cand_context == EGL_NO_CONTEXT {
+                        cand_context = egl_create_context(
+                            cand_display,
+                            config,
+                            EGL_NO_CONTEXT,
+                            std::ptr::null(),
+                        );
+                    }
+                }
+
+                if cand_context == EGL_NO_CONTEXT {
+                    if let Some(f) = egl_terminate {
+                        let _ = f(cand_display);
+                    }
+                    continue;
+                }
+
+                // Try binding: 1. Surfaceless (EGL_NO_SURFACE), 2. 1x1 Offscreen PBuffer
+                if egl_make_current(cand_display, EGL_NO_SURFACE, EGL_NO_SURFACE, cand_context)
+                    == EGL_TRUE
+                {
+                    display = cand_display;
+                    context = cand_context;
+                    surface = EGL_NO_SURFACE;
+                    bound_major = major;
+                    bound_minor = minor;
+                    selected_gbm = cand_gbm;
+                    log::debug!(
+                        "Successfully bound headless EGL display via {} (surfaceless)",
+                        cand_desc
+                    );
+                    break;
+                }
+
+                let pbuffer_attribs = [EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE];
+                let pbuffer = egl_create_pbuffer_surface
+                    .map(|create| create(cand_display, config, pbuffer_attribs.as_ptr()))
+                    .unwrap_or(EGL_NO_SURFACE);
+
+                if pbuffer != EGL_NO_SURFACE
+                    && egl_make_current(cand_display, pbuffer, pbuffer, cand_context) == EGL_TRUE
+                {
+                    display = cand_display;
+                    context = cand_context;
+                    surface = pbuffer;
+                    bound_major = major;
+                    bound_minor = minor;
+                    selected_gbm = cand_gbm;
+                    log::debug!(
+                        "Successfully bound headless EGL display via {} (1x1 PBuffer)",
+                        cand_desc
+                    );
+                    break;
+                }
+
+                // Cleanup failed candidate
+                if pbuffer != EGL_NO_SURFACE {
+                    if let Some(f) = egl_destroy_surface {
+                        let _ = f(cand_display, pbuffer);
+                    }
+                }
+                if let Some(f) = egl_destroy_context {
+                    let _ = f(cand_display, cand_context);
+                }
+                if let Some(f) = egl_terminate {
+                    let _ = f(cand_display);
                 }
             }
 
-            if context == EGL_NO_CONTEXT {
-                if let Some(f) = egl_terminate {
-                    f(display);
+            // Immediately destroy all unselected candidate GBM devices and close their file descriptors
+            for (_, _, cand_gbm) in candidate_displays {
+                if let Some((g_dev, g_fd)) = cand_gbm {
+                    if Some((g_dev, g_fd)) != selected_gbm {
+                        if let Some(destroy) = gbm_destroy_device {
+                            destroy(g_dev);
+                        }
+                        libc::close(g_fd);
+                    }
                 }
-                libc::dlclose(egl_lib);
+            }
+
+            if display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT {
+                if let Some((g_dev, g_fd)) = selected_gbm {
+                    if let Some(destroy) = gbm_destroy_device {
+                        destroy(g_dev);
+                    }
+                    libc::close(g_fd);
+                }
+                if !gbm_lib.is_null() {
+                    libc::dlclose(gbm_lib);
+                }
                 if !gl_lib.is_null() {
                     libc::dlclose(gl_lib);
                 }
+                libc::dlclose(egl_lib);
                 return Err(ScalixError::BackendUnavailable(
                     crate::types::BackendType::OpenGL,
                 ));
             }
 
-            // Bind headless EGL context: prefer surfaceless (EGL_NO_SURFACE), fall back to 1x1 offscreen PBuffer
-            let surface =
-                if egl_make_current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context) == EGL_TRUE {
-                    EGL_NO_SURFACE
-                } else {
-                    let pbuffer_attribs = [EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE];
-                    let pbuffer = egl_create_pbuffer_surface
-                        .map(|create| create(display, config, pbuffer_attribs.as_ptr()))
-                        .unwrap_or(EGL_NO_SURFACE);
-
-                    if pbuffer != EGL_NO_SURFACE
-                        && egl_make_current(display, pbuffer, pbuffer, context) == EGL_TRUE
-                    {
-                        log::debug!("Bound headless EGL context via 1x1 PBuffer fallback");
-                        pbuffer
-                    } else {
-                        let err_code = egl_get_error.map_or(0, |f| f());
-                        if pbuffer != EGL_NO_SURFACE {
-                            if let Some(f) = egl_destroy_surface {
-                                let _ = f(display, pbuffer);
-                            }
-                        }
-                        if let Some(f) = egl_destroy_context {
-                            let _ = f(display, context);
-                        }
-                        if let Some(f) = egl_terminate {
-                            let _ = f(display);
-                        }
-                        if !gl_lib.is_null() {
-                            libc::dlclose(gl_lib);
-                        }
-                        libc::dlclose(egl_lib);
-                        return Err(ScalixError::ExecutionFailed(format!(
-                            "eglMakeCurrent failed during headless OpenGL initialization: {}",
-                            format_egl_error(err_code)
-                        )));
-                    }
-                };
+            log::debug!("Initialized headless EGL version {bound_major}.{bound_minor}");
 
             macro_rules! get_gl_fn {
                 ($name:expr, $t:ty) => {{
@@ -992,9 +1101,23 @@ impl EglContext {
             // Unbind from creation thread so worker threads can bind it
             let _ = egl_make_current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 
+            let (gbm_dev_ptr, gbm_fd_val) = selected_gbm.unwrap_or((std::ptr::null_mut(), -1));
+            let final_gbm_lib = if gbm_dev_ptr.is_null() {
+                if !gbm_lib.is_null() {
+                    libc::dlclose(gbm_lib);
+                }
+                std::ptr::null_mut()
+            } else {
+                gbm_lib
+            };
+
             Ok(Self {
                 egl_lib,
                 gl_lib,
+                gbm_lib: final_gbm_lib,
+                gbm_dev: gbm_dev_ptr,
+                gbm_fd: gbm_fd_val,
+                gbm_destroy_device,
                 display,
                 context,
                 surface,
@@ -1073,11 +1196,28 @@ impl Drop for EglContext {
                 let _ = f(self.display);
             }
 
+            if !self.gbm_dev.is_null() {
+                if let Some(destroy) = self.gbm_destroy_device {
+                    destroy(self.gbm_dev);
+                }
+                self.gbm_dev = std::ptr::null_mut();
+            }
+            if self.gbm_fd >= 0 {
+                libc::close(self.gbm_fd);
+                self.gbm_fd = -1;
+            }
+
+            if !self.gbm_lib.is_null() {
+                libc::dlclose(self.gbm_lib);
+                self.gbm_lib = std::ptr::null_mut();
+            }
             if !self.gl_lib.is_null() {
                 libc::dlclose(self.gl_lib);
+                self.gl_lib = std::ptr::null_mut();
             }
             if !self.egl_lib.is_null() {
                 libc::dlclose(self.egl_lib);
+                self.egl_lib = std::ptr::null_mut();
             }
         }
     }
