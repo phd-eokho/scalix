@@ -46,7 +46,7 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 | Backend Provider | Subsystem / API | Host / Platform Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64, API 34+) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (Vulkan 1.1+) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (Vulkan 1.1+) | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
 | **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **OpenCL** | Direct Compute (`clEnqueueNDRangeKernel`) | OpenCL 1.2+ / 3.0 (Linux / Android) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **2D HW Blitter** | V4L2 M2M / DRM Scaler | Linux 2D HW Engines | ○ Mock / Loopback | ○ Hardware Req. | — |
@@ -58,16 +58,16 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 | Feature | Interface / Handle | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Bare-Metal Linux (x86_64) | Android (API 33+/14+, aarch64) |
 | :--- | :--- | :---: | :---: | :---: |
-| **64-Byte Aligned Host Memory** | Contiguous 64-byte aligned CPU memory (RGB/RGBA) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
-| **Triple-Buffered Staging Ring** | 3-slot pinned / mapped staging buffer ring with hysteresis | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
-| **Linux & Android DMA-BUF** | `dma_buf_fd` (DMA-BUF Heaps `/dev/dma_heap/*` zero-copy) | ◐ Fallback (Verified) | ○ Supported (Unverified) | ◐ Compiled Library (Unverified) |
-| **Raw DMA-BUF Import** | `from_fd(fd, ...)` / `scalix_dma_buffer_from_fd` | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **64-Byte Aligned Host Memory** | Contiguous 64-byte aligned CPU memory (RGB/RGBA) | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
+| **Triple-Buffered Staging Ring** | 3-slot pinned / mapped staging buffer ring with hysteresis | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
+| **Linux & Android DMA-BUF** | `dma_buf_fd` (DMA-BUF Heaps `/dev/dma_heap/*` zero-copy) | ◐ Fallback (Verified) | ✔ Verified (DRM / DMA-Heap) | ◐ Compiled Library (Unverified) |
+| **Raw DMA-BUF Import** | `from_fd(fd, ...)` / `scalix_dma_buffer_from_fd` | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
 | **Android AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop (NDK mode) | — | — | ◐ Compiled Library (Unverified) |
 
 > [!NOTE]
 > **Current Verification & Target Platform Status**
-> - **WSL2 (Ubuntu 24.04, NVIDIA GPU):** The primary and currently tested development platform. Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Linux `dma-buf` automatically falls back to 64-byte aligned host staging memory.
-> - **Linux (x86_64 Bare-Metal):** Compiled and architected for native Linux execution (DMA-Heap and DRM GEM dumb buffer support), but not yet verified on physical bare-metal hardware.
+> - **WSL2 (Ubuntu 24.04, NVIDIA GPU):** The primary development platform. Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Linux `dma-buf` automatically falls back to 64-byte aligned host staging memory.
+> - **Linux (x86_64 Bare-Metal):** Verified on physical bare-metal hardware for Vulkan backend and DRM / DMA-BUF subsystems (DMA-Heap and DRM GEM dumb buffer support).
 > - **Android (aarch64, API 34+):** Android NDK cross-compilation (`cargo-ndk`) and compiled library generation (`libscalix.so` / `libscalix.a`) are supported across **NDK** and **Vendor** variants. Standalone vendor mode operates on pure Linux DMA-BUF Heaps without NDK runtime dependencies. Physical hardware testing is pending.
 
 ---
@@ -341,8 +341,8 @@ make -C examples clean
 
 Scalix provides unified zero-copy DMA buffer allocation across supported target environments:
 
-### 1. Bare-Metal Linux (x86_64, Kernel 5.6+ - Unverified)
-* **Allocators:** Uses **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) with fallback to **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128` via GEM PRIME).
+### 1. Bare-Metal Linux (x86_64, Kernel 5.6+ - Verified)
+* **Allocators:** Uses **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) with fallback to **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128` via GEM PRIME). Verified on bare-metal Linux hardware.
 * **Raw FD Import:** Supports wrapping external DMA-BUF file descriptors via `DmaBuffer::from_fd()`.
 * **Device Node Permissions & Udev Rules:** By default, Linux DMA-Heap device nodes (`/dev/dma_heap/*`) and DRM render nodes require specific user permissions:
   1. **User Group Access:** Add your user account to the `render` and `video` groups:
