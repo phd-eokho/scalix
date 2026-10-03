@@ -46,7 +46,7 @@
 
 | Backend Provider | Subsystem / API | Host / Platform Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64, API 34+) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (Vulkan 1.1+) | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
+| **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (Vulkan 1.1+) | ✔ Verified | ✔ Verified | ◐ Compiled Library (미검증) |
 | **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
 | **OpenCL** | Direct Compute (`clEnqueueNDRangeKernel`) | OpenCL 1.2+ / 3.0 (Linux / Android) | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
 | **2D HW Blitter** | V4L2 M2M / DRM Scaler | Linux 2D HW Engines | ○ Mock / Loopback | ○ Hardware Req. | — |
@@ -58,16 +58,16 @@
 
 | 기능 | 인터페이스 / 핸들 | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Bare-Metal Linux (x86_64) | Android (API 33+/14+, aarch64) |
 | :--- | :--- | :---: | :---: | :---: |
-| **64바이트 정렬 Host Memory** | 64바이트 정렬된 연속형 CPU 메모리 버퍼 (RGB/RGBA) | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
-| **Triple-Buffered Staging Ring** | 히스테리시스 축소 정책이 적용된 3-슬롯 Staging 버퍼 링 | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
-| **Linux & Android DMA-BUF** | `dma_buf_fd` (DMA-BUF Heaps `/dev/dma_heap/*` Zero-Copy) | ◐ Fallback (Verified) | ○ Supported (미검증) | ◐ Compiled Library (미검증) |
-| **Raw DMA-BUF Import** | `from_fd(fd, ...)` / `scalix_dma_buffer_from_fd` | ✔ Verified | ◐ Compiled (미검증) | ◐ Compiled Library (미검증) |
+| **64바이트 정렬 Host Memory** | 64바이트 정렬된 연속형 CPU 메모리 버퍼 (RGB/RGBA) | ✔ Verified | ✔ Verified | ◐ Compiled Library (미검증) |
+| **Triple-Buffered Staging Ring** | 히스테리시스 축소 정책이 적용된 3-슬롯 Staging 버퍼 링 | ✔ Verified | ✔ Verified | ◐ Compiled Library (미검증) |
+| **Linux & Android DMA-BUF** | `dma_buf_fd` (DMA-BUF Heaps `/dev/dma_heap/*` Zero-Copy) | ◐ Fallback (Verified) | ✔ Verified (DRM / DMA-Heap) | ◐ Compiled Library (미검증) |
+| **Raw DMA-BUF Import** | `from_fd(fd, ...)` / `scalix_dma_buffer_from_fd` | ✔ Verified | ✔ Verified | ◐ Compiled Library (미검증) |
 | **Android AHardwareBuffer** | `AHardwareBuffer*` Zero-Copy 연동 (NDK 모드) | — | — | ◐ Compiled Library (미검증) |
 
 > [!NOTE]
 > **현재 검증 상태 및 타겟 플랫폼 현황**
 > - **WSL2 (Ubuntu 24.04, NVIDIA GPU):** 현재 개발 및 테스트가 완료된 주 검증 플랫폼입니다. NVIDIA GPU 환경의 `/dev/dxg` 브리지를 통한 Vulkan 오프스크린 렌더링이 검증되었습니다. Linux `dma-buf`는 64바이트 정렬 Host Staging 메모리로 자동 Fallback되어 동작합니다.
-> - **Linux (x86_64 Bare-Metal):** 네이티브 Linux 환경(DMA-Heap 및 DRM GEM Dumb 버퍼)을 지원하도록 설계 및 컴파일되었으나, 물리 Bare-Metal 하드웨어에서의 직접 검증은 대기 중입니다.
+> - **Linux (x86_64 Bare-Metal):** 물리 Bare-Metal 하드웨어에서 Vulkan 백엔드 및 DRM / DMA-BUF 서브시스템(DMA-Heap 및 DRM GEM Dumb 버퍼)의 실제 동작 검증이 완료되었습니다.
 > - **Android (aarch64, API 34+):** Android NDK 크로스 컴파일(`cargo-ndk`) 및 **NDK**와 **Vendor** 타겟별 컴파일 라이브러리(`libscalix.so` / `libscalix.a`) 생성을 지원합니다. 독립형 벤더 모드는 NDK 런타임 종속성 없이 순수 Linux DMA-BUF Heaps 기반으로 동작합니다. 물리 하드웨어 검증은 대기 중입니다.
 
 ---
@@ -336,8 +336,8 @@ make -C examples clean
 
 Scalix는 지원되는 실행 환경 전반에서 통합된 Zero-Copy DMA 버퍼 할당 방식을 제공합니다:
 
-### 1. Bare-Metal Linux (x86_64, 커널 5.6+ - 미검증)
-* **할당자(Allocators):** **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`)을 사용하며, 부재 시 **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128`, GEM PRIME 기반)로 자동 Fallback.
+### 1. Bare-Metal Linux (x86_64, 커널 5.6+ - 검증 완료)
+* **할당자(Allocators):** **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`)을 사용하며, 부재 시 **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128`, GEM PRIME 기반)로 자동 Fallback (물리 Bare-Metal Linux 검증 완료).
 * **외부 FD 임포트:** `DmaBuffer::from_fd()`를 통해 외부 DMA-BUF 파일 디스크립터를 Zero-Copy 래핑 지원.
 * **디바이스 노드 권한 및 Udev 설정:** 기본적으로 Linux DMA-Heap 디바이스 노드(`/dev/dma_heap/*`) 및 DRM 노드는 root 권한으로 생성되므로 적절한 권한 부여가 필요합니다:
   1. **사용자 그룹 추가:** 실행 사용자를 `render` 및 `video` 그룹에 추가:
