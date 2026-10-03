@@ -585,19 +585,25 @@ impl EglContext {
             }
 
             // Strategy 2: GBM Platform (Headless DRM / Linux Render Nodes via libgbm)
-            let gbm_lib = libc::dlopen(
-                c"libgbm.so.1".as_ptr() as *const c_char,
-                libc::RTLD_LAZY | libc::RTLD_LOCAL,
-            );
-            let gbm_lib = if gbm_lib.is_null() {
-                libc::dlopen(
-                    c"libgbm.so".as_ptr() as *const c_char,
+            #[cfg(target_os = "linux")]
+            let gbm_lib = {
+                let p = libc::dlopen(
+                    c"libgbm.so.1".as_ptr() as *const c_char,
                     libc::RTLD_LAZY | libc::RTLD_LOCAL,
-                )
-            } else {
-                gbm_lib
+                );
+                if p.is_null() {
+                    libc::dlopen(
+                        c"libgbm.so".as_ptr() as *const c_char,
+                        libc::RTLD_LAZY | libc::RTLD_LOCAL,
+                    )
+                } else {
+                    p
+                }
             };
+            #[cfg(not(target_os = "linux"))]
+            let gbm_lib: *mut c_void = std::ptr::null_mut();
 
+            #[cfg(target_os = "linux")]
             let gbm_destroy_device: Option<GbmDestroyDeviceFn> = if !gbm_lib.is_null() {
                 let ptr = libc::dlsym(gbm_lib, c"gbm_device_destroy".as_ptr() as *const c_char);
                 if !ptr.is_null() {
@@ -608,7 +614,10 @@ impl EglContext {
             } else {
                 None
             };
+            #[cfg(not(target_os = "linux"))]
+            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = None;
 
+            #[cfg(target_os = "linux")]
             if !gbm_lib.is_null() {
                 type GbmCreateDeviceFn = unsafe extern "C" fn(i32) -> *mut c_void;
                 let create_ptr =
