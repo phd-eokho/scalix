@@ -344,6 +344,91 @@ impl CommandBufferGuard {
     }
 }
 
+/// Descriptor sets one resize can allocate: an RGB unpack, the main pass and an RGB repack.
+const RESIZE_MAX_DESCRIPTOR_SETS: u32 = 3;
+/// Per-type descriptor budget covering the bindings of those three passes.
+const RESIZE_MAX_DESCRIPTORS_PER_TYPE: u32 = 4;
+
+/// RAII owner of a reusable `vk::DescriptorPool` sized for one resize.
+///
+/// Owners reset it once the previous resize's GPU work has completed instead of creating and
+/// destroying a pool per pass; destroying the pool frees its sets.
+pub struct DescriptorPool {
+    pub pool: vk::DescriptorPool,
+    ctx: Arc<VulkanContext>,
+}
+
+impl DescriptorPool {
+    pub fn for_resize(ctx: &Arc<VulkanContext>) -> Result<Self> {
+        let pool_sizes = [
+            vk::DescriptorType::STORAGE_BUFFER,
+            vk::DescriptorType::STORAGE_IMAGE,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        ]
+        .map(|ty| vk::DescriptorPoolSize {
+            ty,
+            descriptor_count: RESIZE_MAX_DESCRIPTORS_PER_TYPE,
+        });
+        let info = vk::DescriptorPoolCreateInfo {
+            max_sets: RESIZE_MAX_DESCRIPTOR_SETS,
+            pool_size_count: pool_sizes.len() as u32,
+            p_pool_sizes: pool_sizes.as_ptr(),
+            ..Default::default()
+        };
+        let pool = unsafe {
+            ctx.device
+                .create_descriptor_pool(&info, None)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to create descriptor pool: {e}"))
+                })?
+        };
+        Ok(Self {
+            pool,
+            ctx: Arc::clone(ctx),
+        })
+    }
+
+    pub fn allocate(&self, layout: vk::DescriptorSetLayout) -> Result<vk::DescriptorSet> {
+        let info = vk::DescriptorSetAllocateInfo {
+            descriptor_pool: self.pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &layout,
+            ..Default::default()
+        };
+        let sets = unsafe {
+            self.ctx
+                .device
+                .allocate_descriptor_sets(&info)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to allocate descriptor set: {e}"))
+                })?
+        };
+        sets.into_iter().next().ok_or_else(|| {
+            ScalixError::ExecutionFailed("Allocated descriptor set list is empty".to_string())
+        })
+    }
+
+    /// Frees every set; the GPU must no longer use any of them.
+    pub fn reset(&self) -> Result<()> {
+        unsafe {
+            self.ctx
+                .device
+                .reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty())
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to reset descriptor pool: {e}"))
+                })
+        }
+    }
+}
+
+impl Drop for DescriptorPool {
+    fn drop(&mut self) {
+        unsafe {
+            self.ctx.device.destroy_descriptor_pool(self.pool, None);
+        }
+    }
+}
+
 /// RAII Drop guard for a `vk::Fence`.
 pub struct FenceGuard {
     pub fence: vk::Fence,

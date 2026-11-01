@@ -69,7 +69,6 @@ struct RasterPipelineResources {
     frag_module: vk::ShaderModule,
     pipeline: vk::Pipeline,
     framebuffer: vk::Framebuffer,
-    desc_pool: vk::DescriptorPool,
     ctx: Arc<VulkanContext>,
 }
 
@@ -77,9 +76,6 @@ impl Drop for RasterPipelineResources {
     fn drop(&mut self) {
         let d = &self.ctx.device;
         unsafe {
-            if self.desc_pool != vk::DescriptorPool::null() {
-                d.destroy_descriptor_pool(self.desc_pool, None);
-            }
             if self.framebuffer != vk::Framebuffer::null() {
                 d.destroy_framebuffer(self.framebuffer, None);
             }
@@ -293,9 +289,22 @@ impl VulkanRasterResizer {
                 max_lod: 0.0,
                 ..Default::default()
             };
+            // Filled in as each object is created so an early return destroys what exists.
+            let mut pipeline_res = RasterPipelineResources {
+                sampler: vk::Sampler::null(),
+                desc_set_layout: vk::DescriptorSetLayout::null(),
+                pipeline_layout: vk::PipelineLayout::null(),
+                render_pass: vk::RenderPass::null(),
+                vert_module: vk::ShaderModule::null(),
+                frag_module: vk::ShaderModule::null(),
+                pipeline: vk::Pipeline::null(),
+                framebuffer: vk::Framebuffer::null(),
+                ctx: Arc::clone(&self.ctx),
+            };
             let sampler = device.create_sampler(&sampler_info, None).map_err(|e| {
                 ScalixError::ExecutionFailed(format!("Failed to create sampler: {e}"))
             })?;
+            pipeline_res.sampler = sampler;
 
             // 5. Create Descriptor Set Layout, Pipeline Layout & Render Pass
             let dsl_binding = vk::DescriptorSetLayoutBinding {
@@ -318,6 +327,7 @@ impl VulkanRasterResizer {
                         "Failed to create descriptor set layout: {e}"
                     ))
                 })?;
+            pipeline_res.desc_set_layout = desc_set_layout;
 
             let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
                 set_layout_count: 1,
@@ -329,6 +339,7 @@ impl VulkanRasterResizer {
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to create pipeline layout: {e}"))
                 })?;
+            pipeline_res.pipeline_layout = pipeline_layout;
 
             let color_attachment = vk::AttachmentDescription {
                 format: vk_format,
@@ -363,6 +374,7 @@ impl VulkanRasterResizer {
                 .map_err(|e| {
                     ScalixError::ExecutionFailed(format!("Failed to create render pass: {e}"))
                 })?;
+            pipeline_res.render_pass = render_pass;
 
             // 6. Create Shaders & Graphics Pipeline
             let vert_module_info = vk::ShaderModuleCreateInfo {
@@ -377,6 +389,7 @@ impl VulkanRasterResizer {
                         "Failed to create vert shader module: {e}"
                     ))
                 })?;
+            pipeline_res.vert_module = vert_module;
 
             let frag_module_info = vk::ShaderModuleCreateInfo {
                 code_size: std::mem::size_of_val(FRAG_SPV),
@@ -390,6 +403,7 @@ impl VulkanRasterResizer {
                         "Failed to create frag shader module: {e}"
                     ))
                 })?;
+            pipeline_res.frag_module = frag_module;
 
             let main_name = c"main";
             let shader_stages = [
@@ -474,6 +488,8 @@ impl VulkanRasterResizer {
                     ))
                 })?[0];
 
+            pipeline_res.pipeline = pipeline;
+
             // 7. Create Framebuffer
             let fb_info = vk::FramebufferCreateInfo {
                 render_pass,
@@ -487,40 +503,11 @@ impl VulkanRasterResizer {
             let framebuffer = device.create_framebuffer(&fb_info, None).map_err(|e| {
                 ScalixError::ExecutionFailed(format!("Failed to create framebuffer: {e}"))
             })?;
+            pipeline_res.framebuffer = framebuffer;
 
-            // 8. Create Descriptor Pool & Descriptor Set
-            let pool_size = vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: 1,
-            };
-            let desc_pool_info = vk::DescriptorPoolCreateInfo {
-                max_sets: 1,
-                pool_size_count: 1,
-                p_pool_sizes: &pool_size,
-                ..Default::default()
-            };
-            let desc_pool = device
-                .create_descriptor_pool(&desc_pool_info, None)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!("Failed to create descriptor pool: {e}"))
-                })?;
+            // 8. Descriptor set from the slot's pool (reset when the slot is next acquired)
 
-            let desc_alloc_info = vk::DescriptorSetAllocateInfo {
-                descriptor_pool: desc_pool,
-                descriptor_set_count: 1,
-                p_set_layouts: &desc_set_layout,
-                ..Default::default()
-            };
-            let desc_set = device
-                .allocate_descriptor_sets(&desc_alloc_info)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!("Failed to allocate descriptor sets: {e}"))
-                })?
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    ScalixError::ExecutionFailed("Allocated empty descriptor sets".to_string())
-                })?;
+            let desc_set = slot.descriptor_pool.allocate(desc_set_layout)?;
 
             let desc_image_info = vk::DescriptorImageInfo {
                 sampler,
@@ -537,20 +524,6 @@ impl VulkanRasterResizer {
                 ..Default::default()
             };
             device.update_descriptor_sets(&[write_desc], &[]);
-
-            // RAII guard to safely drop pipeline resources
-            let _pipeline_res = RasterPipelineResources {
-                sampler,
-                desc_set_layout,
-                pipeline_layout,
-                render_pass,
-                vert_module,
-                frag_module,
-                pipeline,
-                framebuffer,
-                desc_pool,
-                ctx: Arc::clone(&self.ctx),
-            };
 
             // 9. Command Buffer & Timestamps from slot
             let cmd_buf = slot.cmd_buf;
@@ -571,11 +544,10 @@ impl VulkanRasterResizer {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::TOP_OF_PIPE, qp, 0);
             }
 
-            let mut transient_pools = Vec::new();
-
             if let Some(rgb_comp) = rgb_unpack {
-                let pool = rgb_comp.cmd_unpack_rgb888(
+                rgb_comp.cmd_unpack_rgb888(
                     cmd_buf,
+                    &slot.descriptor_pool,
                     src_staging_buf,
                     src_size,
                     src_image,
@@ -586,7 +558,6 @@ impl VulkanRasterResizer {
                     vk::AccessFlags::SHADER_READ,
                     vk::PipelineStageFlags::FRAGMENT_SHADER,
                 )?;
-                transient_pools.push(pool);
 
                 // Transition dst_image UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
                 let barrier_dst_render = vk::ImageMemoryBarrier {
@@ -745,8 +716,9 @@ impl VulkanRasterResizer {
 
             // Readback / Repack
             if let Some(rgb_comp) = rgb_repack {
-                let pool = rgb_comp.cmd_repack_rgb888(
+                rgb_comp.cmd_repack_rgb888(
                     cmd_buf,
+                    &slot.descriptor_pool,
                     dst_image,
                     dst_view,
                     dst_staging_buf,
@@ -757,7 +729,6 @@ impl VulkanRasterResizer {
                     vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
                     vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 )?;
-                transient_pools.push(pool);
             } else {
                 // Transition dst_image COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL for readback
                 let barrier_dst_readback = vk::ImageMemoryBarrier {
@@ -839,11 +810,6 @@ impl VulkanRasterResizer {
             let driver_sync_ms = t_sync_start
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
-
-            // Destroy descriptor pools from compute passes
-            for pool in transient_pools {
-                device.destroy_descriptor_pool(pool, None);
-            }
 
             let mut gpu_upload_ms = 0.0;
             let mut gpu_pure_blit_ms = 0.0;

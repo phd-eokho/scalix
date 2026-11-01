@@ -226,12 +226,11 @@ impl VulkanBlitter {
                 layer_count: 1,
             };
 
-            let mut transient_pools = Vec::new();
-
             // A. Upload / Unpack source
             if let Some((rgb_comp, src_view)) = gpu_unpack {
-                let pool = rgb_comp.cmd_unpack_rgb888(
+                rgb_comp.cmd_unpack_rgb888(
                     cmd_buf,
+                    &slot.descriptor_pool,
                     src_staging_buf,
                     src_size,
                     src_image,
@@ -242,7 +241,6 @@ impl VulkanBlitter {
                     vk::AccessFlags::TRANSFER_READ,
                     vk::PipelineStageFlags::TRANSFER,
                 )?;
-                transient_pools.push(pool);
             } else {
                 let barrier_to_dst = vk::ImageMemoryBarrier {
                     old_layout: vk::ImageLayout::UNDEFINED,
@@ -384,8 +382,9 @@ impl VulkanBlitter {
 
             // Readback / Repack
             if let Some((rgb_comp, dst_view)) = gpu_repack {
-                let pool = rgb_comp.cmd_repack_rgb888(
+                rgb_comp.cmd_repack_rgb888(
                     cmd_buf,
+                    &slot.descriptor_pool,
                     dst_image,
                     dst_view,
                     dst_staging_buf,
@@ -396,7 +395,6 @@ impl VulkanBlitter {
                     vk::AccessFlags::TRANSFER_WRITE,
                     vk::PipelineStageFlags::TRANSFER,
                 )?;
-                transient_pools.push(pool);
             } else {
                 // Transition dst_image TRANSFER_DST_OPTIMAL -> TRANSFER_SRC_OPTIMAL for readback
                 let barrier_dst_readback = vk::ImageMemoryBarrier {
@@ -480,11 +478,6 @@ impl VulkanBlitter {
             let driver_sync_ms = t_sync_start
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
-
-            // Destroy descriptor pools from compute passes
-            for pool in transient_pools {
-                device.destroy_descriptor_pool(pool, None);
-            }
 
             let mut gpu_upload_ms = 0.0;
             let mut gpu_pure_blit_ms = 0.0;

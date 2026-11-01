@@ -5,7 +5,7 @@
 //! CPU/GPU pipelining.
 
 use crate::backend::vulkan::context::VulkanContext;
-use crate::backend::vulkan::util::{CommandPool, GpuBuffer};
+use crate::backend::vulkan::util::{CommandPool, DescriptorPool, GpuBuffer};
 use crate::types::{Result, ScalixError};
 use ash::vk;
 use std::sync::Arc;
@@ -20,6 +20,8 @@ pub struct StagingSlot {
     pub in_flight: bool,
     pub src_staging: Option<GpuBuffer>,
     pub dst_staging: Option<GpuBuffer>,
+    /// Descriptor sets of the slot's resize; reset in [`VulkanStagingRing::acquire_slot`].
+    pub descriptor_pool: DescriptorPool,
 }
 
 impl StagingSlot {
@@ -155,6 +157,7 @@ impl VulkanStagingRing {
                 in_flight: false,
                 src_staging: None,
                 dst_staging: None,
+                descriptor_pool: DescriptorPool::for_resize(&ctx)?,
             });
         }
 
@@ -181,6 +184,7 @@ impl VulkanStagingRing {
                     ))
                 })?;
         }
+        slot.descriptor_pool.reset()?;
         Ok((idx, slot))
     }
 
