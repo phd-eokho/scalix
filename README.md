@@ -47,7 +47,7 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 | Backend Provider | Subsystem / API | Host / Platform Target | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Linux (x86_64 Bare-Metal) | Android (aarch64, API 34+) |
 | :--- | :--- | :--- | :---: | :---: | :---: |
 | **Vulkan Offscreen** | Graphics (`Blit`, `Raster`, `LodPyramid`, `Compute`) | Modern GPU (Vulkan 1.1+) | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
-| **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
+| **OpenGL / GLES** | EGL Headless / FBO / CS (`Blit`, `Raster`, `LodPyramid`, `Compute`) | GLES 3.1+ / GL 4.3+ / Mesa | ✔ Verified (GPU needs `GALLIUM_DRIVER=d3d12`) | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **OpenCL** | Direct Compute (`clEnqueueNDRangeKernel`) | OpenCL 1.2+ / 3.0 (Linux / Android) | ✔ Verified | ◐ Compiled (Unverified) | ◐ Compiled Library (Unverified) |
 | **2D HW Blitter** | V4L2 M2M / DRM Scaler | Linux 2D HW Engines | ○ Mock / Loopback | ○ Hardware Req. | — |
 | **NPU / AI Engine** | QNN / OpenVINO / Vendor NPU | Neural Accelerators | ○ Mock / CPU | ○ OpenVINO | ○ Supported (Unverified) |
@@ -66,7 +66,7 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 
 > [!NOTE]
 > **Current Verification & Target Platform Status**
-> - **WSL2 (Ubuntu 24.04, NVIDIA GPU):** The primary development platform. Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Linux `dma-buf` automatically falls back to 64-byte aligned host staging memory.
+> - **WSL2 (Ubuntu 24.04, NVIDIA GPU):** The primary development platform. Offscreen Vulkan rendering is verified via `/dev/dxg` on NVIDIA GPU. Linux `dma-buf` automatically falls back to 64-byte aligned host staging memory. OpenGL runs on Mesa `llvmpipe` (software) by default because WSL2 exposes no `/dev/dri` render node; set `GALLIUM_DRIVER=d3d12` to run it on the GPU through `/dev/dxg`.
 > - **Linux (x86_64 Bare-Metal):** Verified on physical bare-metal hardware for Vulkan backend and DRM / DMA-BUF subsystems (DMA-Heap and DRM GEM dumb buffer support).
 > - **Android (aarch64, API 34+):** Android NDK cross-compilation (`cargo-ndk`) and compiled library generation (`libscalix.so` / `libscalix.a`) are supported across **NDK** and **Vendor** variants. Standalone vendor mode operates on pure Linux DMA-BUF Heaps without NDK runtime dependencies. Physical hardware testing is pending.
 
@@ -361,6 +361,7 @@ Scalix provides unified zero-copy DMA buffer allocation across supported target 
 
 ### 2. WSL2 (Windows Subsystem for Linux 2: Ubuntu 24.04, NVIDIA GPU)
 * **GPU Acceleration:** Fully supported via Microsoft DirectX bridge (`/dev/dxg`) and Mesa Vulkan/D3D12 for offscreen rendering (currently tested platform).
+* **OpenGL Renderer Selection:** Without `/dev/dri`, Mesa's EGL resolves to `llvmpipe` (software) by default. Export `GALLIUM_DRIVER=d3d12` to use the D3D12 Gallium driver on the GPU; OpenGL results measured without it reflect CPU rendering.
 * **DMA Allocation Behavior & Limitation:** Linux `dma-buf` is **not yet supported** across the `/dev/dxg` virtual translation layer. Stock WSL2 kernels do not provide `/dev/dma_heap`, and DRM GEM dumb buffer allocations often fail or lack PRIME hardware export support. Scalix's runtime allocator probing detects this DMA failure automatically and safely falls back to host memory staging buffers. Testing true zero-copy DMA requires bare-metal Linux with native DRM render nodes.
 
 ### 3. Android (API 33+ / 14+, `aarch64`)
