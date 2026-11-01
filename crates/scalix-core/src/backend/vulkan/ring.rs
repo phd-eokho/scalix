@@ -167,11 +167,25 @@ impl VulkanStagingRing {
     }
 
     /// Acquires the next available staging slot in the ring, ensuring previous work on it is complete.
+    ///
+    /// The slot's command buffer is reset explicitly: an error returned between
+    /// `begin_command_buffer` and `end_command_buffer` leaves it in the recording state, where
+    /// beginning it again is invalid.
     pub fn acquire_slot(&mut self) -> Result<(usize, &mut StagingSlot)> {
         let idx = self.current_idx;
         self.current_idx = (self.current_idx + 1) % self.slots.len();
         let slot = &mut self.slots[idx];
         slot.wait_and_reset(&self.ctx.device)?;
+        unsafe {
+            self.ctx
+                .device
+                .reset_command_buffer(slot.cmd_buf, vk::CommandBufferResetFlags::empty())
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!(
+                        "Failed to reset slot command buffer: {e}"
+                    ))
+                })?;
+        }
         Ok((idx, slot))
     }
 
