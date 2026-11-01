@@ -11,6 +11,9 @@ use crate::types::{FilterMode, ImageDesc, ImageDescMut, Result, ScalixError};
 
 const COMPUTE_SHADER_BODY: &str = include_str!("shaders/compute_sampler.comp");
 const COMPUTE_SHADER_AREA_BODY: &str = include_str!("shaders/compute_area.comp");
+const COMPUTE_SHADER_BICUBIC_BODY: &str = include_str!("shaders/compute_bicubic.comp");
+const COMPUTE_SHADER_LANCZOS3_BODY: &str = include_str!("shaders/compute_lanczos3.comp");
+const RESAMPLE_KERNELS: &str = include_str!("shaders/resample_kernels.glsl");
 
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
@@ -21,6 +24,8 @@ pub struct GlComputeResizer {
     profiler: Arc<dyn Profiler>,
     prog_bilinear: Mutex<Option<u32>>,
     prog_area: Mutex<Option<u32>>,
+    prog_bicubic: Mutex<Option<u32>>,
+    prog_lanczos3: Mutex<Option<u32>>,
 }
 
 impl GlComputeResizer {
@@ -35,6 +40,8 @@ impl GlComputeResizer {
             profiler,
             prog_bilinear: Mutex::new(None),
             prog_area: Mutex::new(None),
+            prog_bicubic: Mutex::new(None),
+            prog_lanczos3: Mutex::new(None),
         }
     }
 
@@ -43,11 +50,11 @@ impl GlComputeResizer {
     }
 
     fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
-        let is_area = filter == FilterMode::Area;
-        let target_lock = if is_area {
-            &self.prog_area
-        } else {
-            &self.prog_bilinear
+        let target_lock = match filter {
+            FilterMode::Area => &self.prog_area,
+            FilterMode::Bicubic => &self.prog_bicubic,
+            FilterMode::Lanczos3 => &self.prog_lanczos3,
+            _ => &self.prog_bilinear,
         };
 
         let mut prog_lock = target_lock.lock().map_err(|_| {
@@ -64,12 +71,13 @@ impl GlComputeResizer {
     fn build_program(&self, filter: FilterMode) -> Result<u32> {
         let gl = &self.ctx.gl;
         let header = self.ctx.compute_shader_header();
-        let body = if filter == FilterMode::Area {
-            COMPUTE_SHADER_AREA_BODY
-        } else {
-            COMPUTE_SHADER_BODY
+        let body = match filter {
+            FilterMode::Area => COMPUTE_SHADER_AREA_BODY,
+            FilterMode::Bicubic => COMPUTE_SHADER_BICUBIC_BODY,
+            FilterMode::Lanczos3 => COMPUTE_SHADER_LANCZOS3_BODY,
+            _ => COMPUTE_SHADER_BODY,
         };
-        let src = format!("{header}{body}");
+        let src = format!("{header}{RESAMPLE_KERNELS}{body}");
 
         unsafe {
             let shader = (gl.glCreateShader)(GL_COMPUTE_SHADER);

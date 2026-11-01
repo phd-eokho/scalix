@@ -13,6 +13,8 @@ const VERTEX_SHADER_BODY: &str = include_str!("shaders/quad.vert");
 const FRAGMENT_SHADER_BILINEAR_BODY: &str = include_str!("shaders/raster_bilinear.frag");
 const FRAGMENT_SHADER_BICUBIC_BODY: &str = include_str!("shaders/raster_bicubic.frag");
 const FRAGMENT_SHADER_AREA_BODY: &str = include_str!("shaders/raster_area.frag");
+const FRAGMENT_SHADER_LANCZOS3_BODY: &str = include_str!("shaders/raster_lanczos3.frag");
+const RESAMPLE_KERNELS: &str = include_str!("shaders/resample_kernels.glsl");
 
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
@@ -24,6 +26,7 @@ pub struct GlRasterResizer {
     prog_bilinear: Mutex<Option<u32>>,
     prog_bicubic: Mutex<Option<u32>>,
     prog_area: Mutex<Option<u32>>,
+    prog_lanczos3: Mutex<Option<u32>>,
     mesh: Mutex<Option<(u32, u32)>>, // (vao, vbo)
 }
 
@@ -40,6 +43,7 @@ impl GlRasterResizer {
             prog_bilinear: Mutex::new(None),
             prog_bicubic: Mutex::new(None),
             prog_area: Mutex::new(None),
+            prog_lanczos3: Mutex::new(None),
             mesh: Mutex::new(None),
         }
     }
@@ -135,9 +139,8 @@ impl GlRasterResizer {
     fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
         let (target_lock, fs_body) = match filter {
             FilterMode::Area => (&self.prog_area, FRAGMENT_SHADER_AREA_BODY),
-            FilterMode::Bicubic | FilterMode::Lanczos3 => {
-                (&self.prog_bicubic, FRAGMENT_SHADER_BICUBIC_BODY)
-            }
+            FilterMode::Bicubic => (&self.prog_bicubic, FRAGMENT_SHADER_BICUBIC_BODY),
+            FilterMode::Lanczos3 => (&self.prog_lanczos3, FRAGMENT_SHADER_LANCZOS3_BODY),
             _ => (&self.prog_bilinear, FRAGMENT_SHADER_BILINEAR_BODY),
         };
 
@@ -151,7 +154,7 @@ impl GlRasterResizer {
         let gl = &self.ctx.gl;
         let header = self.ctx.shader_header();
         let vs_src = format!("{header}{VERTEX_SHADER_BODY}");
-        let fs_src = format!("{header}{fs_body}");
+        let fs_src = format!("{header}{RESAMPLE_KERNELS}{fs_body}");
 
         let vs = self.compile_shader(GL_VERTEX_SHADER, &vs_src)?;
         let fs = self.compile_shader(GL_FRAGMENT_SHADER, &fs_src)?;
