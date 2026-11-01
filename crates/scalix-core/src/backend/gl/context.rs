@@ -679,6 +679,18 @@ impl EglContext {
             let mut bound_minor: EGLint = 0;
             let mut selected_gbm: Option<(*mut c_void, i32)> = None;
 
+            // NOTE: EGLDisplay handles are process-wide singletons per (platform, native display).
+            // Device/surfaceless/default displays are shared with every other EglContext (and the
+            // host application), so eglTerminate on them invalidates those contexts. Only displays
+            // backed by our own private gbm_device are terminated. Action: none.
+            let terminate_private = |display: EGLDisplay, is_private: bool| {
+                if is_private {
+                    if let Some(f) = egl_terminate {
+                        let _ = f(display);
+                    }
+                }
+            };
+
             for (cand_display, cand_desc, cand_gbm) in candidate_displays.iter().copied() {
                 let mut major: EGLint = 0;
                 let mut minor: EGLint = 0;
@@ -735,9 +747,7 @@ impl EglContext {
                 }
 
                 if num_configs < 1 {
-                    if let Some(f) = egl_terminate {
-                        let _ = f(cand_display);
-                    }
+                    terminate_private(cand_display, cand_gbm.is_some());
                     continue;
                 }
 
@@ -809,9 +819,7 @@ impl EglContext {
                 }
 
                 if cand_context == EGL_NO_CONTEXT {
-                    if let Some(f) = egl_terminate {
-                        let _ = f(cand_display);
-                    }
+                    terminate_private(cand_display, cand_gbm.is_some());
                     continue;
                 }
 
@@ -862,9 +870,7 @@ impl EglContext {
                 if let Some(f) = egl_destroy_context {
                     let _ = f(cand_display, cand_context);
                 }
-                if let Some(f) = egl_terminate {
-                    let _ = f(cand_display);
-                }
+                terminate_private(cand_display, cand_gbm.is_some());
             }
 
             // Immediately destroy all unselected candidate GBM devices and close their file descriptors
@@ -1192,8 +1198,11 @@ impl Drop for EglContext {
             if let Some(f) = self.egl_destroy_context {
                 let _ = f(self.display, self.context);
             }
-            if let Some(f) = self.egl_terminate {
-                let _ = f(self.display);
+            // Shared displays must stay initialized for sibling contexts; see EglContext::new.
+            if !self.gbm_dev.is_null() {
+                if let Some(f) = self.egl_terminate {
+                    let _ = f(self.display);
+                }
             }
 
             if !self.gbm_dev.is_null() {
