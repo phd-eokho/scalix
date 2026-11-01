@@ -38,8 +38,10 @@ impl GlLodDownscaler {
         let profiling = self.profiler.is_enabled();
         let gl = &self.ctx.gl;
 
-        let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
-        let (dst_internal, dst_format, dst_type) = get_gl_format_tuple(dst.format)?;
+        let (src_internal, src_format, src_type) =
+            get_gl_format_tuple(src.format, self.ctx.is_gles)?;
+        let (dst_internal, dst_format, dst_type) =
+            get_gl_format_tuple(dst.format, self.ctx.is_gles)?;
 
         let mut ring_guard = self.ring.lock().map_err(|_| {
             ScalixError::ExecutionFailed("Failed to acquire GlStagingRing lock".to_string())
@@ -146,7 +148,7 @@ impl GlLodDownscaler {
             // Download final output
             let download_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
-            super::ring::read_pixels_into(gl, dst, dst_format, dst_type)?;
+            super::ring::read_pixels_into(&self.ctx, dst, dst_format, dst_type, src.format)?;
 
             // Clean up / restore FBO attachments and texture states
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.src_fbo);

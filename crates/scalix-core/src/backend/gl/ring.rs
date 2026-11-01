@@ -8,7 +8,7 @@
 //! readback only together with an asynchronous API that can return before the GPU finishes.
 
 use crate::backend::gl::context::*;
-use crate::types::{ImageDesc, ImageDescMut, Result, ScalixError};
+use crate::types::{ImageDesc, ImageDescMut, PixelFormat, Result, ScalixError};
 use std::ffi::c_void;
 use std::sync::Arc;
 
@@ -116,6 +116,10 @@ impl GlStagingSlot {
     }
 
     /// Ensures destination texture allocation is configured with matching dimensions and format.
+    ///
+    /// With `glTexStorage2D` available the texture is immutable, which GLES requires for
+    /// `glBindImageTexture` (compute). Immutable storage cannot be respecified, so a new texture
+    /// name is created on reallocation; callers attach the returned name every call.
     pub fn ensure_dst_texture(
         &mut self,
         ctx: &Arc<EglContext>,
@@ -132,7 +136,12 @@ impl GlStagingSlot {
             || self.dst_tex_format != format
             || self.dst_tex_type != typ;
 
+        let tex_storage = gl.glTexStorage2D.filter(|_| ctx.has_tex_storage);
         unsafe {
+            if needs_realloc && tex_storage.is_some() {
+                (gl.glDeleteTextures)(1, &self.dst_texture);
+                (gl.glGenTextures)(1, &mut self.dst_texture);
+            }
             (gl.glBindTexture)(GL_TEXTURE_2D, self.dst_texture);
             (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as i32);
             (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as i32);
@@ -141,17 +150,20 @@ impl GlStagingSlot {
             (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
 
             if needs_realloc {
-                (gl.glTexImage2D)(
-                    GL_TEXTURE_2D,
-                    0,
-                    internal as i32,
-                    w as i32,
-                    h as i32,
-                    0,
-                    format,
-                    typ,
-                    std::ptr::null(),
-                );
+                match tex_storage {
+                    Some(storage) => storage(GL_TEXTURE_2D, 1, internal, w as i32, h as i32),
+                    None => (gl.glTexImage2D)(
+                        GL_TEXTURE_2D,
+                        0,
+                        internal as i32,
+                        w as i32,
+                        h as i32,
+                        0,
+                        format,
+                        typ,
+                        std::ptr::null(),
+                    ),
+                }
                 self.dst_tex_w = w;
                 self.dst_tex_h = h;
                 self.dst_tex_internal = internal;
@@ -243,15 +255,31 @@ fn row_length_px(
 
 /// Reads the bound `GL_READ_FRAMEBUFFER` into `dst`, honoring `dst.stride`.
 ///
+/// `src_format` is the format the framebuffer contents were produced from; on GLES it decides
+/// whether red and blue must be swapped (see [`super::blit::get_gl_format_tuple`]).
+///
 /// # Safety
 /// The context must be current and a complete read framebuffer of at least
 /// `dst.width x dst.height` must be bound.
 pub(crate) unsafe fn read_pixels_into(
-    gl: &GlFunctions,
+    ctx: &EglContext,
     dst: &mut ImageDescMut,
     format: u32,
     typ: u32,
+    src_format: PixelFormat,
 ) -> Result<()> {
+    let gl = &ctx.gl;
+    let swap_rb = is_bgr_ordered(src_format) != is_bgr_ordered(dst.format);
+    // GLES only guarantees GL_RGBA/GL_UNSIGNED_BYTE readback: read that and repack on the CPU
+    // unless the bytes already land in `dst` order.
+    if ctx.is_gles && (dst.format.bytes_per_pixel() != Some(4) || swap_rb) {
+        return read_rgba_and_repack(gl, dst, swap_rb);
+    }
+    let (format, typ) = if ctx.is_gles {
+        (GL_RGBA, GL_UNSIGNED_BYTE)
+    } else {
+        (format, typ)
+    };
     let (w, h) = (dst.width as i32, dst.height as i32);
     let row_length = row_length_px(dst.format, dst.width, dst.stride)?;
     (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
@@ -280,6 +308,64 @@ pub(crate) unsafe fn read_pixels_into(
                     typ,
                     row.as_mut_ptr() as *mut c_void,
                 );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_bgr_ordered(format: PixelFormat) -> bool {
+    matches!(format, PixelFormat::Bgr888 | PixelFormat::Bgra8888)
+}
+
+/// GLES readback path: reads tightly packed RGBA8 and converts it into `dst`.
+///
+/// # Safety
+/// Same contract as [`read_pixels_into`].
+unsafe fn read_rgba_and_repack(
+    gl: &GlFunctions,
+    dst: &mut ImageDescMut,
+    swap_rb: bool,
+) -> Result<()> {
+    let (w, h) = (dst.width as usize, dst.height as usize);
+    let mut rgba = vec![0u8; w * h * 4];
+    (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
+    (gl.glPixelStorei)(GL_PACK_ROW_LENGTH, 0);
+    (gl.glReadPixels)(
+        0,
+        0,
+        w as i32,
+        h as i32,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        rgba.as_mut_ptr() as *mut c_void,
+    );
+    repack_rgba(&rgba, dst, swap_rb)
+}
+
+/// Converts tightly packed RGBA8 rows into `dst` (3 or 4 bytes per pixel), optionally swapping
+/// red and blue.
+fn repack_rgba(rgba: &[u8], dst: &mut ImageDescMut, swap_rb: bool) -> Result<()> {
+    let bpp = dst
+        .format
+        .bytes_per_pixel()
+        .filter(|&b| b == 3 || b == 4)
+        .ok_or(ScalixError::UnsupportedFormat(dst.format))?;
+    let w = dst.width as usize;
+    let rows = rgba
+        .chunks_exact(w * 4)
+        .zip(dst.data.chunks_mut(dst.stride));
+    for (src_row, dst_row) in rows.take(dst.height as usize) {
+        for (s, d) in src_row
+            .chunks_exact(4)
+            .zip(dst_row[..w * bpp].chunks_exact_mut(bpp))
+        {
+            let (r, b) = if swap_rb { (s[2], s[0]) } else { (s[0], s[2]) };
+            d[0] = r;
+            d[1] = s[1];
+            d[2] = b;
+            if bpp == 4 {
+                d[3] = s[3];
             }
         }
     }
@@ -341,5 +427,42 @@ impl Drop for GlStagingRing {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repack(dst_format: PixelFormat, swap_rb: bool) -> Vec<u8> {
+        // 2x2 RGBA source, distinct value per channel.
+        let rgba: Vec<u8> = (0..16).collect();
+        let bpp = dst_format.bytes_per_pixel().unwrap();
+        let stride = 2 * bpp + 1; // padded row
+        let mut out = crate::types::AlignedBuffer::new(stride * 2).unwrap();
+        out.as_mut_slice().fill(0xEE);
+        let mut dst = ImageDescMut::new(2, 2, stride, dst_format, out.as_mut_slice()).unwrap();
+        repack_rgba(&rgba, &mut dst, swap_rb).unwrap();
+        out.as_slice().to_vec()
+    }
+
+    #[test]
+    fn repack_drops_alpha_for_three_channel_dst() {
+        assert_eq!(
+            repack(PixelFormat::Rgb888, false),
+            [0, 1, 2, 4, 5, 6, 0xEE, 8, 9, 10, 12, 13, 14, 0xEE]
+        );
+    }
+
+    #[test]
+    fn repack_swaps_red_and_blue() {
+        assert_eq!(
+            repack(PixelFormat::Bgr888, true),
+            [2, 1, 0, 6, 5, 4, 0xEE, 10, 9, 8, 14, 13, 12, 0xEE]
+        );
+        assert_eq!(
+            repack(PixelFormat::Bgra8888, true),
+            [2, 1, 0, 3, 6, 5, 4, 7, 0xEE, 10, 9, 8, 11, 14, 13, 12, 15, 0xEE]
+        );
     }
 }

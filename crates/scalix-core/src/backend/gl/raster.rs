@@ -223,8 +223,10 @@ impl GlRasterResizer {
         let profiling = self.profiler.is_enabled();
         let gl = &self.ctx.gl;
 
-        let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
-        let (dst_internal, dst_format, dst_type) = get_gl_format_tuple(dst.format)?;
+        let (src_internal, src_format, src_type) =
+            get_gl_format_tuple(src.format, self.ctx.is_gles)?;
+        let (dst_internal, dst_format, dst_type) =
+            get_gl_format_tuple(dst.format, self.ctx.is_gles)?;
 
         let program = self.get_or_build_program(filter)?;
         let (vao, _vbo) = self.ensure_mesh()?;
@@ -304,7 +306,7 @@ impl GlRasterResizer {
             // 4. Download Pixels via Persistent FBO
             let download_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
-            super::ring::read_pixels_into(gl, dst, dst_format, dst_type)?;
+            super::ring::read_pixels_into(&self.ctx, dst, dst_format, dst_type, src.format)?;
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, 0);
             let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
 

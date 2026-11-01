@@ -164,6 +164,7 @@ pub struct GlFunctions {
     pub glGenTextures: unsafe extern "C" fn(i32, *mut u32),
     pub glBindTexture: unsafe extern "C" fn(u32, u32),
     pub glTexImage2D: unsafe extern "C" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void),
+    pub glTexStorage2D: Option<unsafe extern "C" fn(u32, i32, u32, i32, i32)>,
     pub glTexSubImage2D:
         unsafe extern "C" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void),
     pub glTexParameteri: unsafe extern "C" fn(u32, u32, i32),
@@ -263,6 +264,10 @@ pub struct EglContext {
     pub gl: GlFunctions,
     pub is_compute_supported: bool,
     pub is_gles: bool,
+    /// `glTexStorage2D` is usable (GL 4.2 / ES 3.0); see [`GlStagingSlot::ensure_dst_texture`].
+    ///
+    /// [`GlStagingSlot::ensure_dst_texture`]: super::ring::GlStagingSlot::ensure_dst_texture
+    pub has_tex_storage: bool,
     pub gl_version: String,
     _lock: Mutex<()>,
 }
@@ -1060,6 +1065,10 @@ impl EglContext {
                     "glTexImage2D",
                     unsafe extern "C" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void)
                 ),
+                glTexStorage2D: get_optional_gl_fn!(
+                    "glTexStorage2D",
+                    unsafe extern "C" fn(u32, i32, u32, i32, i32)
+                ),
                 glTexSubImage2D: get_gl_fn!(
                     "glTexSubImage2D",
                     unsafe extern "C" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void)
@@ -1220,9 +1229,13 @@ impl EglContext {
             // Symbol presence proves nothing: libglvnd's eglGetProcAddress returns dispatch stubs
             // for every gl* name, so compute is gated on the context version (GL 4.3 / ES 3.1).
             let min_compute_version = if is_gles { (3, 1) } else { (4, 3) };
+            let gl_version = parse_gl_version(&version_str);
             let is_compute_supported = gl.glDispatchCompute.is_some()
                 && gl.glBindImageTexture.is_some()
-                && parse_gl_version(&version_str) >= min_compute_version;
+                && gl_version >= min_compute_version;
+            let min_tex_storage_version = if is_gles { (3, 0) } else { (4, 2) };
+            let has_tex_storage =
+                gl.glTexStorage2D.is_some() && gl_version >= min_tex_storage_version;
 
             log::debug!(
                 "EGL/GL Context Initialized: Version '{}', is_gles = {}, compute = {}, offscreen_pbuffer = {}",
@@ -1263,6 +1276,7 @@ impl EglContext {
                 gl,
                 is_compute_supported,
                 is_gles,
+                has_tex_storage,
                 gl_version: version_str,
                 _lock: Mutex::new(()),
             })
@@ -1271,7 +1285,7 @@ impl EglContext {
 
     pub fn shader_header(&self) -> &'static str {
         if self.is_gles {
-            "#version 300 es\nprecision highp float;\n"
+            "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n"
         } else {
             "#version 330 core\n"
         }
@@ -1279,7 +1293,7 @@ impl EglContext {
 
     pub fn compute_shader_header(&self) -> &'static str {
         if self.is_gles {
-            "#version 310 es\nprecision highp float;\n"
+            "#version 310 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp image2D;\n"
         } else {
             "#version 430 core\n"
         }
