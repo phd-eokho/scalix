@@ -119,23 +119,21 @@ pub struct VulkanRasterResizer {
 }
 
 impl VulkanRasterResizer {
-    #[inline]
-    #[must_use]
-    pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Self {
+    pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Result<Self> {
         let rgb_compute =
             crate::backend::vulkan::rgb_compute::VulkanRgbCompute::new(Arc::clone(&ctx))
                 .map(Arc::new)
                 .ok();
-        let ring = Mutex::new(
-            VulkanStagingRing::new(Arc::clone(&ctx), DEFAULT_RING_SLOTS)
-                .expect("Failed to initialize Vulkan staging ring for rasterizer"),
-        );
-        Self {
+        let ring = Mutex::new(VulkanStagingRing::new(
+            Arc::clone(&ctx),
+            DEFAULT_RING_SLOTS,
+        )?);
+        Ok(Self {
             ctx,
             profiler,
             rgb_compute,
             ring,
-        }
+        })
     }
 
     pub fn process(
@@ -560,7 +558,11 @@ impl VulkanRasterResizer {
                 flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
                 ..Default::default()
             };
-            device.begin_command_buffer(cmd_buf, &begin_info).unwrap();
+            device
+                .begin_command_buffer(cmd_buf, &begin_info)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to begin command buffer: {e}"))
+                })?;
 
             if let Some(qp) = query_pool {
                 device.cmd_reset_query_pool(cmd_buf, qp, 0, 4);
