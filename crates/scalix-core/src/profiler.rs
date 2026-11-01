@@ -1,14 +1,17 @@
 //! Pluggable Engine & GPU Hardware Profiling Architecture
 //!
-//! Designed with zero-overhead abstraction:
-//! - When disabled (`NoopProfiler` or `enabled = false`), all hooks compile down to
-//!   inline no-ops with zero branch, allocation, or Vulkan query overhead.
+//! - When disabled (`NoopProfiler` or `enabled = false`), backends skip Vulkan timestamp queries
+//!   and OpenGL phase synchronization; the remaining cost is one `is_enabled` check per call.
 //! - When enabled (`ActiveProfiler`), records stage-by-stage timings and GPU hardware query timestamps.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 /// Stage-by-stage latency metrics measured in milliseconds.
+///
+/// Vulkan derives the GPU stages from timestamp queries. OpenGL measures CPU wall time per phase
+/// and calls `glFinish` at each phase boundary while profiling is enabled, so the GPU work is
+/// attributed to the phase that queued it (at the cost of serializing the phases).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ProfileMetrics {

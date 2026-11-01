@@ -1,6 +1,6 @@
 //! OpenGL Compute Shader Resizer (`glDispatchCompute`)
 
-use std::ffi::{c_char, CString};
+use std::ffi::c_char;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -18,14 +18,21 @@ const RESAMPLE_KERNELS: &str = include_str!("shaders/resample_kernels.glsl");
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
 
+/// A linked compute program with its per-frame uniform location resolved once at build time.
+#[derive(Clone, Copy)]
+struct ComputeProgram {
+    id: u32,
+    u_src_size: i32,
+}
+
 pub struct GlComputeResizer {
     ctx: Arc<EglContext>,
     ring: Arc<Mutex<GlStagingRing>>,
     profiler: Arc<dyn Profiler>,
-    prog_bilinear: Mutex<Option<u32>>,
-    prog_area: Mutex<Option<u32>>,
-    prog_bicubic: Mutex<Option<u32>>,
-    prog_lanczos3: Mutex<Option<u32>>,
+    prog_bilinear: Mutex<Option<ComputeProgram>>,
+    prog_area: Mutex<Option<ComputeProgram>>,
+    prog_bicubic: Mutex<Option<ComputeProgram>>,
+    prog_lanczos3: Mutex<Option<ComputeProgram>>,
 }
 
 impl GlComputeResizer {
@@ -49,7 +56,7 @@ impl GlComputeResizer {
         self.ctx.is_compute_supported
     }
 
-    fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
+    fn get_or_build_program(&self, filter: FilterMode) -> Result<ComputeProgram> {
         let target_lock = match filter {
             FilterMode::Area => &self.prog_area,
             FilterMode::Bicubic => &self.prog_bicubic,
@@ -68,7 +75,7 @@ impl GlComputeResizer {
         Ok(prog)
     }
 
-    fn build_program(&self, filter: FilterMode) -> Result<u32> {
+    fn build_program(&self, filter: FilterMode) -> Result<ComputeProgram> {
         let gl = &self.ctx.gl;
         let header = self.ctx.compute_shader_header();
         let body = match filter {
@@ -81,9 +88,12 @@ impl GlComputeResizer {
 
         unsafe {
             let shader = (gl.glCreateShader)(GL_COMPUTE_SHADER);
-            let c_src = CString::new(src).unwrap();
-            let ptr = c_src.as_ptr();
-            (gl.glShaderSource)(shader, 1, &ptr, std::ptr::null());
+            // Explicit length: the source needs no NUL terminator or CString copy.
+            let len = i32::try_from(src.len()).map_err(|_| {
+                ScalixError::ExecutionFailed("Shader source exceeds i32::MAX bytes".to_string())
+            })?;
+            let ptr = src.as_ptr() as *const c_char;
+            (gl.glShaderSource)(shader, 1, &ptr, &len);
             (gl.glCompileShader)(shader);
 
             let mut success = 0;
@@ -128,7 +138,16 @@ impl GlComputeResizer {
                     "Compute program link failed: {log}"
                 )));
             }
-            Ok(prog)
+
+            // The sampler unit never changes, so it is set once here instead of every frame.
+            (gl.glUseProgram)(prog);
+            let u_tex = (gl.glGetUniformLocation)(prog, c"uSrcTexture".as_ptr() as *const c_char);
+            (gl.glUniform1i)(u_tex, 0);
+            let u_src_size = (gl.glGetUniformLocation)(prog, c"uSrcSize".as_ptr() as *const c_char);
+            Ok(ComputeProgram {
+                id: prog,
+                u_src_size,
+            })
         }
     }
 
@@ -147,6 +166,8 @@ impl GlComputeResizer {
 
         let wall_start = Instant::now();
         let _guard = self.ctx.bind_current()?;
+        // GL queues work asynchronously; finishing each phase attributes GPU time to it.
+        let profiling = self.profiler.is_enabled();
         let gl = &self.ctx.gl;
 
         let gl_dispatch = gl.glDispatchCompute.ok_or_else(|| {
@@ -156,8 +177,10 @@ impl GlComputeResizer {
             ScalixError::ExecutionFailed("glBindImageTexture not available".to_string())
         })?;
 
-        let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
-        let (_dst_internal, dst_format, dst_type) = get_gl_format_tuple(dst.format)?;
+        let (src_internal, src_format, src_type) =
+            get_gl_format_tuple(src.format, self.ctx.is_gles)?;
+        let (_dst_internal, dst_format, dst_type) =
+            get_gl_format_tuple(dst.format, self.ctx.is_gles)?;
 
         let program = self.get_or_build_program(filter)?;
         let gl_filter = if filter == FilterMode::Nearest {
@@ -175,7 +198,7 @@ impl GlComputeResizer {
             (gl.glPixelStorei)(GL_UNPACK_ALIGNMENT, 1);
             (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
 
-            // 1. Upload Source via PBO DMA staging
+            // 1. Upload Source from client memory
             let upload_start = Instant::now();
             let src_tex = slot.upload_src_data(
                 &self.ctx,
@@ -193,22 +216,19 @@ impl GlComputeResizer {
                 GL_RGBA,
                 GL_UNSIGNED_BYTE,
             )?;
+            if profiling {
+                (gl.glFinish)();
+            }
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             // 2. Dispatch Compute
             let compute_start = Instant::now();
-            (gl.glUseProgram)(program);
+            (gl.glUseProgram)(program.id);
 
             (gl.glActiveTexture)(GL_TEXTURE0);
             (gl.glBindTexture)(GL_TEXTURE_2D, src_tex);
-            let u_tex =
-                (gl.glGetUniformLocation)(program, c"uSrcTexture".as_ptr() as *const c_char);
-            (gl.glUniform1i)(u_tex, 0);
-
-            let u_src_size =
-                (gl.glGetUniformLocation)(program, c"uSrcSize".as_ptr() as *const c_char);
-            if u_src_size >= 0 {
-                (gl.glUniform2f)(u_src_size, src.width as f32, src.height as f32);
+            if program.u_src_size >= 0 {
+                (gl.glUniform2f)(program.u_src_size, src.width as f32, src.height as f32);
             }
 
             gl_bind_image(1, dst_tex, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA8);
@@ -218,9 +238,12 @@ impl GlComputeResizer {
             gl_dispatch(groups_x, groups_y, 1);
 
             if let Some(gl_barrier) = gl.glMemoryBarrier {
-                gl_barrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_ALL_BARRIER_BITS);
+                // Only the glReadPixels from the FBO attachment consumes the image stores.
+                gl_barrier(GL_FRAMEBUFFER_BARRIER_BIT);
             }
-            slot.signal_fence(&self.ctx);
+            if profiling {
+                (gl.glFinish)();
+            }
             let compute_ms = compute_start.elapsed().as_secs_f64() * 1000.0;
 
             // 3. Download Pixels via Persistent FBO
@@ -234,7 +257,7 @@ impl GlComputeResizer {
                 0,
             );
 
-            super::ring::read_pixels_into(gl, dst, dst_format, dst_type)?;
+            super::ring::read_pixels_into(&self.ctx, dst, dst_format, dst_type, src.format)?;
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, 0);
             let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
 

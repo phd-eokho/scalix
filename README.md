@@ -17,13 +17,13 @@ Designed with a **headless-first and offscreen-first** architecture, Scalix prov
   * **OpenCL Backend (`Backend::OpenCL`):** Pure direct compute kernel pipeline (`clEnqueueNDRangeKernel`) with dynamic runtime loading (`dlopen`/`dlsym`), ideal for heterogeneous compute environments, headless servers, and Android OpenCL runtimes.
   * **Dedicated 2D HW & NPU (Extensible):** Scalable engine architecture prepared for zero-copy DMA-BUF hardware scaling (V4L2 M2M, DRM) and neural network pre-processing accelerators.
 * **GPU Compute Shader Acceleration:** Native compute pipelines (`VulkanRgbCompute`, `OpenClComputeResizer`, OpenGL CS) for direct GPU-side packed RGB888 unpack/repack and high-order resamplers without CPU memory conversion bottlenecks.
-* **Ring-Buffered Staging Allocator:** Triple-buffered staging rings (`VulkanStagingRing`, `GlStagingRing`, `OpenClStagingRing`) with per-slot fence/event synchronization and automatic hysteresis memory management (<50% capacity threshold).
+* **Ring-Buffered Staging Allocator:** 3-slot rings that reuse per-slot staging buffers (`VulkanStagingRing`, `OpenClStagingRing`, shrunk when demand drops below 50% of capacity) and textures/FBOs (`GlStagingRing`) across frames. Each resize currently waits for its own GPU work, so slots do not overlap consecutive frames.
 * **Flexible Execution Models:**
   * **Synchronous (Blocking):** Direct execution for CLI tools and deterministic pipelines.
   * **Asynchronous (Zero-Copy Task):** Non-blocking polling and timeout waits with zero-copy descriptor dispatch (`resize_async_raw`).
   * **Callback-Driven:** Event-driven frame completion callbacks dispatched to a background thread pool for streaming, camera, and UI pipelines.
 * **Strict 64-Byte Memory Alignment:** 64-byte buffer alignment (`SCALIX_REQUIRED_ALIGNMENT_BYTES = 64`) across all descriptors, enabling optimal AVX-512 / ARM Neon SIMD vectorization and DMA-BUF hardware compatibility.
-* **Zero-Copy Memory Subsystem:** First-class support for Linux **DMA-BUF** and Android **AHardwareBuffer** & **DMA-BUF Heaps (`/dev/dma_heap/*`)** across GPU, 2D hardware blitters, and V4L2.
+* **DMA Memory Subsystem:** Allocation, import and CPU mapping of Linux **DMA-BUF**, Android **AHardwareBuffer** and **DMA-BUF Heaps (`/dev/dma_heap/*`)** for sharing with cameras, V4L2 and other DMA-capable devices. The GPU backends do not import `dma_buf_fd` yet: they read and write `DmaBuffer` memory through its CPU mapping and copy it to and from the GPU like any host buffer.
 * **Dual-Mode Android Architecture:** Seamless support for both **NDK Mode** (`AHardwareBuffer` for apps) and **Vendor Mode** (raw `/dev/dma_heap/*` and file descriptor importing for HALs/daemons).
 * **Multi-Language APIs:** Core engine with stable **C ABI** (`libscalix.so` / `scalix.h`), idiomatic **C++20** wrapper (`scalix.hpp`), and native **Rust** crate.
 * **Comprehensive Filter Suite:** Nearest Neighbor, Bilinear, Bicubic (Catmull-Rom 4×4), Lanczos-3 (3-lobe sinc 6×6), Area (pixel box relation), and hierarchical LoD mipchain downscaling.
@@ -59,7 +59,7 @@ This matrix tracks the hardware backends, memory subsystems, and platform capabi
 | Feature | Interface / Handle | WSL2 (Ubuntu 24.04, NVIDIA GPU) | Bare-Metal Linux (x86_64) | Android (API 33+/14+, aarch64) |
 | :--- | :--- | :---: | :---: | :---: |
 | **64-Byte Aligned Host Memory** | Contiguous 64-byte aligned CPU memory (RGB/RGBA) | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
-| **Triple-Buffered Staging Ring** | 3-slot pinned / mapped staging buffer ring with hysteresis | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
+| **3-Slot Staging Ring** | Per-slot staging buffer (Vulkan / OpenCL, with hysteresis) or texture (OpenGL) reuse | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
 | **Linux & Android DMA-BUF** | `dma_buf_fd` (DMA-BUF Heaps `/dev/dma_heap/*` zero-copy) | ◐ Fallback (Verified) | ✔ Verified (DRM / DMA-Heap) | ◐ Compiled Library (Unverified) |
 | **Raw DMA-BUF Import** | `from_fd(fd, ...)` / `scalix_dma_buffer_from_fd` | ✔ Verified | ✔ Verified | ◐ Compiled Library (Unverified) |
 | **Android AHardwareBuffer** | `AHardwareBuffer*` zero-copy interop (NDK mode) | — | — | ◐ Compiled Library (Unverified) |
@@ -196,9 +196,12 @@ scalix_engine_destroy(engine);
 
 ---
 
-### 2. Advanced: Zero-Copy Hardware DMA Buffers (`DmaBuffer`)
+### 2. Advanced: Hardware DMA Buffers (`DmaBuffer`)
 
-Allocate hardware DMA memory (Linux DMA-Heap / DRM GEM Dumb or Android `AHardwareBuffer`) and execute scaling without intermediate CPU-GPU staging copies:
+Allocate hardware DMA memory (Linux DMA-Heap / DRM GEM Dumb or Android `AHardwareBuffer`) that other DMA-capable devices can share, and scale it in place:
+
+> [!NOTE]
+> The GPU backends do not import `dma_buf_fd` yet. They access `DmaBuffer` memory through its CPU mapping, so the GPU path still performs one upload and one readback copy.
 
 ```cpp
 #include <scalix/scalix.hpp>
@@ -217,11 +220,11 @@ void process_dma_pipeline(scalix::Engine& engine) {
         // Decode camera/video frame directly into mapped DMA memory
     });
 
-    // 3. Obtain zero-copy image descriptors referencing DMA file descriptors (fd)
+    // 3. Obtain image descriptors over the mapped memory (they also carry the dma_buf fd)
     auto src_desc = src_dma.as_image_desc();
     auto dst_desc = dst_dma.as_image_desc();
 
-    // 4. Execute GPU scaling directly on hardware DMA buffers
+    // 4. Execute GPU scaling on the DMA buffers
     const auto options = scalix::ResizeOptions::with_vulkan(
         scalix::Filter::Lanczos3,
         scalix::Strategy::Compute
@@ -337,9 +340,9 @@ make -C examples clean
 
 ---
 
-## Zero-Copy DMA Subsystem by Platform
+## DMA Subsystem by Platform
 
-Scalix provides unified zero-copy DMA buffer allocation across supported target environments:
+Scalix provides unified DMA buffer allocation and import across supported target environments (GPU backends access these buffers through their CPU mapping; see the note in the `DmaBuffer` example):
 
 ### 1. Bare-Metal Linux (x86_64, Kernel 5.6+ - Verified)
 * **Allocators:** Uses **DMA-Heap** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) with fallback to **DRM Render Node Dumb Buffers** (`/dev/dri/renderD128` via GEM PRIME). Verified on bare-metal Linux hardware.
@@ -368,7 +371,7 @@ Scalix provides unified zero-copy DMA buffer allocation across supported target 
 * **Dual-Mode Architecture:**
   * **NDK Mode:** Uses **`AHardwareBuffer`** (`AHardwareBuffer_allocate`, `AHardwareBuffer_lock`) for app and framework zero-copy sharing.
   * **Vendor Mode:** Uses **Linux DMA-BUF Heaps** (`/dev/dma_heap/system`, `/dev/dma_heap/cma`) via direct POSIX `ioctl(DMA_HEAP_IOCTL_ALLOC)` with zero external `.so` dependencies (no `libdmabufheap.so` or `dlopen` required).
-  * **Zero-Copy FD Import:** External pipelines (Camera V4L2, DRM, custom DSP/NPU) pass raw `dma_buf_fd` handles directly into `DmaBuffer::from_fd()`.
+  * **FD Import:** External pipelines (Camera V4L2, DRM, custom DSP/NPU) pass raw `dma_buf_fd` handles directly into `DmaBuffer::from_fd()`.
 * **Platform Gating & Build:** Cross-compiled via NDK r27c (Platform 34) for `aarch64-linux-android` in both NDK and Vendor variants.
 
 ---

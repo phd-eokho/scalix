@@ -50,12 +50,6 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
-    /// Creates a new worker pool with the specified number of threads and default PID-scoped prefix (`<pid>/scx-w`).
-    pub fn new(num_threads: usize) -> Self {
-        let pid = std::process::id();
-        Self::with_prefix(&format!("{}/scx-w", pid), num_threads)
-    }
-
     /// Fallible constructor initializing a worker pool with a thread prefix, thread count, and channel capacity.
     pub fn try_with_prefix(name_prefix: &str, num_threads: usize, capacity: usize) -> Result<Self> {
         let (sender, receiver) = bounded::<Job>(capacity);
@@ -86,14 +80,6 @@ impl WorkerPool {
             sender: Some(sender),
             workers,
         })
-    }
-
-    /// Creates a new worker pool with custom thread name prefix.
-    /// If `num_threads == 1`, the name is `<name_prefix>`.
-    /// If `num_threads > 1`, threads are named `<name_prefix><id>`.
-    pub fn with_prefix(name_prefix: &str, num_threads: usize) -> Self {
-        Self::try_with_prefix(name_prefix, num_threads, DEFAULT_WORKER_CAPACITY)
-            .expect("Failed to spawn scalix worker thread")
     }
 
     /// Submits a closure job to the worker pool.

@@ -186,11 +186,11 @@ impl Engine {
             config.thread_prefix = Some(p.to_string());
         }
 
-        Ok(Self::with_config_and_profiler(backend, config, profiler))
+        Self::with_config_and_profiler(backend, config, profiler)
     }
 
     /// Initializes an Engine with custom backend and configuration.
-    pub fn with_config(backend: Arc<dyn Backend>, config: EngineConfig) -> Self {
+    pub fn with_config(backend: Arc<dyn Backend>, config: EngineConfig) -> Result<Self> {
         let profiler: Arc<dyn Profiler> = Arc::new(ActiveProfiler::new());
         Self::with_config_and_profiler(backend, config, profiler)
     }
@@ -200,28 +200,26 @@ impl Engine {
         backend: Arc<dyn Backend>,
         config: EngineConfig,
         profiler: Arc<dyn Profiler>,
-    ) -> Self {
+    ) -> Result<Self> {
         let p = sanitize_thread_prefix(config.thread_prefix.as_deref());
         let hw_prefix = format!("{}/scx-hw", p);
         let cb_prefix = format!("{}/scx-w", p);
         let cap = config.worker_queue_capacity;
 
-        Self {
+        Ok(Self {
             backend,
             profiler,
-            hw_executor: Arc::new(
-                WorkerPool::try_with_prefix(
-                    &hw_prefix,
-                    config.num_hw_threads.max(DEFAULT_NUM_HW_THREADS),
-                    cap,
-                )
-                .expect("Failed to initialize hardware executor worker pool"),
-            ),
-            callback_pool: Arc::new(
-                WorkerPool::try_with_prefix(&cb_prefix, config.num_callback_workers.max(1), cap)
-                    .expect("Failed to initialize callback worker pool"),
-            ),
-        }
+            hw_executor: Arc::new(WorkerPool::try_with_prefix(
+                &hw_prefix,
+                config.num_hw_threads.max(DEFAULT_NUM_HW_THREADS),
+                cap,
+            )?),
+            callback_pool: Arc::new(WorkerPool::try_with_prefix(
+                &cb_prefix,
+                config.num_callback_workers.max(1),
+                cap,
+            )?),
+        })
     }
 
     /// Enables or disables profiling dynamically.

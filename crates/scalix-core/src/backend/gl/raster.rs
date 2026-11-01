@@ -1,6 +1,6 @@
 //! OpenGL Raster Shader Pipeline (Fullscreen Quad & Shaders)
 
-use std::ffi::{c_char, CString};
+use std::ffi::c_char;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,14 +19,22 @@ const RESAMPLE_KERNELS: &str = include_str!("shaders/resample_kernels.glsl");
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
 
+/// A linked raster program with its per-frame uniform locations resolved once at build time.
+#[derive(Clone, Copy)]
+struct RasterProgram {
+    id: u32,
+    u_tex_size: i32,
+    u_dst_size: i32,
+}
+
 pub struct GlRasterResizer {
     ctx: Arc<EglContext>,
     ring: Arc<Mutex<GlStagingRing>>,
     profiler: Arc<dyn Profiler>,
-    prog_bilinear: Mutex<Option<u32>>,
-    prog_bicubic: Mutex<Option<u32>>,
-    prog_area: Mutex<Option<u32>>,
-    prog_lanczos3: Mutex<Option<u32>>,
+    prog_bilinear: Mutex<Option<RasterProgram>>,
+    prog_bicubic: Mutex<Option<RasterProgram>>,
+    prog_area: Mutex<Option<RasterProgram>>,
+    prog_lanczos3: Mutex<Option<RasterProgram>>,
     mesh: Mutex<Option<(u32, u32)>>, // (vao, vbo)
 }
 
@@ -109,9 +117,12 @@ impl GlRasterResizer {
         let gl = &self.ctx.gl;
         unsafe {
             let shader = (gl.glCreateShader)(shader_type);
-            let c_src = CString::new(source).unwrap();
-            let ptr = c_src.as_ptr();
-            (gl.glShaderSource)(shader, 1, &ptr, std::ptr::null());
+            // Explicit length: the source needs no NUL terminator or CString copy.
+            let len = i32::try_from(source.len()).map_err(|_| {
+                ScalixError::ExecutionFailed("Shader source exceeds i32::MAX bytes".to_string())
+            })?;
+            let ptr = source.as_ptr() as *const c_char;
+            (gl.glShaderSource)(shader, 1, &ptr, &len);
             (gl.glCompileShader)(shader);
 
             let mut success = 0;
@@ -136,7 +147,7 @@ impl GlRasterResizer {
         }
     }
 
-    fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
+    fn get_or_build_program(&self, filter: FilterMode) -> Result<RasterProgram> {
         let (target_lock, fs_body) = match filter {
             FilterMode::Area => (&self.prog_area, FRAGMENT_SHADER_AREA_BODY),
             FilterMode::Bicubic => (&self.prog_bicubic, FRAGMENT_SHADER_BICUBIC_BODY),
@@ -186,8 +197,18 @@ impl GlRasterResizer {
                     "Raster program link failed: {log}"
                 )));
             }
-            *guard = Some(prog);
-            Ok(prog)
+
+            // The sampler unit never changes, so it is set once here instead of every frame.
+            (gl.glUseProgram)(prog);
+            let u_tex = (gl.glGetUniformLocation)(prog, c"uTexture".as_ptr() as *const c_char);
+            (gl.glUniform1i)(u_tex, 0);
+            let program = RasterProgram {
+                id: prog,
+                u_tex_size: (gl.glGetUniformLocation)(prog, c"uTexSize".as_ptr() as *const c_char),
+                u_dst_size: (gl.glGetUniformLocation)(prog, c"uDstSize".as_ptr() as *const c_char),
+            };
+            *guard = Some(program);
+            Ok(program)
         }
     }
     pub fn process(
@@ -198,10 +219,14 @@ impl GlRasterResizer {
     ) -> Result<()> {
         let wall_start = Instant::now();
         let _guard = self.ctx.bind_current()?;
+        // GL queues work asynchronously; finishing each phase attributes GPU time to it.
+        let profiling = self.profiler.is_enabled();
         let gl = &self.ctx.gl;
 
-        let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
-        let (dst_internal, dst_format, dst_type) = get_gl_format_tuple(dst.format)?;
+        let (src_internal, src_format, src_type) =
+            get_gl_format_tuple(src.format, self.ctx.is_gles)?;
+        let (dst_internal, dst_format, dst_type) =
+            get_gl_format_tuple(dst.format, self.ctx.is_gles)?;
 
         let program = self.get_or_build_program(filter)?;
         let (vao, _vbo) = self.ensure_mesh()?;
@@ -221,7 +246,7 @@ impl GlRasterResizer {
             (gl.glPixelStorei)(GL_UNPACK_ALIGNMENT, 1);
             (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
 
-            // 1. Upload Source via PBO DMA staging
+            // 1. Upload Source from client memory
             let upload_start = Instant::now();
             let src_tex = slot.upload_src_data(
                 &self.ctx,
@@ -250,26 +275,20 @@ impl GlRasterResizer {
                 dst_tex,
                 0,
             );
+            if profiling {
+                (gl.glFinish)();
+            }
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             // 3. Render Quad
             let draw_start = Instant::now();
             (gl.glViewport)(0, 0, dst.width as i32, dst.height as i32);
-            (gl.glUseProgram)(program);
-
-            let u_tex = (gl.glGetUniformLocation)(program, c"uTexture".as_ptr() as *const c_char);
-            (gl.glUniform1i)(u_tex, 0);
-
-            let u_tex_size =
-                (gl.glGetUniformLocation)(program, c"uTexSize".as_ptr() as *const c_char);
-            if u_tex_size >= 0 {
-                (gl.glUniform2f)(u_tex_size, src.width as f32, src.height as f32);
+            (gl.glUseProgram)(program.id);
+            if program.u_tex_size >= 0 {
+                (gl.glUniform2f)(program.u_tex_size, src.width as f32, src.height as f32);
             }
-
-            let u_dst_size =
-                (gl.glGetUniformLocation)(program, c"uDstSize".as_ptr() as *const c_char);
-            if u_dst_size >= 0 {
-                (gl.glUniform2f)(u_dst_size, dst.width as f32, dst.height as f32);
+            if program.u_dst_size >= 0 {
+                (gl.glUniform2f)(program.u_dst_size, dst.width as f32, dst.height as f32);
             }
 
             (gl.glActiveTexture)(GL_TEXTURE0);
@@ -279,13 +298,15 @@ impl GlRasterResizer {
             (gl.glDrawArrays)(GL_TRIANGLE_STRIP, 0, 4);
             (gl.glBindVertexArray)(0);
 
-            slot.signal_fence(&self.ctx);
+            if profiling {
+                (gl.glFinish)();
+            }
             let draw_ms = draw_start.elapsed().as_secs_f64() * 1000.0;
 
             // 4. Download Pixels via Persistent FBO
             let download_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
-            super::ring::read_pixels_into(gl, dst, dst_format, dst_type)?;
+            super::ring::read_pixels_into(&self.ctx, dst, dst_format, dst_type, src.format)?;
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, 0);
             let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
 

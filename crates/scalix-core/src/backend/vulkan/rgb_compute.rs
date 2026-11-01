@@ -4,6 +4,7 @@
 //! Avoids expensive host byte manipulation loops and reduces PCIe staging transfer bandwidth by 25%.
 
 use crate::backend::vulkan::context::VulkanContext;
+use crate::backend::vulkan::util::DescriptorPool;
 use crate::types::{Result, ScalixError};
 use ash::vk;
 use std::sync::Arc;
@@ -432,6 +433,7 @@ impl VulkanRgbCompute {
     pub fn cmd_unpack_rgb888(
         &self,
         cmd_buf: vk::CommandBuffer,
+        desc_pool: &DescriptorPool,
         src_buf: vk::Buffer,
         src_buf_size: vk::DeviceSize,
         dst_image: vk::Image,
@@ -441,50 +443,10 @@ impl VulkanRgbCompute {
         post_layout: vk::ImageLayout,
         post_access: vk::AccessFlags,
         post_stage: vk::PipelineStageFlags,
-    ) -> Result<vk::DescriptorPool> {
+    ) -> Result<()> {
         let device = &self.ctx.device;
 
-        // 1. Create a transient descriptor pool
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 1,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 1,
-            },
-        ];
-        let pool_info = vk::DescriptorPoolCreateInfo {
-            max_sets: 1,
-            pool_size_count: pool_sizes.len() as u32,
-            p_pool_sizes: pool_sizes.as_ptr(),
-            ..Default::default()
-        };
-        let desc_pool = unsafe {
-            device
-                .create_descriptor_pool(&pool_info, None)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!(
-                        "Failed to create compute unpack desc pool: {e}"
-                    ))
-                })?
-        };
-
-        let alloc_info = vk::DescriptorSetAllocateInfo {
-            descriptor_pool: desc_pool,
-            descriptor_set_count: 1,
-            p_set_layouts: &self.unpack_desc_layout,
-            ..Default::default()
-        };
-        let desc_set = unsafe {
-            device.allocate_descriptor_sets(&alloc_info).map_err(|e| {
-                device.destroy_descriptor_pool(desc_pool, None);
-                ScalixError::ExecutionFailed(format!(
-                    "Failed to allocate unpack descriptor set: {e}"
-                ))
-            })?[0]
-        };
+        let desc_set = desc_pool.allocate(self.unpack_desc_layout)?;
 
         let buf_info = vk::DescriptorBufferInfo {
             buffer: src_buf,
@@ -604,7 +566,7 @@ impl VulkanRgbCompute {
             );
         }
 
-        Ok(desc_pool)
+        Ok(())
     }
 
     /// Records a GPU compute command to repack an RGBA8888 image into a packed RGB888 storage buffer.
@@ -612,6 +574,7 @@ impl VulkanRgbCompute {
     pub fn cmd_repack_rgb888(
         &self,
         cmd_buf: vk::CommandBuffer,
+        desc_pool: &DescriptorPool,
         src_image: vk::Image,
         src_view: vk::ImageView,
         dst_buf: vk::Buffer,
@@ -621,50 +584,10 @@ impl VulkanRgbCompute {
         current_layout: vk::ImageLayout,
         current_access: vk::AccessFlags,
         current_stage: vk::PipelineStageFlags,
-    ) -> Result<vk::DescriptorPool> {
+    ) -> Result<()> {
         let device = &self.ctx.device;
 
-        // 1. Create a transient descriptor pool
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 1,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 1,
-            },
-        ];
-        let pool_info = vk::DescriptorPoolCreateInfo {
-            max_sets: 1,
-            pool_size_count: pool_sizes.len() as u32,
-            p_pool_sizes: pool_sizes.as_ptr(),
-            ..Default::default()
-        };
-        let desc_pool = unsafe {
-            device
-                .create_descriptor_pool(&pool_info, None)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!(
-                        "Failed to create compute repack desc pool: {e}"
-                    ))
-                })?
-        };
-
-        let alloc_info = vk::DescriptorSetAllocateInfo {
-            descriptor_pool: desc_pool,
-            descriptor_set_count: 1,
-            p_set_layouts: &self.repack_desc_layout,
-            ..Default::default()
-        };
-        let desc_set = unsafe {
-            device.allocate_descriptor_sets(&alloc_info).map_err(|e| {
-                device.destroy_descriptor_pool(desc_pool, None);
-                ScalixError::ExecutionFailed(format!(
-                    "Failed to allocate repack descriptor set: {e}"
-                ))
-            })?[0]
-        };
+        let desc_set = desc_pool.allocate(self.repack_desc_layout)?;
 
         let img_info = vk::DescriptorImageInfo {
             image_layout: vk::ImageLayout::GENERAL,
@@ -789,7 +712,7 @@ impl VulkanRgbCompute {
             );
         }
 
-        Ok(desc_pool)
+        Ok(())
     }
 }
 

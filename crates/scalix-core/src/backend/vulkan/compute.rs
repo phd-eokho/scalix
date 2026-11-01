@@ -125,32 +125,6 @@ impl ComputeKernelKey {
     }
 }
 
-/// Scoped RAII guard guaranteeing deterministic destruction of transient VkDescriptorPool.
-struct DescriptorPoolGuard<'a> {
-    device: &'a ash::Device,
-    pool: vk::DescriptorPool,
-}
-
-impl<'a> DescriptorPoolGuard<'a> {
-    #[inline]
-    fn new(device: &'a ash::Device, pool: vk::DescriptorPool) -> Self {
-        Self { device, pool }
-    }
-
-    #[inline]
-    fn pool(&self) -> vk::DescriptorPool {
-        self.pool
-    }
-}
-
-impl<'a> Drop for DescriptorPoolGuard<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.destroy_descriptor_pool(self.pool, None);
-        }
-    }
-}
-
 /// Represents an individual compiled compute shader kernel and its GPU pipeline.
 pub struct ComputeKernel {
     device: ash::Device,
@@ -611,34 +585,9 @@ impl VulkanComputeResizer {
             let dst_buf = dst_staging.buffer;
             let dst_mem = dst_staging.memory;
 
-            // Transient descriptor pool for binding 0 & 1 managed via RAII guard
-            let pool_sizes = [vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 2,
-            }];
-            let pool_info = vk::DescriptorPoolCreateInfo {
-                max_sets: 1,
-                pool_size_count: pool_sizes.len() as u32,
-                p_pool_sizes: pool_sizes.as_ptr(),
-                ..Default::default()
-            };
-            let desc_pool = device
-                .create_descriptor_pool(&pool_info, None)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!("Failed to create compute desc pool: {e}"))
-                })?;
-            let desc_pool_guard = DescriptorPoolGuard::new(device, desc_pool);
+            // Descriptor set from the slot's pool (reset when the slot is next acquired)
 
-            let set_layouts = [self.desc_layout];
-            let alloc_info = vk::DescriptorSetAllocateInfo {
-                descriptor_pool: desc_pool_guard.pool(),
-                descriptor_set_count: 1,
-                p_set_layouts: set_layouts.as_ptr(),
-                ..Default::default()
-            };
-            let desc_set = device.allocate_descriptor_sets(&alloc_info).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to allocate compute desc set: {e}"))
-            })?[0];
+            let desc_set = slot.descriptor_pool.allocate(self.desc_layout)?;
 
             let src_buf_info = [vk::DescriptorBufferInfo {
                 buffer: src_buf,
@@ -782,8 +731,6 @@ impl VulkanComputeResizer {
             let driver_sync_ms = t_sync_start
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
-
-            drop(desc_pool_guard);
 
             let mut gpu_pure_compute_ms = 0.0;
             if let Some(qp) = query_pool {

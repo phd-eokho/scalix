@@ -5,7 +5,7 @@
 //! CPU/GPU pipelining.
 
 use crate::backend::vulkan::context::VulkanContext;
-use crate::backend::vulkan::util::{CommandPool, GpuBuffer};
+use crate::backend::vulkan::util::{CommandPool, DescriptorPool, GpuBuffer};
 use crate::types::{Result, ScalixError};
 use ash::vk;
 use std::sync::Arc;
@@ -20,6 +20,8 @@ pub struct StagingSlot {
     pub in_flight: bool,
     pub src_staging: Option<GpuBuffer>,
     pub dst_staging: Option<GpuBuffer>,
+    /// Descriptor sets of the slot's resize; reset in [`VulkanStagingRing::acquire_slot`].
+    pub descriptor_pool: DescriptorPool,
 }
 
 impl StagingSlot {
@@ -107,7 +109,7 @@ pub struct VulkanStagingRing {
     ctx: Arc<VulkanContext>,
     slots: Vec<StagingSlot>,
     current_idx: usize,
-    // Declared last: dropped after `Drop::drop` waits on the slot fences.
+    // Owns every slot's command buffer; destroying the pool frees them.
     _command_pool: CommandPool,
 }
 
@@ -122,7 +124,14 @@ impl VulkanStagingRing {
             CommandPool::new(&ctx, vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)?;
         let cmd_bufs = command_pool.allocate(count as u32)?;
 
-        let mut slots = Vec::with_capacity(count);
+        // Slots are pushed into `ring` as they are built so that an error part-way through runs
+        // `Drop`, which destroys the fences and query pools created so far.
+        let mut ring = Self {
+            ctx: Arc::clone(&ctx),
+            slots: Vec::with_capacity(count),
+            current_idx: 0,
+            _command_pool: command_pool,
+        };
         for cmd_buf in cmd_bufs {
             let fence_info = vk::FenceCreateInfo {
                 flags: vk::FenceCreateFlags::empty(),
@@ -141,22 +150,18 @@ impl VulkanStagingRing {
             };
             let query_pool = unsafe { device.create_query_pool(&qp_info, None).ok() };
 
-            slots.push(StagingSlot {
+            ring.slots.push(StagingSlot {
                 cmd_buf,
                 fence,
                 query_pool,
                 in_flight: false,
                 src_staging: None,
                 dst_staging: None,
+                descriptor_pool: DescriptorPool::for_resize(&ctx)?,
             });
         }
 
-        Ok(Self {
-            ctx,
-            slots,
-            current_idx: 0,
-            _command_pool: command_pool,
-        })
+        Ok(ring)
     }
 
     /// Acquires the next available staging slot in the ring, ensuring previous work on it is complete.
@@ -179,6 +184,7 @@ impl VulkanStagingRing {
                     ))
                 })?;
         }
+        slot.descriptor_pool.reset()?;
         Ok((idx, slot))
     }
 

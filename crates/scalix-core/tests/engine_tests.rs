@@ -624,7 +624,7 @@ fn test_engine_config_and_worker_pool() {
         .with_queue_capacity(512);
 
     let backend = Arc::new(scalix_core::PassthroughBackend::new());
-    let engine = Engine::with_config(backend, config);
+    let engine = Engine::with_config(backend, config).unwrap();
 
     assert!(engine.backend_name().contains("Passthrough"));
     assert_eq!(engine.backend_type(), BackendType::Passthrough);

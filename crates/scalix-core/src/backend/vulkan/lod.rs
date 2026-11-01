@@ -7,7 +7,7 @@
 use crate::backend::vulkan::blit::{to_vk_filter, to_vk_format_info};
 use crate::backend::vulkan::context::VulkanContext;
 use crate::backend::vulkan::util::{
-    CommandBufferGuard, FenceGuard, GpuBuffer, GpuImage, QueryPoolGuard,
+    CommandBufferGuard, DescriptorPool, FenceGuard, GpuBuffer, GpuImage, QueryPoolGuard,
 };
 use crate::backend::vulkan::{VulkanPipeline, VulkanStrategy};
 use crate::profiler::{ProfileMetrics, Profiler};
@@ -171,11 +171,13 @@ impl VulkanLodDownscaler {
                 src_img_usage,
             )?;
             let src_image = src_gpu_img.image;
-            let src_view = if use_gpu_rgb_unpack {
-                Some(src_gpu_img.create_view(vk_format, vk::ImageAspectFlags::COLOR)?)
-            } else {
-                None
-            };
+            let gpu_unpack = rgb_unpack
+                .map(|rgb| {
+                    src_gpu_img
+                        .create_view(vk_format, vk::ImageAspectFlags::COLOR)
+                        .map(|view| (rgb, view))
+                })
+                .transpose()?;
 
             // 4. Create Single-Level Destination VkImage
             let dst_img_usage = if use_gpu_rgb_repack {
@@ -194,14 +196,18 @@ impl VulkanLodDownscaler {
                 dst_img_usage,
             )?;
             let dst_image = dst_gpu_img.image;
-            let dst_view = if use_gpu_rgb_repack {
-                Some(dst_gpu_img.create_view(dst_vk_format, vk::ImageAspectFlags::COLOR)?)
-            } else {
-                None
-            };
+            let gpu_repack = rgb_repack
+                .map(|rgb| {
+                    dst_gpu_img
+                        .create_view(dst_vk_format, vk::ImageAspectFlags::COLOR)
+                        .map(|view| (rgb, view))
+                })
+                .transpose()?;
 
             // 5. Allocate and Record Command Buffer
             let cmd_guard = CommandBufferGuard::allocate(&self.ctx)?;
+            // One pool for this call's RGB unpack/repack sets, destroyed after the fence wait.
+            let desc_pool = DescriptorPool::for_resize(&self.ctx)?;
             let cmd_buf = cmd_guard.cmd_buf;
 
             let query_guard = if is_profiling {
@@ -226,16 +232,15 @@ impl VulkanLodDownscaler {
                 device.cmd_write_timestamp(cmd_buf, vk::PipelineStageFlags::TOP_OF_PIPE, qp, 0);
             }
 
-            let mut transient_pools = Vec::new();
-
-            if let (Some(rgb_comp), Some(src_view)) = (rgb_unpack, src_view) {
+            if let Some((rgb_comp, src_view)) = gpu_unpack {
                 let post_layout = if num_levels > 1 {
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL
                 } else {
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL
                 };
-                let pool = rgb_comp.cmd_unpack_rgb888(
+                rgb_comp.cmd_unpack_rgb888(
                     cmd_buf,
+                    &desc_pool,
                     src_staging_buf,
                     src_size,
                     src_image,
@@ -246,7 +251,6 @@ impl VulkanLodDownscaler {
                     vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
                     vk::PipelineStageFlags::TRANSFER,
                 )?;
-                transient_pools.push(pool);
             } else {
                 // A. Transition Level 0 to TRANSFER_DST_OPTIMAL
                 let barrier_base = vk::ImageMemoryBarrier {
@@ -547,9 +551,10 @@ impl VulkanLodDownscaler {
             }
 
             // Readback / Repack
-            if let (Some(rgb_comp), Some(dst_view)) = (rgb_repack, dst_view) {
-                let pool = rgb_comp.cmd_repack_rgb888(
+            if let Some((rgb_comp, dst_view)) = gpu_repack {
+                rgb_comp.cmd_repack_rgb888(
                     cmd_buf,
+                    &desc_pool,
                     dst_image,
                     dst_view,
                     dst_staging_buf,
@@ -560,7 +565,6 @@ impl VulkanLodDownscaler {
                     vk::AccessFlags::TRANSFER_WRITE,
                     vk::PipelineStageFlags::TRANSFER,
                 )?;
-                transient_pools.push(pool);
             } else {
                 // G. Transition dst_image to TRANSFER_SRC_OPTIMAL for readback
                 let barrier_dst_readback = vk::ImageMemoryBarrier {
@@ -648,11 +652,6 @@ impl VulkanLodDownscaler {
             let driver_sync_ms = t_sync_start
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
-
-            // Destroy descriptor pools from compute passes
-            for pool in transient_pools {
-                device.destroy_descriptor_pool(pool, None);
-            }
 
             let mut gpu_upload_ms = 0.0;
             let mut gpu_pure_blit_ms = 0.0;

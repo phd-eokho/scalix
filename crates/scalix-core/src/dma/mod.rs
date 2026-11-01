@@ -1,7 +1,11 @@
-//! Zero-Copy DMA-BUF Subsystem
+//! DMA-BUF Subsystem
 //!
-//! Provides platform-gated, hardware-backed DMA buffer allocation and memory mapping
-//! for zero-copy data pipelines across CPU, Vulkan, OpenGL/EGL, and V4L2 accelerators.
+//! Provides platform-gated, hardware-backed DMA buffer allocation, import and memory mapping
+//! for sharing frames with DMA-capable devices (cameras, V4L2, DRM).
+//!
+//! NOTE: The GPU backends do not import `dma_buf_fd`; they read and write these buffers through
+//! the CPU mapping. Action: import via `VK_EXT_external_memory_dma_buf` / `EGL_EXT_image_dma_buf_import`
+//! when a zero-copy GPU path is required.
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub mod linux_dma_heap;
@@ -373,7 +377,6 @@ impl DmaBuffer {
         }
 
         match alloc_type {
-            DmaAllocatorType::Auto => unreachable!(),
             DmaAllocatorType::DmaHeap => {
                 #[cfg(any(target_os = "linux", target_os = "android"))]
                 {
@@ -438,7 +441,8 @@ impl DmaBuffer {
                     ))
                 }
             }
-            DmaAllocatorType::HostAligned => {
+            // `Auto` was resolved above; treat a stray one as the always-available host path.
+            DmaAllocatorType::Auto | DmaAllocatorType::HostAligned => {
                 let stride = format.min_stride(dimensions.width)?;
                 let size = format.min_buffer_size_dims(dimensions, stride)?;
                 let mut aligned_ptr: *mut libc::c_void = std::ptr::null_mut();
@@ -749,37 +753,36 @@ impl DmaBuffer {
     #[inline]
     #[must_use]
     pub fn as_image_desc(&self) -> ImageDesc<'_> {
+        // Built directly: dimensions and stride were validated when the buffer was allocated.
         let fd_raw = self.fd();
-        let mut desc = ImageDesc::new(
-            self.dimensions.width,
-            self.dimensions.height,
-            self.stride,
-            self.format,
-            self.as_slice(),
-        )
-        .expect("DmaBuffer dimensions and stride are guaranteed valid");
-
-        if fd_raw >= 0 {
-            desc = desc.with_dma_buf(fd_raw);
+        ImageDesc {
+            width: self.dimensions.width,
+            height: self.dimensions.height,
+            stride: self.stride,
+            format: self.format,
+            data: self.as_slice(),
+            dma_buf_fd: (fd_raw >= 0).then_some(fd_raw),
         }
-        desc
     }
 
     /// Creates a mutable `ImageDescMut` view referencing this DMA buffer.
     #[inline]
     #[must_use]
     pub fn as_image_desc_mut(&mut self) -> ImageDescMut<'_> {
+        // Built directly: dimensions and stride were validated when the buffer was allocated.
         let fd_raw = self.fd();
         let width = self.dimensions.width;
         let height = self.dimensions.height;
         let stride = self.stride;
         let format = self.format;
-        let mut desc = ImageDescMut::new(width, height, stride, format, self.as_mut_slice())
-            .expect("DmaBuffer dimensions and stride are guaranteed valid");
-
-        if fd_raw >= 0 {
-            desc = desc.with_dma_buf(fd_raw);
-        }
+        let desc = ImageDescMut {
+            width,
+            height,
+            stride,
+            format,
+            data: self.as_mut_slice(),
+            dma_buf_fd: (fd_raw >= 0).then_some(fd_raw),
+        };
         desc
     }
 }
