@@ -19,14 +19,22 @@ const RESAMPLE_KERNELS: &str = include_str!("shaders/resample_kernels.glsl");
 use super::ring::GlStagingRing;
 use std::sync::Mutex;
 
+/// A linked raster program with its per-frame uniform locations resolved once at build time.
+#[derive(Clone, Copy)]
+struct RasterProgram {
+    id: u32,
+    u_tex_size: i32,
+    u_dst_size: i32,
+}
+
 pub struct GlRasterResizer {
     ctx: Arc<EglContext>,
     ring: Arc<Mutex<GlStagingRing>>,
     profiler: Arc<dyn Profiler>,
-    prog_bilinear: Mutex<Option<u32>>,
-    prog_bicubic: Mutex<Option<u32>>,
-    prog_area: Mutex<Option<u32>>,
-    prog_lanczos3: Mutex<Option<u32>>,
+    prog_bilinear: Mutex<Option<RasterProgram>>,
+    prog_bicubic: Mutex<Option<RasterProgram>>,
+    prog_area: Mutex<Option<RasterProgram>>,
+    prog_lanczos3: Mutex<Option<RasterProgram>>,
     mesh: Mutex<Option<(u32, u32)>>, // (vao, vbo)
 }
 
@@ -139,7 +147,7 @@ impl GlRasterResizer {
         }
     }
 
-    fn get_or_build_program(&self, filter: FilterMode) -> Result<u32> {
+    fn get_or_build_program(&self, filter: FilterMode) -> Result<RasterProgram> {
         let (target_lock, fs_body) = match filter {
             FilterMode::Area => (&self.prog_area, FRAGMENT_SHADER_AREA_BODY),
             FilterMode::Bicubic => (&self.prog_bicubic, FRAGMENT_SHADER_BICUBIC_BODY),
@@ -189,8 +197,18 @@ impl GlRasterResizer {
                     "Raster program link failed: {log}"
                 )));
             }
-            *guard = Some(prog);
-            Ok(prog)
+
+            // The sampler unit never changes, so it is set once here instead of every frame.
+            (gl.glUseProgram)(prog);
+            let u_tex = (gl.glGetUniformLocation)(prog, c"uTexture".as_ptr() as *const c_char);
+            (gl.glUniform1i)(u_tex, 0);
+            let program = RasterProgram {
+                id: prog,
+                u_tex_size: (gl.glGetUniformLocation)(prog, c"uTexSize".as_ptr() as *const c_char),
+                u_dst_size: (gl.glGetUniformLocation)(prog, c"uDstSize".as_ptr() as *const c_char),
+            };
+            *guard = Some(program);
+            Ok(program)
         }
     }
     pub fn process(
@@ -258,21 +276,12 @@ impl GlRasterResizer {
             // 3. Render Quad
             let draw_start = Instant::now();
             (gl.glViewport)(0, 0, dst.width as i32, dst.height as i32);
-            (gl.glUseProgram)(program);
-
-            let u_tex = (gl.glGetUniformLocation)(program, c"uTexture".as_ptr() as *const c_char);
-            (gl.glUniform1i)(u_tex, 0);
-
-            let u_tex_size =
-                (gl.glGetUniformLocation)(program, c"uTexSize".as_ptr() as *const c_char);
-            if u_tex_size >= 0 {
-                (gl.glUniform2f)(u_tex_size, src.width as f32, src.height as f32);
+            (gl.glUseProgram)(program.id);
+            if program.u_tex_size >= 0 {
+                (gl.glUniform2f)(program.u_tex_size, src.width as f32, src.height as f32);
             }
-
-            let u_dst_size =
-                (gl.glGetUniformLocation)(program, c"uDstSize".as_ptr() as *const c_char);
-            if u_dst_size >= 0 {
-                (gl.glUniform2f)(u_dst_size, dst.width as f32, dst.height as f32);
+            if program.u_dst_size >= 0 {
+                (gl.glUniform2f)(program.u_dst_size, dst.width as f32, dst.height as f32);
             }
 
             (gl.glActiveTexture)(GL_TEXTURE0);
