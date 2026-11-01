@@ -83,8 +83,10 @@ impl VulkanBlitter {
         let vk_filter = to_vk_filter(filter);
         let device = &self.ctx.device;
 
-        let use_gpu_rgb_unpack = src_is_rgb && self.rgb_compute.is_some();
-        let use_gpu_rgb_repack = dst_is_rgb && self.rgb_compute.is_some();
+        let rgb_unpack = self.rgb_compute.as_deref().filter(|_| src_is_rgb);
+        let use_gpu_rgb_unpack = rgb_unpack.is_some();
+        let rgb_repack = self.rgb_compute.as_deref().filter(|_| dst_is_rgb);
+        let use_gpu_rgb_repack = rgb_repack.is_some();
 
         let src_size = if src_is_rgb {
             if use_gpu_rgb_unpack {
@@ -223,14 +225,13 @@ impl VulkanBlitter {
             let mut transient_pools = Vec::new();
 
             // A. Upload / Unpack source
-            if use_gpu_rgb_unpack {
-                let rgb_comp = self.rgb_compute.as_ref().unwrap();
+            if let (Some(rgb_comp), Some(src_view)) = (rgb_unpack, src_view) {
                 let pool = rgb_comp.cmd_unpack_rgb888(
                     cmd_buf,
                     src_staging_buf,
                     src_size,
                     src_image,
-                    src_view.unwrap(),
+                    src_view,
                     src.width,
                     src.height,
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
@@ -378,12 +379,11 @@ impl VulkanBlitter {
             }
 
             // Readback / Repack
-            if use_gpu_rgb_repack {
-                let rgb_comp = self.rgb_compute.as_ref().unwrap();
+            if let (Some(rgb_comp), Some(dst_view)) = (rgb_repack, dst_view) {
                 let pool = rgb_comp.cmd_repack_rgb888(
                     cmd_buf,
                     dst_image,
-                    dst_view.unwrap(),
+                    dst_view,
                     dst_staging_buf,
                     dst_size,
                     dst.width,
