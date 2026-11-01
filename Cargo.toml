@@ -22,3 +22,8 @@ libc = "0.2"
 ash = "0.38"
 
 
+
+[profile.release]
+# Cross-crate inlining into libscalix.so/.a. panic stays "unwind": the C ABI relies on catch_unwind.
+lto = "thin"
+codegen-units = 1
