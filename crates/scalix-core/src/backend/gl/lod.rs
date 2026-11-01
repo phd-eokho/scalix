@@ -75,9 +75,10 @@ impl GlLodDownscaler {
 
             // Generate hardware mipchain pyramid if downscaling across multiple levels
             if chosen_level > 0 {
-                let max_level = (src.width.max(src.height) as f32).log2().floor() as u32;
+                // Only levels 0..=chosen_level are sampled; generating the chain down to 1x1
+                // wastes a pass per extra level every frame.
                 (gl.glBindTexture)(GL_TEXTURE_2D, src_tex);
-                (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, max_level as i32);
+                (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, chosen_level as i32);
                 (gl.glTexParameteri)(
                     GL_TEXTURE_2D,
                     GL_TEXTURE_MIN_FILTER,
