@@ -5,7 +5,7 @@
 //! CPU/GPU pipelining.
 
 use crate::backend::vulkan::context::VulkanContext;
-use crate::backend::vulkan::util::GpuBuffer;
+use crate::backend::vulkan::util::{CommandPool, GpuBuffer};
 use crate::types::{Result, ScalixError};
 use ash::vk;
 use std::sync::Arc;
@@ -107,6 +107,8 @@ pub struct VulkanStagingRing {
     ctx: Arc<VulkanContext>,
     slots: Vec<StagingSlot>,
     current_idx: usize,
+    // Declared last: dropped after `Drop::drop` waits on the slot fences.
+    _command_pool: CommandPool,
 }
 
 impl VulkanStagingRing {
@@ -115,20 +117,10 @@ impl VulkanStagingRing {
         let count = slot_count.max(1);
         let device = &ctx.device;
 
-        let alloc_info = vk::CommandBufferAllocateInfo {
-            command_pool: ctx.command_pool,
-            level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: count as u32,
-            ..Default::default()
-        };
-
-        let cmd_bufs = unsafe {
-            device.allocate_command_buffers(&alloc_info).map_err(|e| {
-                ScalixError::ExecutionFailed(format!(
-                    "Failed to allocate ring command buffers: {e}"
-                ))
-            })?
-        };
+        // Resettable so `acquire_slot` can reset each slot's buffer individually.
+        let command_pool =
+            CommandPool::new(&ctx, vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)?;
+        let cmd_bufs = command_pool.allocate(count as u32)?;
 
         let mut slots = Vec::with_capacity(count);
         for cmd_buf in cmd_bufs {
@@ -163,6 +155,7 @@ impl VulkanStagingRing {
             ctx,
             slots,
             current_idx: 0,
+            _command_pool: command_pool,
         })
     }
 
@@ -208,7 +201,6 @@ impl Drop for VulkanStagingRing {
                     device.destroy_query_pool(qp, None);
                 }
                 device.destroy_fence(slot.fence, None);
-                device.free_command_buffers(self.ctx.command_pool, &[slot.cmd_buf]);
             }
         }
     }

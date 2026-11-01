@@ -3,7 +3,7 @@
 use crate::topology::GpuTopology;
 use crate::types::{GpuTopologyInfo, Result, ScalixError};
 use ash::{vk, Device, Entry, Instance};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct VulkanContext {
     pub entry: Entry,
@@ -12,7 +12,8 @@ pub struct VulkanContext {
     pub device: Device,
     pub queue: vk::Queue,
     pub queue_family_index: u32,
-    pub command_pool: vk::CommandPool,
+    /// `vkQueueSubmit` requires external synchronization of the queue; see [`Self::submit`].
+    queue_lock: Mutex<()>,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub timestamp_period: f32,
     pub topology: GpuTopologyInfo,
@@ -128,19 +129,6 @@ impl VulkanContext {
 
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
-        // 4. Create Command Pool
-        let pool_info = vk::CommandPoolCreateInfo {
-            queue_family_index,
-            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-            ..Default::default()
-        };
-
-        let command_pool = unsafe {
-            device.create_command_pool(&pool_info, None).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Failed to create command pool: {}", e))
-            })?
-        };
-
         let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
         let timestamp_period = device_properties.limits.timestamp_period;
         let topology = GpuTopology::probe_from_vulkan(&instance, physical_device);
@@ -152,7 +140,7 @@ impl VulkanContext {
             device,
             queue,
             queue_family_index,
-            command_pool,
+            queue_lock: Mutex::new(()),
             memory_properties,
             timestamp_period,
             topology,
@@ -183,11 +171,22 @@ impl VulkanContext {
     }
 }
 
+impl VulkanContext {
+    /// Submits work to the shared queue, serialized across threads: resizers of one backend may
+    /// run concurrently (`Backend: Sync`), and Vulkan forbids simultaneous submits to one queue.
+    pub fn submit(&self, submits: &[vk::SubmitInfo], fence: vk::Fence) -> Result<()> {
+        let _guard = self.queue_lock.lock().map_err(|_| {
+            ScalixError::ExecutionFailed("Failed to acquire Vulkan queue lock".to_string())
+        })?;
+        unsafe { self.device.queue_submit(self.queue, submits, fence) }
+            .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to submit queue: {e}")))
+    }
+}
+
 impl Drop for VulkanContext {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
-            self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }

@@ -764,11 +764,7 @@ impl VulkanComputeResizer {
                 p_command_buffers: &cmd_buf,
                 ..Default::default()
             };
-            device
-                .queue_submit(self.ctx.queue, &[submit_info], slot.fence)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!("Compute queue submit failed: {e}"))
-                })?;
+            self.ctx.submit(&[submit_info], slot.fence)?;
 
             slot.in_flight = true;
             device

@@ -271,48 +271,103 @@ impl Drop for GpuImage {
     }
 }
 
-/// RAII Drop guard for an allocated primary command buffer.
+/// RAII owner of a `vk::CommandPool`; destroying the pool frees its command buffers.
+///
+/// Vulkan requires a pool and all command buffers allocated from it to be externally
+/// synchronized, so every independently locked owner (each staging ring, each LoD call) gets its
+/// own pool instead of sharing one across threads.
+pub struct CommandPool {
+    pub pool: vk::CommandPool,
+    ctx: Arc<VulkanContext>,
+}
+
+impl CommandPool {
+    pub fn new(ctx: &Arc<VulkanContext>, flags: vk::CommandPoolCreateFlags) -> Result<Self> {
+        let info = vk::CommandPoolCreateInfo {
+            queue_family_index: ctx.queue_family_index,
+            flags,
+            ..Default::default()
+        };
+        let pool = unsafe {
+            ctx.device.create_command_pool(&info, None).map_err(|e| {
+                ScalixError::ExecutionFailed(format!("Failed to create command pool: {e}"))
+            })?
+        };
+        Ok(Self {
+            pool,
+            ctx: Arc::clone(ctx),
+        })
+    }
+
+    pub fn allocate(&self, count: u32) -> Result<Vec<vk::CommandBuffer>> {
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            command_pool: self.pool,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: count,
+            ..Default::default()
+        };
+        unsafe {
+            self.ctx
+                .device
+                .allocate_command_buffers(&alloc_info)
+                .map_err(|e| {
+                    ScalixError::ExecutionFailed(format!("Failed to allocate command buffers: {e}"))
+                })
+        }
+    }
+}
+
+impl Drop for CommandPool {
+    fn drop(&mut self) {
+        unsafe {
+            self.ctx.device.destroy_command_pool(self.pool, None);
+        }
+    }
+}
+
+/// A one-shot primary command buffer backed by its own transient pool.
 pub struct CommandBufferGuard {
     pub cmd_buf: vk::CommandBuffer,
-    pool: vk::CommandPool,
-    ctx: Arc<VulkanContext>,
+    _pool: CommandPool,
 }
 
 impl CommandBufferGuard {
     pub fn allocate(ctx: &Arc<VulkanContext>) -> Result<Self> {
-        let alloc_info = vk::CommandBufferAllocateInfo {
-            command_pool: ctx.command_pool,
-            level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: 1,
-            ..Default::default()
-        };
-
-        let cmd_bufs = unsafe {
-            ctx.device
-                .allocate_command_buffers(&alloc_info)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!("Failed to allocate command buffer: {e}"))
-                })?
-        };
-
-        let cmd_buf = cmd_bufs.into_iter().next().ok_or_else(|| {
+        let pool = CommandPool::new(ctx, vk::CommandPoolCreateFlags::TRANSIENT)?;
+        let cmd_buf = pool.allocate(1)?.into_iter().next().ok_or_else(|| {
             ScalixError::ExecutionFailed("Allocated command buffer is empty".to_string())
         })?;
-
         Ok(Self {
             cmd_buf,
-            pool: ctx.command_pool,
+            _pool: pool,
+        })
+    }
+}
+
+/// RAII Drop guard for a `vk::Fence`.
+pub struct FenceGuard {
+    pub fence: vk::Fence,
+    ctx: Arc<VulkanContext>,
+}
+
+impl FenceGuard {
+    pub fn new(ctx: &Arc<VulkanContext>) -> Result<Self> {
+        let fence = unsafe {
+            ctx.device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .map_err(|e| ScalixError::ExecutionFailed(format!("Failed to create fence: {e}")))?
+        };
+        Ok(Self {
+            fence,
             ctx: Arc::clone(ctx),
         })
     }
 }
 
-impl Drop for CommandBufferGuard {
+impl Drop for FenceGuard {
     fn drop(&mut self) {
         unsafe {
-            self.ctx
-                .device
-                .free_command_buffers(self.pool, &[self.cmd_buf]);
+            self.ctx.device.destroy_fence(self.fence, None);
         }
     }
 }
