@@ -219,6 +219,8 @@ impl GlRasterResizer {
     ) -> Result<()> {
         let wall_start = Instant::now();
         let _guard = self.ctx.bind_current()?;
+        // GL queues work asynchronously; finishing each phase attributes GPU time to it.
+        let profiling = self.profiler.is_enabled();
         let gl = &self.ctx.gl;
 
         let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
@@ -242,7 +244,7 @@ impl GlRasterResizer {
             (gl.glPixelStorei)(GL_UNPACK_ALIGNMENT, 1);
             (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
 
-            // 1. Upload Source via PBO DMA staging
+            // 1. Upload Source from client memory
             let upload_start = Instant::now();
             let src_tex = slot.upload_src_data(
                 &self.ctx,
@@ -271,6 +273,9 @@ impl GlRasterResizer {
                 dst_tex,
                 0,
             );
+            if profiling {
+                (gl.glFinish)();
+            }
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             // 3. Render Quad
@@ -291,7 +296,9 @@ impl GlRasterResizer {
             (gl.glDrawArrays)(GL_TRIANGLE_STRIP, 0, 4);
             (gl.glBindVertexArray)(0);
 
-            slot.signal_fence(&self.ctx);
+            if profiling {
+                (gl.glFinish)();
+            }
             let draw_ms = draw_start.elapsed().as_secs_f64() * 1000.0;
 
             // 4. Download Pixels via Persistent FBO

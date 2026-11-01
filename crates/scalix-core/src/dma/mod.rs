@@ -1,7 +1,11 @@
-//! Zero-Copy DMA-BUF Subsystem
+//! DMA-BUF Subsystem
 //!
-//! Provides platform-gated, hardware-backed DMA buffer allocation and memory mapping
-//! for zero-copy data pipelines across CPU, Vulkan, OpenGL/EGL, and V4L2 accelerators.
+//! Provides platform-gated, hardware-backed DMA buffer allocation, import and memory mapping
+//! for sharing frames with DMA-capable devices (cameras, V4L2, DRM).
+//!
+//! NOTE: The GPU backends do not import `dma_buf_fd`; they read and write these buffers through
+//! the CPU mapping. Action: import via `VK_EXT_external_memory_dma_buf` / `EGL_EXT_image_dma_buf_import`
+//! when a zero-copy GPU path is required.
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub mod linux_dma_heap;

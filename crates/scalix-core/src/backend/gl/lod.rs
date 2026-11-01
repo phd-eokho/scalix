@@ -34,6 +34,8 @@ impl GlLodDownscaler {
     ) -> Result<()> {
         let wall_start = Instant::now();
         let _guard = self.ctx.bind_current()?;
+        // GL queues work asynchronously; finishing each phase attributes GPU time to it.
+        let profiling = self.profiler.is_enabled();
         let gl = &self.ctx.gl;
 
         let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
@@ -63,7 +65,7 @@ impl GlLodDownscaler {
                 num_levels
             };
 
-            // Upload source to slot.src_texture via PBO DMA staging
+            // Upload source to slot.src_texture from client memory
             let src_tex = slot.upload_src_data(
                 &self.ctx,
                 src,
@@ -108,6 +110,9 @@ impl GlLodDownscaler {
                 dst_tex,
                 0,
             );
+            if profiling {
+                (gl.glFinish)();
+            }
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             let blit_start = Instant::now();
@@ -133,7 +138,9 @@ impl GlLodDownscaler {
                 GL_LINEAR,
             );
 
-            slot.signal_fence(&self.ctx);
+            if profiling {
+                (gl.glFinish)();
+            }
             let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
 
             // Download final output

@@ -166,6 +166,8 @@ impl GlComputeResizer {
 
         let wall_start = Instant::now();
         let _guard = self.ctx.bind_current()?;
+        // GL queues work asynchronously; finishing each phase attributes GPU time to it.
+        let profiling = self.profiler.is_enabled();
         let gl = &self.ctx.gl;
 
         let gl_dispatch = gl.glDispatchCompute.ok_or_else(|| {
@@ -194,7 +196,7 @@ impl GlComputeResizer {
             (gl.glPixelStorei)(GL_UNPACK_ALIGNMENT, 1);
             (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
 
-            // 1. Upload Source via PBO DMA staging
+            // 1. Upload Source from client memory
             let upload_start = Instant::now();
             let src_tex = slot.upload_src_data(
                 &self.ctx,
@@ -212,6 +214,9 @@ impl GlComputeResizer {
                 GL_RGBA,
                 GL_UNSIGNED_BYTE,
             )?;
+            if profiling {
+                (gl.glFinish)();
+            }
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             // 2. Dispatch Compute
@@ -234,7 +239,9 @@ impl GlComputeResizer {
                 // Only the glReadPixels from the FBO attachment consumes the image stores.
                 gl_barrier(GL_FRAMEBUFFER_BARRIER_BIT);
             }
-            slot.signal_fence(&self.ctx);
+            if profiling {
+                (gl.glFinish)();
+            }
             let compute_ms = compute_start.elapsed().as_secs_f64() * 1000.0;
 
             // 3. Download Pixels via Persistent FBO

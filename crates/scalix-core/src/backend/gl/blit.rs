@@ -35,6 +35,8 @@ impl GlBlitter {
     ) -> Result<()> {
         let wall_start = Instant::now();
         let _guard = self.ctx.bind_current()?;
+        // GL queues work asynchronously; finishing each phase attributes GPU time to it.
+        let profiling = self.profiler.is_enabled();
         let gl = &self.ctx.gl;
 
         let (src_internal, src_format, src_type) = get_gl_format_tuple(src.format)?;
@@ -55,7 +57,7 @@ impl GlBlitter {
             (gl.glPixelStorei)(GL_UNPACK_ALIGNMENT, 1);
             (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
 
-            // 1. Setup Source Texture & Upload via PBO staging
+            // 1. Setup Source Texture & Upload from client memory
             let upload_start = Instant::now();
             let src_tex = slot.upload_src_data(
                 &self.ctx,
@@ -93,6 +95,9 @@ impl GlBlitter {
                 dst_tex,
                 0,
             );
+            if profiling {
+                (gl.glFinish)();
+            }
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
             // 3. Blit Framebuffer
@@ -111,7 +116,9 @@ impl GlBlitter {
                 GL_COLOR_BUFFER_BIT,
                 gl_filter,
             );
-            slot.signal_fence(&self.ctx);
+            if profiling {
+                (gl.glFinish)();
+            }
             let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
 
             // 4. Download Pixels
