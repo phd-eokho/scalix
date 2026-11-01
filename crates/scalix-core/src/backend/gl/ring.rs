@@ -357,7 +357,9 @@ fn repack_rgba(rgba: &[u8], dst: &mut ImageDescMut, swap_rb: bool) -> Result<()>
         .zip(dst.data.chunks_mut(dst.stride));
     for (src_row, dst_row) in rows.take(dst.height as usize) {
         for (s, d) in src_row
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .zip(dst_row[..w * bpp].chunks_exact_mut(bpp))
         {
             let (r, b) = if swap_rb { (s[2], s[0]) } else { (s[0], s[2]) };
