@@ -130,11 +130,11 @@ impl Backend for GlBackend {
         };
 
         match chosen_strategy {
-            GlStrategy::Blit => self.blitter.process(src, dst, options.filter),
+            // `Auto` was resolved above; listing it with `Blit` keeps the match total.
+            GlStrategy::Blit | GlStrategy::Auto => self.blitter.process(src, dst, options.filter),
             GlStrategy::Raster => self.raster.process(src, dst, options.filter),
             GlStrategy::LodPyramid => self.lod.process(src, dst, options),
             GlStrategy::Compute => self.compute.process(src, dst, options.filter),
-            GlStrategy::Auto => self.blitter.process(src, dst, options.filter),
         }
     }
 }

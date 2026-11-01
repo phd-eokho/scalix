@@ -1,6 +1,8 @@
 //! Headless EGL Context and OpenGL Function Loader
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::ptr::NonNull;
 use std::sync::Mutex;
 
 use crate::types::{Result, ScalixError};
@@ -22,14 +24,12 @@ pub const EGL_NO_DISPLAY: EGLDisplay = std::ptr::null_mut();
 pub const EGL_SURFACE_TYPE: EGLint = 0x3033;
 pub const EGL_PBUFFER_BIT: EGLint = 0x0001;
 pub const EGL_RENDERABLE_TYPE: EGLint = 0x3040;
-pub const EGL_OPENGL_ES2_BIT: EGLint = 0x0004;
 pub const EGL_OPENGL_ES3_BIT_KHR: EGLint = 0x0040;
 pub const EGL_OPENGL_BIT: EGLint = 0x0008;
 pub const EGL_RED_SIZE: EGLint = 0x3024;
 pub const EGL_GREEN_SIZE: EGLint = 0x3023;
 pub const EGL_BLUE_SIZE: EGLint = 0x3022;
 pub const EGL_ALPHA_SIZE: EGLint = 0x3021;
-pub const EGL_DEPTH_SIZE: EGLint = 0x3025;
 pub const EGL_NONE: EGLint = 0x3038;
 pub const EGL_CONTEXT_CLIENT_VERSION: EGLint = 0x3098;
 pub const EGL_CONTEXT_MAJOR_VERSION: EGLint = 0x3098;
@@ -43,10 +43,6 @@ pub const EGL_OPENGL_ES_API: u32 = 0x30A0;
 pub const EGL_PLATFORM_SURFACELESS_MESA: u32 = 0x31DD;
 pub const EGL_PLATFORM_DEVICE_EXT: u32 = 0x313F;
 pub const EGL_PLATFORM_GBM_KHR: u32 = 0x31D7;
-pub const EGL_PLATFORM_GBM_MESA: u32 = 0x31D7;
-pub const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
-pub const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
-pub const EGL_PLATFORM_ANDROID_KHR: u32 = 0x3141;
 
 pub const EGL_WIDTH: EGLint = 0x3057;
 pub const EGL_HEIGHT: EGLint = 0x3056;
@@ -108,18 +104,15 @@ pub const GL_BGR: u32 = 0x80E0;
 pub const GL_RGBA8: u32 = 0x8058;
 pub const GL_RGB8: u32 = 0x8051;
 pub const GL_UNSIGNED_BYTE: u32 = 0x1401;
-pub const GL_TEXTURE_BASE_LEVEL: u32 = 0x813C;
 pub const GL_TEXTURE_MAX_LEVEL: u32 = 0x813D;
 
 pub const GL_FRAMEBUFFER: u32 = 0x8D40;
 pub const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
 pub const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
 pub const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
-pub const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
 pub const GL_COLOR_BUFFER_BIT: u32 = 0x00004000;
 
 pub const GL_FLOAT: u32 = 0x1406;
-pub const GL_TRIANGLES: u32 = 0x0004;
 pub const GL_TRIANGLE_STRIP: u32 = 0x0005;
 pub const GL_ARRAY_BUFFER: u32 = 0x8892;
 pub const GL_STATIC_DRAW: u32 = 0x88E4;
@@ -137,27 +130,7 @@ pub const GL_PACK_ROW_LENGTH: u32 = 0x0D02;
 pub const GL_PACK_ALIGNMENT: u32 = 0x0D05;
 pub const GL_TEXTURE0: u32 = 0x84C0;
 pub const GL_WRITE_ONLY: u32 = 0x88B9;
-pub const GL_READ_WRITE: u32 = 0x88BA;
 pub const GL_FRAMEBUFFER_BARRIER_BIT: u32 = 0x00000400;
-
-pub const GL_PIXEL_UNPACK_BUFFER: u32 = 0x88EC;
-pub const GL_PIXEL_PACK_BUFFER: u32 = 0x88EB;
-pub const GL_STREAM_DRAW: u32 = 0x88E0;
-pub const GL_STREAM_READ: u32 = 0x88E1;
-pub const GL_DYNAMIC_DRAW: u32 = 0x88E8;
-pub const GL_SYNC_GPU_COMMANDS_COMPLETE: u32 = 0x9117;
-pub const GL_SYNC_FLUSH_COMMANDS_BIT: u32 = 0x00000001;
-pub const GL_ALREADY_SIGNALED: u32 = 0x911A;
-pub const GL_TIMEOUT_EXPIRED: u32 = 0x911B;
-pub const GL_CONDITION_SATISFIED: u32 = 0x911C;
-pub const GL_WAIT_FAILED: u32 = 0x911D;
-pub const GL_TIMEOUT_IGNORED: u64 = 0xFFFFFFFFFFFFFFFF;
-
-pub const GL_MAP_READ_BIT: u32 = 0x0001;
-pub const GL_MAP_WRITE_BIT: u32 = 0x0002;
-pub const GL_MAP_INVALIDATE_BUFFER_BIT: u32 = 0x0008;
-
-pub type GLsync = *mut c_void;
 
 #[allow(non_snake_case)]
 pub struct GlFunctions {
@@ -175,13 +148,10 @@ pub struct GlFunctions {
     pub glGenFramebuffers: unsafe extern "C" fn(i32, *mut u32),
     pub glBindFramebuffer: unsafe extern "C" fn(u32, u32),
     pub glFramebufferTexture2D: unsafe extern "C" fn(u32, u32, u32, u32, i32),
-    pub glCheckFramebufferStatus: unsafe extern "C" fn(u32) -> u32,
     pub glDeleteFramebuffers: unsafe extern "C" fn(i32, *const u32),
     pub glBlitFramebuffer: unsafe extern "C" fn(i32, i32, i32, i32, i32, i32, i32, i32, u32, u32),
     pub glReadPixels: unsafe extern "C" fn(i32, i32, i32, i32, u32, u32, *mut c_void),
     pub glViewport: unsafe extern "C" fn(i32, i32, i32, i32),
-    pub glClear: unsafe extern "C" fn(u32),
-    pub glClearColor: unsafe extern "C" fn(f32, f32, f32, f32),
     pub glPixelStorei: unsafe extern "C" fn(u32, i32),
 
     pub glCreateShader: unsafe extern "C" fn(u32) -> u32,
@@ -199,22 +169,18 @@ pub struct GlFunctions {
     pub glDeleteShader: unsafe extern "C" fn(u32),
     pub glGetUniformLocation: unsafe extern "C" fn(u32, *const c_char) -> i32,
     pub glUniform1i: unsafe extern "C" fn(i32, i32),
-    pub glUniform1f: unsafe extern "C" fn(i32, f32),
     pub glUniform2f: unsafe extern "C" fn(i32, f32, f32),
 
     pub glGenVertexArrays: unsafe extern "C" fn(i32, *mut u32),
     pub glBindVertexArray: unsafe extern "C" fn(u32),
-    pub glDeleteVertexArrays: unsafe extern "C" fn(i32, *const u32),
     pub glGenBuffers: unsafe extern "C" fn(i32, *mut u32),
     pub glBindBuffer: unsafe extern "C" fn(u32, u32),
     pub glBufferData: unsafe extern "C" fn(u32, isize, *const c_void, u32),
-    pub glDeleteBuffers: unsafe extern "C" fn(i32, *const u32),
     pub glEnableVertexAttribArray: unsafe extern "C" fn(u32),
     pub glVertexAttribPointer: unsafe extern "C" fn(u32, i32, u32, u8, i32, *const c_void),
     pub glDrawArrays: unsafe extern "C" fn(u32, i32, i32),
 
     pub glFinish: unsafe extern "C" fn(),
-    pub glFlush: unsafe extern "C" fn(),
     pub glGetString: unsafe extern "C" fn(u32) -> *const c_char,
 
     // Optional Compute
@@ -223,14 +189,8 @@ pub struct GlFunctions {
     pub glMemoryBarrier: Option<unsafe extern "C" fn(u32)>,
 
     // Hardware Synchronization Fences (GL 3.2+ / GLES 3.0+)
-    pub glFenceSync: Option<unsafe extern "C" fn(u32, u32) -> GLsync>,
-    pub glClientWaitSync: Option<unsafe extern "C" fn(GLsync, u32, u64) -> u32>,
-    pub glWaitSync: Option<unsafe extern "C" fn(GLsync, u32, u64)>,
-    pub glDeleteSync: Option<unsafe extern "C" fn(GLsync)>,
 
     // Buffer Mapping
-    pub glMapBufferRange: Option<unsafe extern "C" fn(u32, isize, isize, u32) -> *mut c_void>,
-    pub glUnmapBuffer: Option<unsafe extern "C" fn(u32) -> u8>,
 
     // Error Reporting
     pub glGetError: Option<unsafe extern "C" fn() -> u32>,
@@ -246,13 +206,60 @@ pub type EglGetErrorFn = unsafe extern "C" fn() -> EGLint;
 pub type EglTerminateFn = unsafe extern "C" fn(EGLDisplay) -> EGLBoolean;
 pub type GbmDestroyDeviceFn = unsafe extern "C" fn(*mut c_void);
 
+/// An owned `dlopen` handle, closed on drop.
+struct DlLib(NonNull<c_void>);
+
+impl DlLib {
+    /// Opens the first library in `names` that loads.
+    unsafe fn open_first(names: &[&CStr], flags: c_int) -> Option<Self> {
+        names
+            .iter()
+            .find_map(|name| NonNull::new(libc::dlopen(name.as_ptr(), flags)))
+            .map(Self)
+    }
+
+    unsafe fn sym(&self, name: &CStr) -> *mut c_void {
+        libc::dlsym(self.0.as_ptr(), name.as_ptr())
+    }
+}
+
+impl Drop for DlLib {
+    fn drop(&mut self) {
+        unsafe {
+            libc::dlclose(self.0.as_ptr());
+        }
+    }
+}
+
+/// A `gbm_device` and the render-node descriptor it was created on, released in that order.
+struct GbmDevice {
+    dev: NonNull<c_void>,
+    destroy: Option<GbmDestroyDeviceFn>,
+    _fd: OwnedFd,
+}
+
+impl Drop for GbmDevice {
+    fn drop(&mut self) {
+        if let Some(destroy) = self.destroy {
+            unsafe { destroy(self.dev.as_ptr()) };
+        }
+    }
+}
+
+/// Reinterprets a symbol address as the function pointer type `F`; `None` when null.
+///
+/// # Safety
+/// `F` must be the symbol's real signature.
+unsafe fn fn_ptr<F: Copy>(ptr: *mut c_void) -> Option<F> {
+    const { assert!(std::mem::size_of::<F>() == std::mem::size_of::<*mut c_void>()) };
+    (!ptr.is_null()).then(|| std::mem::transmute_copy::<*mut c_void, F>(&ptr))
+}
+
+fn unavailable() -> ScalixError {
+    ScalixError::BackendUnavailable(crate::types::BackendType::OpenGL)
+}
+
 pub struct EglContext {
-    egl_lib: *mut c_void,
-    gl_lib: *mut c_void,
-    gbm_lib: *mut c_void,
-    gbm_dev: *mut c_void,
-    gbm_fd: i32,
-    gbm_destroy_device: Option<GbmDestroyDeviceFn>,
     display: EGLDisplay,
     context: EGLContext,
     pub surface: EGLSurface,
@@ -270,6 +277,12 @@ pub struct EglContext {
     pub has_tex_storage: bool,
     pub gl_version: String,
     _lock: Mutex<()>,
+    // Dropped after `Drop::drop` (which terminates a GBM display) in declaration order:
+    // the GBM device, then the libraries its functions come from.
+    gbm: Option<GbmDevice>,
+    _gbm_lib: Option<DlLib>,
+    _gl_lib: Option<DlLib>,
+    _egl_lib: DlLib,
 }
 
 pub struct EglContextGuard<'a> {
@@ -297,89 +310,43 @@ unsafe impl Sync for EglContext {}
 impl EglContext {
     pub fn new() -> Result<Self> {
         unsafe {
-            let egl_lib = libc::dlopen(
-                c"libEGL.so.1".as_ptr() as *const c_char,
+            let egl_lib = DlLib::open_first(
+                &[c"libEGL.so.1", c"libEGL.so"],
+                libc::RTLD_LAZY | libc::RTLD_GLOBAL,
+            )
+            .ok_or_else(unavailable)?;
+            let gl_lib = DlLib::open_first(
+                &[c"libOpenGL.so.0", c"libGL.so.1", c"libGLESv2.so.2"],
                 libc::RTLD_LAZY | libc::RTLD_GLOBAL,
             );
-            let egl_lib = if egl_lib.is_null() {
-                libc::dlopen(
-                    c"libEGL.so".as_ptr() as *const c_char,
-                    libc::RTLD_LAZY | libc::RTLD_GLOBAL,
-                )
-            } else {
-                egl_lib
-            };
-
-            if egl_lib.is_null() {
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
-
-            let gl_lib = libc::dlopen(
-                c"libOpenGL.so.0".as_ptr() as *const c_char,
-                libc::RTLD_LAZY | libc::RTLD_GLOBAL,
-            );
-            let gl_lib = if gl_lib.is_null() {
-                libc::dlopen(
-                    c"libGL.so.1".as_ptr() as *const c_char,
-                    libc::RTLD_LAZY | libc::RTLD_GLOBAL,
-                )
-            } else {
-                gl_lib
-            };
-            let gl_lib = if gl_lib.is_null() {
-                libc::dlopen(
-                    c"libGLESv2.so.2".as_ptr() as *const c_char,
-                    libc::RTLD_LAZY | libc::RTLD_GLOBAL,
-                )
-            } else {
-                gl_lib
-            };
 
             type EglGetProcAddressFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
-            let egl_get_proc_address_ptr =
-                libc::dlsym(egl_lib, c"eglGetProcAddress".as_ptr() as *const c_char);
             let egl_get_proc_address: Option<EglGetProcAddressFn> =
-                if !egl_get_proc_address_ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglGetProcAddressFn>(
-                        egl_get_proc_address_ptr,
-                    ))
-                } else {
-                    None
-                };
+                fn_ptr(egl_lib.sym(c"eglGetProcAddress"));
 
             // Core EGL 1.0-1.4 symbols MUST be loaded via dlsym to avoid libglvnd dummy GL dispatch stubs
-            let load_egl_core_symbol = |name: &str| -> *mut c_void {
-                let c_name = CString::new(name).unwrap();
-                libc::dlsym(egl_lib, c_name.as_ptr())
-            };
+            let load_egl_core_symbol = |name: &CStr| -> *mut c_void { egl_lib.sym(name) };
 
             // EGL extension symbols (or EGL 1.5) can be resolved via dlsym or eglGetProcAddress
-            let load_egl_ext_symbol = |name: &str| -> *mut c_void {
-                let c_name = CString::new(name).unwrap();
-                let mut ptr = libc::dlsym(egl_lib, c_name.as_ptr());
-                if ptr.is_null() {
-                    if let Some(egpa) = egl_get_proc_address {
-                        ptr = egpa(c_name.as_ptr());
-                    }
+            let load_egl_ext_symbol = |name: &CStr| -> *mut c_void {
+                let ptr = egl_lib.sym(name);
+                match egl_get_proc_address {
+                    Some(egpa) if ptr.is_null() => egpa(name.as_ptr()),
+                    _ => ptr,
                 }
-                ptr
             };
 
             // OpenGL client API symbols are resolved via eglGetProcAddress or libOpenGL/libGL/libGLESv2 dlsym
-            let load_gl_symbol = |name: &str| -> *mut c_void {
-                let c_name = CString::new(name).unwrap();
-                let mut ptr = if let Some(egpa) = egl_get_proc_address {
-                    egpa(c_name.as_ptr())
-                } else {
-                    std::ptr::null_mut()
-                };
-                if ptr.is_null() && !gl_lib.is_null() {
-                    ptr = libc::dlsym(gl_lib, c_name.as_ptr());
+            let load_gl_symbol = |name: &CStr| -> *mut c_void {
+                let mut ptr =
+                    egl_get_proc_address.map_or(std::ptr::null_mut(), |egpa| egpa(name.as_ptr()));
+                if ptr.is_null() {
+                    if let Some(lib) = &gl_lib {
+                        ptr = lib.sym(name);
+                    }
                 }
                 if ptr.is_null() {
-                    ptr = libc::dlsym(egl_lib, c_name.as_ptr());
+                    ptr = egl_lib.sym(name);
                 }
                 ptr
             };
@@ -410,159 +377,44 @@ impl EglContext {
             type EglMakeCurrentFn =
                 unsafe extern "C" fn(EGLDisplay, EGLSurface, EGLSurface, EGLContext) -> EGLBoolean;
 
-            let egl_get_display: Option<EglGetDisplayFn> = {
-                let ptr = load_egl_core_symbol("eglGetDisplay");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglGetDisplayFn>(ptr))
-                } else {
-                    None
-                }
-            };
-            let egl_get_platform_display: Option<EglGetPlatformDisplayFn> = {
-                let ptr = load_egl_ext_symbol("eglGetPlatformDisplay");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglGetPlatformDisplayFn>(
-                        ptr,
-                    ))
-                } else {
-                    None
-                }
-            };
-            let egl_get_platform_display_ext: Option<EglGetPlatformDisplayExtFn> = {
-                let ptr = load_egl_ext_symbol("eglGetPlatformDisplayEXT");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglGetPlatformDisplayExtFn>(ptr))
-                } else {
-                    None
-                }
-            };
-            let egl_query_devices_ext: Option<EglQueryDevicesExtFn> = {
-                let ptr = load_egl_ext_symbol("eglQueryDevicesEXT");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglQueryDevicesExtFn>(
-                        ptr,
-                    ))
-                } else {
-                    None
-                }
-            };
+            let egl_get_display: Option<EglGetDisplayFn> =
+                fn_ptr(load_egl_core_symbol(c"eglGetDisplay"));
+            let egl_get_platform_display: Option<EglGetPlatformDisplayFn> =
+                fn_ptr(load_egl_ext_symbol(c"eglGetPlatformDisplay"));
+            let egl_get_platform_display_ext: Option<EglGetPlatformDisplayExtFn> =
+                fn_ptr(load_egl_ext_symbol(c"eglGetPlatformDisplayEXT"));
+            let egl_query_devices_ext: Option<EglQueryDevicesExtFn> =
+                fn_ptr(load_egl_ext_symbol(c"eglQueryDevicesEXT"));
 
             type EglQueryDeviceStringExtFn =
                 unsafe extern "C" fn(EGLDeviceEXT, EGLint) -> *const c_char;
-            let egl_query_device_string_ext: Option<EglQueryDeviceStringExtFn> = {
-                let ptr = load_egl_ext_symbol("eglQueryDeviceStringEXT");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglQueryDeviceStringExtFn>(ptr))
-                } else {
-                    None
-                }
-            };
+            let egl_query_device_string_ext: Option<EglQueryDeviceStringExtFn> =
+                fn_ptr(load_egl_ext_symbol(c"eglQueryDeviceStringEXT"));
 
-            let egl_init_ptr = load_egl_core_symbol("eglInitialize");
-            if egl_init_ptr.is_null() {
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
-                }
-                libc::dlclose(egl_lib);
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
             let egl_initialize: EglInitializeFn =
-                std::mem::transmute::<*mut c_void, EglInitializeFn>(egl_init_ptr);
+                fn_ptr(load_egl_core_symbol(c"eglInitialize")).ok_or_else(unavailable)?;
 
-            let egl_bind_api_ptr = load_egl_core_symbol("eglBindAPI");
-            if egl_bind_api_ptr.is_null() {
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
-                }
-                libc::dlclose(egl_lib);
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
             let egl_bind_api: EglBindApiFn =
-                std::mem::transmute::<*mut c_void, EglBindApiFn>(egl_bind_api_ptr);
+                fn_ptr(load_egl_core_symbol(c"eglBindAPI")).ok_or_else(unavailable)?;
 
-            let egl_choose_config_ptr = load_egl_core_symbol("eglChooseConfig");
-            if egl_choose_config_ptr.is_null() {
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
-                }
-                libc::dlclose(egl_lib);
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
             let egl_choose_config: EglChooseConfigFn =
-                std::mem::transmute::<*mut c_void, EglChooseConfigFn>(egl_choose_config_ptr);
+                fn_ptr(load_egl_core_symbol(c"eglChooseConfig")).ok_or_else(unavailable)?;
 
-            let egl_create_context_ptr = load_egl_core_symbol("eglCreateContext");
-            if egl_create_context_ptr.is_null() {
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
-                }
-                libc::dlclose(egl_lib);
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
             let egl_create_context: EglCreateContextFn =
-                std::mem::transmute::<*mut c_void, EglCreateContextFn>(egl_create_context_ptr);
+                fn_ptr(load_egl_core_symbol(c"eglCreateContext")).ok_or_else(unavailable)?;
 
-            let egl_make_current_ptr = load_egl_core_symbol("eglMakeCurrent");
-            if egl_make_current_ptr.is_null() {
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
-                }
-                libc::dlclose(egl_lib);
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
-            }
             let egl_make_current: EglMakeCurrentFn =
-                std::mem::transmute::<*mut c_void, EglMakeCurrentFn>(egl_make_current_ptr);
+                fn_ptr(load_egl_core_symbol(c"eglMakeCurrent")).ok_or_else(unavailable)?;
 
-            let egl_destroy_context: Option<EglDestroyContextFn> = {
-                let ptr = load_egl_core_symbol("eglDestroyContext");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglDestroyContextFn>(ptr))
-                } else {
-                    None
-                }
-            };
-            let egl_create_pbuffer_surface: Option<EglCreatePbufferSurfaceFn> = {
-                let ptr = load_egl_core_symbol("eglCreatePbufferSurface");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglCreatePbufferSurfaceFn>(ptr))
-                } else {
-                    None
-                }
-            };
-            let egl_destroy_surface: Option<EglDestroySurfaceFn> = {
-                let ptr = load_egl_core_symbol("eglDestroySurface");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglDestroySurfaceFn>(ptr))
-                } else {
-                    None
-                }
-            };
-            let egl_get_error: Option<EglGetErrorFn> = {
-                let ptr = load_egl_core_symbol("eglGetError");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglGetErrorFn>(ptr))
-                } else {
-                    None
-                }
-            };
-            let egl_terminate: Option<EglTerminateFn> = {
-                let ptr = load_egl_core_symbol("eglTerminate");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, EglTerminateFn>(ptr))
-                } else {
-                    None
-                }
-            };
+            let egl_destroy_context: Option<EglDestroyContextFn> =
+                fn_ptr(load_egl_core_symbol(c"eglDestroyContext"));
+            let egl_create_pbuffer_surface: Option<EglCreatePbufferSurfaceFn> =
+                fn_ptr(load_egl_core_symbol(c"eglCreatePbufferSurface"));
+            let egl_destroy_surface: Option<EglDestroySurfaceFn> =
+                fn_ptr(load_egl_core_symbol(c"eglDestroySurface"));
+            let egl_get_error: Option<EglGetErrorFn> = fn_ptr(load_egl_core_symbol(c"eglGetError"));
+            let egl_terminate: Option<EglTerminateFn> =
+                fn_ptr(load_egl_core_symbol(c"eglTerminate"));
 
             let get_platform_display =
                 |platform: EGLenum, native_display: *mut c_void| -> EGLDisplay {
@@ -581,18 +433,10 @@ impl EglContext {
                     EGL_NO_DISPLAY
                 };
 
-            type GbmHandle = (*mut c_void, i32);
             type BoundDisplay = (EGLDisplay, EGLContext, EGLSurface, EGLint, EGLint);
 
             type GlGetStringFn = unsafe extern "C" fn(u32) -> *const c_char;
-            let gl_get_string: Option<GlGetStringFn> = {
-                let ptr = load_gl_symbol("glGetString");
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, GlGetStringFn>(ptr))
-                } else {
-                    None
-                }
-            };
+            let gl_get_string: Option<GlGetStringFn> = fn_ptr(load_gl_symbol(c"glGetString"));
             // Mesa silently falls back to a CPU rasterizer (e.g. surfaceless without DRM), so the
             // bound renderer itself is inspected rather than trusting the platform.
             let current_renderer_is_software = || -> bool {
@@ -860,7 +704,6 @@ impl EglContext {
             };
 
             let mut selected: Option<BoundDisplay> = None;
-            let mut selected_gbm: Option<GbmHandle> = None;
             let mut software_devices: Vec<EGLDeviceEXT> = Vec::new();
 
             // Strategy 1: hardware EGL devices (NVIDIA / AMD / Intel), software devices deferred
@@ -911,70 +754,56 @@ impl EglContext {
             // are skipped: opening one on a headless host can implicitly grant DRM master.
             #[cfg(target_os = "linux")]
             let gbm_lib = if selected.is_none() {
-                let p = libc::dlopen(
-                    c"libgbm.so.1".as_ptr() as *const c_char,
+                DlLib::open_first(
+                    &[c"libgbm.so.1", c"libgbm.so"],
                     libc::RTLD_LAZY | libc::RTLD_LOCAL,
-                );
-                if p.is_null() {
-                    libc::dlopen(
-                        c"libgbm.so".as_ptr() as *const c_char,
-                        libc::RTLD_LAZY | libc::RTLD_LOCAL,
-                    )
-                } else {
-                    p
-                }
-            } else {
-                std::ptr::null_mut()
-            };
-            #[cfg(not(target_os = "linux"))]
-            let gbm_lib: *mut c_void = std::ptr::null_mut();
-
-            #[cfg(target_os = "linux")]
-            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = if !gbm_lib.is_null() {
-                let ptr = libc::dlsym(gbm_lib, c"gbm_device_destroy".as_ptr() as *const c_char);
-                if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, GbmDestroyDeviceFn>(ptr))
-                } else {
-                    None
-                }
+                )
             } else {
                 None
             };
             #[cfg(not(target_os = "linux"))]
-            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = None;
+            let gbm_lib: Option<DlLib> = None;
+            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = gbm_lib
+                .as_ref()
+                .and_then(|lib| fn_ptr(lib.sym(c"gbm_device_destroy")));
+            // Declared after `gbm_lib` so an early return drops the device before unloading libgbm.
+            #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+            let mut selected_gbm: Option<GbmDevice> = None;
 
             #[cfg(target_os = "linux")]
-            if selected.is_none() && !gbm_lib.is_null() {
+            if let (None, Some(lib)) = (&selected, &gbm_lib) {
                 type GbmCreateDeviceFn = unsafe extern "C" fn(i32) -> *mut c_void;
-                let create_ptr =
-                    libc::dlsym(gbm_lib, c"gbm_create_device".as_ptr() as *const c_char);
-                if !create_ptr.is_null() {
-                    let gbm_create_device: GbmCreateDeviceFn =
-                        std::mem::transmute::<*mut c_void, GbmCreateDeviceFn>(create_ptr);
+                if let Some(gbm_create_device) =
+                    fn_ptr::<GbmCreateDeviceFn>(lib.sym(c"gbm_create_device"))
+                {
                     for &path in crate::dma::linux_drm::DRM_CANDIDATE_PATHS
                         .iter()
                         .filter(|p| p.contains("renderD"))
                     {
-                        let c_path = CString::new(path).unwrap();
-                        let fd = libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
-                        if fd < 0 {
+                        let Ok(c_path) = CString::new(path) else {
+                            continue;
+                        };
+                        let raw_fd = libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+                        if raw_fd < 0 {
                             continue;
                         }
-                        let gbm_dev = gbm_create_device(fd);
-                        if !gbm_dev.is_null() {
-                            let d = get_platform_display(EGL_PLATFORM_GBM_KHR, gbm_dev);
-                            if d != EGL_NO_DISPLAY {
-                                selected = try_display(d, "EGL_PLATFORM_GBM_KHR", false, true);
-                            }
-                            if selected.is_some() {
-                                selected_gbm = Some((gbm_dev, fd));
-                                break;
-                            }
-                            if let Some(destroy) = gbm_destroy_device {
-                                destroy(gbm_dev);
-                            }
+                        let fd = OwnedFd::from_raw_fd(raw_fd);
+                        let Some(dev) = NonNull::new(gbm_create_device(fd.as_raw_fd())) else {
+                            continue;
+                        };
+                        let device = GbmDevice {
+                            dev,
+                            destroy: gbm_destroy_device,
+                            _fd: fd,
+                        };
+                        let d = get_platform_display(EGL_PLATFORM_GBM_KHR, device.dev.as_ptr());
+                        if d != EGL_NO_DISPLAY {
+                            selected = try_display(d, "EGL_PLATFORM_GBM_KHR", false, true);
                         }
-                        libc::close(fd);
+                        if selected.is_some() {
+                            selected_gbm = Some(device);
+                            break;
+                        }
                     }
                 }
             }
@@ -1000,22 +829,7 @@ impl EglContext {
                 selected.unwrap_or((EGL_NO_DISPLAY, EGL_NO_CONTEXT, EGL_NO_SURFACE, 0, 0));
 
             if display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT {
-                if let Some((g_dev, g_fd)) = selected_gbm {
-                    if let Some(destroy) = gbm_destroy_device {
-                        destroy(g_dev);
-                    }
-                    libc::close(g_fd);
-                }
-                if !gbm_lib.is_null() {
-                    libc::dlclose(gbm_lib);
-                }
-                if !gl_lib.is_null() {
-                    libc::dlclose(gl_lib);
-                }
-                libc::dlclose(egl_lib);
-                return Err(ScalixError::BackendUnavailable(
-                    crate::types::BackendType::OpenGL,
-                ));
+                return Err(unavailable());
             }
 
             log::debug!("Initialized headless EGL version {bound_major}.{bound_minor}");
@@ -1029,190 +843,142 @@ impl EglContext {
                 egl_destroy_context,
                 egl_destroy_surface,
                 egl_terminate,
-                gbm: selected_gbm,
-                gbm_destroy_device,
-                libs: [gbm_lib, gl_lib, egl_lib],
+                terminate_display: selected_gbm.is_some(),
             };
 
             macro_rules! get_gl_fn {
                 ($name:expr, $t:ty) => {{
-                    let ptr = load_gl_symbol($name);
-                    if ptr.is_null() {
-                        return Err(ScalixError::ExecutionFailed(format!(
-                            "Missing GL symbol: {}",
-                            $name
-                        )));
-                    }
-                    std::mem::transmute::<*mut c_void, $t>(ptr)
+                    fn_ptr::<$t>(load_gl_symbol($name)).ok_or_else(|| {
+                        ScalixError::ExecutionFailed(format!("Missing GL symbol: {:?}", $name))
+                    })?
                 }};
             }
 
             macro_rules! get_optional_gl_fn {
                 ($name:expr, $t:ty) => {{
-                    let ptr = load_gl_symbol($name);
-                    if ptr.is_null() {
-                        None
-                    } else {
-                        Some(std::mem::transmute::<*mut c_void, $t>(ptr))
-                    }
+                    fn_ptr::<$t>(load_gl_symbol($name))
                 }};
             }
 
             let gl = GlFunctions {
-                glGenTextures: get_gl_fn!("glGenTextures", unsafe extern "C" fn(i32, *mut u32)),
-                glBindTexture: get_gl_fn!("glBindTexture", unsafe extern "C" fn(u32, u32)),
+                glGenTextures: get_gl_fn!(c"glGenTextures", unsafe extern "C" fn(i32, *mut u32)),
+                glBindTexture: get_gl_fn!(c"glBindTexture", unsafe extern "C" fn(u32, u32)),
                 glTexImage2D: get_gl_fn!(
-                    "glTexImage2D",
+                    c"glTexImage2D",
                     unsafe extern "C" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void)
                 ),
                 glTexStorage2D: get_optional_gl_fn!(
-                    "glTexStorage2D",
+                    c"glTexStorage2D",
                     unsafe extern "C" fn(u32, i32, u32, i32, i32)
                 ),
                 glTexSubImage2D: get_gl_fn!(
-                    "glTexSubImage2D",
+                    c"glTexSubImage2D",
                     unsafe extern "C" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void)
                 ),
-                glTexParameteri: get_gl_fn!("glTexParameteri", unsafe extern "C" fn(u32, u32, i32)),
+                glTexParameteri: get_gl_fn!(
+                    c"glTexParameteri",
+                    unsafe extern "C" fn(u32, u32, i32)
+                ),
                 glDeleteTextures: get_gl_fn!(
-                    "glDeleteTextures",
+                    c"glDeleteTextures",
                     unsafe extern "C" fn(i32, *const u32)
                 ),
-                glActiveTexture: get_gl_fn!("glActiveTexture", unsafe extern "C" fn(u32)),
-                glGenerateMipmap: get_gl_fn!("glGenerateMipmap", unsafe extern "C" fn(u32)),
+                glActiveTexture: get_gl_fn!(c"glActiveTexture", unsafe extern "C" fn(u32)),
+                glGenerateMipmap: get_gl_fn!(c"glGenerateMipmap", unsafe extern "C" fn(u32)),
 
                 glGenFramebuffers: get_gl_fn!(
-                    "glGenFramebuffers",
+                    c"glGenFramebuffers",
                     unsafe extern "C" fn(i32, *mut u32)
                 ),
-                glBindFramebuffer: get_gl_fn!("glBindFramebuffer", unsafe extern "C" fn(u32, u32)),
+                glBindFramebuffer: get_gl_fn!(c"glBindFramebuffer", unsafe extern "C" fn(u32, u32)),
                 glFramebufferTexture2D: get_gl_fn!(
-                    "glFramebufferTexture2D",
+                    c"glFramebufferTexture2D",
                     unsafe extern "C" fn(u32, u32, u32, u32, i32)
                 ),
-                glCheckFramebufferStatus: get_gl_fn!(
-                    "glCheckFramebufferStatus",
-                    unsafe extern "C" fn(u32) -> u32
-                ),
                 glDeleteFramebuffers: get_gl_fn!(
-                    "glDeleteFramebuffers",
+                    c"glDeleteFramebuffers",
                     unsafe extern "C" fn(i32, *const u32)
                 ),
                 glBlitFramebuffer: get_gl_fn!(
-                    "glBlitFramebuffer",
+                    c"glBlitFramebuffer",
                     unsafe extern "C" fn(i32, i32, i32, i32, i32, i32, i32, i32, u32, u32)
                 ),
                 glReadPixels: get_gl_fn!(
-                    "glReadPixels",
+                    c"glReadPixels",
                     unsafe extern "C" fn(i32, i32, i32, i32, u32, u32, *mut c_void)
                 ),
-                glViewport: get_gl_fn!("glViewport", unsafe extern "C" fn(i32, i32, i32, i32)),
-                glClear: get_gl_fn!("glClear", unsafe extern "C" fn(u32)),
-                glClearColor: get_gl_fn!("glClearColor", unsafe extern "C" fn(f32, f32, f32, f32)),
-                glPixelStorei: get_gl_fn!("glPixelStorei", unsafe extern "C" fn(u32, i32)),
+                glViewport: get_gl_fn!(c"glViewport", unsafe extern "C" fn(i32, i32, i32, i32)),
+                glPixelStorei: get_gl_fn!(c"glPixelStorei", unsafe extern "C" fn(u32, i32)),
 
-                glCreateShader: get_gl_fn!("glCreateShader", unsafe extern "C" fn(u32) -> u32),
+                glCreateShader: get_gl_fn!(c"glCreateShader", unsafe extern "C" fn(u32) -> u32),
                 glShaderSource: get_gl_fn!(
-                    "glShaderSource",
+                    c"glShaderSource",
                     unsafe extern "C" fn(u32, i32, *const *const c_char, *const i32)
                 ),
-                glCompileShader: get_gl_fn!("glCompileShader", unsafe extern "C" fn(u32)),
+                glCompileShader: get_gl_fn!(c"glCompileShader", unsafe extern "C" fn(u32)),
                 glGetShaderiv: get_gl_fn!(
-                    "glGetShaderiv",
+                    c"glGetShaderiv",
                     unsafe extern "C" fn(u32, u32, *mut i32)
                 ),
                 glGetShaderInfoLog: get_gl_fn!(
-                    "glGetShaderInfoLog",
+                    c"glGetShaderInfoLog",
                     unsafe extern "C" fn(u32, i32, *mut i32, *mut c_char)
                 ),
-                glCreateProgram: get_gl_fn!("glCreateProgram", unsafe extern "C" fn() -> u32),
-                glAttachShader: get_gl_fn!("glAttachShader", unsafe extern "C" fn(u32, u32)),
-                glLinkProgram: get_gl_fn!("glLinkProgram", unsafe extern "C" fn(u32)),
+                glCreateProgram: get_gl_fn!(c"glCreateProgram", unsafe extern "C" fn() -> u32),
+                glAttachShader: get_gl_fn!(c"glAttachShader", unsafe extern "C" fn(u32, u32)),
+                glLinkProgram: get_gl_fn!(c"glLinkProgram", unsafe extern "C" fn(u32)),
                 glGetProgramiv: get_gl_fn!(
-                    "glGetProgramiv",
+                    c"glGetProgramiv",
                     unsafe extern "C" fn(u32, u32, *mut i32)
                 ),
                 glGetProgramInfoLog: get_gl_fn!(
-                    "glGetProgramInfoLog",
+                    c"glGetProgramInfoLog",
                     unsafe extern "C" fn(u32, i32, *mut i32, *mut c_char)
                 ),
-                glUseProgram: get_gl_fn!("glUseProgram", unsafe extern "C" fn(u32)),
-                glDeleteProgram: get_gl_fn!("glDeleteProgram", unsafe extern "C" fn(u32)),
-                glDeleteShader: get_gl_fn!("glDeleteShader", unsafe extern "C" fn(u32)),
+                glUseProgram: get_gl_fn!(c"glUseProgram", unsafe extern "C" fn(u32)),
+                glDeleteProgram: get_gl_fn!(c"glDeleteProgram", unsafe extern "C" fn(u32)),
+                glDeleteShader: get_gl_fn!(c"glDeleteShader", unsafe extern "C" fn(u32)),
                 glGetUniformLocation: get_gl_fn!(
-                    "glGetUniformLocation",
+                    c"glGetUniformLocation",
                     unsafe extern "C" fn(u32, *const c_char) -> i32
                 ),
-                glUniform1i: get_gl_fn!("glUniform1i", unsafe extern "C" fn(i32, i32)),
-                glUniform1f: get_gl_fn!("glUniform1f", unsafe extern "C" fn(i32, f32)),
-                glUniform2f: get_gl_fn!("glUniform2f", unsafe extern "C" fn(i32, f32, f32)),
+                glUniform1i: get_gl_fn!(c"glUniform1i", unsafe extern "C" fn(i32, i32)),
+                glUniform2f: get_gl_fn!(c"glUniform2f", unsafe extern "C" fn(i32, f32, f32)),
 
                 glGenVertexArrays: get_gl_fn!(
-                    "glGenVertexArrays",
+                    c"glGenVertexArrays",
                     unsafe extern "C" fn(i32, *mut u32)
                 ),
-                glBindVertexArray: get_gl_fn!("glBindVertexArray", unsafe extern "C" fn(u32)),
-                glDeleteVertexArrays: get_gl_fn!(
-                    "glDeleteVertexArrays",
-                    unsafe extern "C" fn(i32, *const u32)
-                ),
-                glGenBuffers: get_gl_fn!("glGenBuffers", unsafe extern "C" fn(i32, *mut u32)),
-                glBindBuffer: get_gl_fn!("glBindBuffer", unsafe extern "C" fn(u32, u32)),
+                glBindVertexArray: get_gl_fn!(c"glBindVertexArray", unsafe extern "C" fn(u32)),
+                glGenBuffers: get_gl_fn!(c"glGenBuffers", unsafe extern "C" fn(i32, *mut u32)),
+                glBindBuffer: get_gl_fn!(c"glBindBuffer", unsafe extern "C" fn(u32, u32)),
                 glBufferData: get_gl_fn!(
-                    "glBufferData",
+                    c"glBufferData",
                     unsafe extern "C" fn(u32, isize, *const c_void, u32)
                 ),
-                glDeleteBuffers: get_gl_fn!(
-                    "glDeleteBuffers",
-                    unsafe extern "C" fn(i32, *const u32)
-                ),
                 glEnableVertexAttribArray: get_gl_fn!(
-                    "glEnableVertexAttribArray",
+                    c"glEnableVertexAttribArray",
                     unsafe extern "C" fn(u32)
                 ),
                 glVertexAttribPointer: get_gl_fn!(
-                    "glVertexAttribPointer",
+                    c"glVertexAttribPointer",
                     unsafe extern "C" fn(u32, i32, u32, u8, i32, *const c_void)
                 ),
-                glDrawArrays: get_gl_fn!("glDrawArrays", unsafe extern "C" fn(u32, i32, i32)),
+                glDrawArrays: get_gl_fn!(c"glDrawArrays", unsafe extern "C" fn(u32, i32, i32)),
 
-                glFinish: get_gl_fn!("glFinish", unsafe extern "C" fn()),
-                glFlush: get_gl_fn!("glFlush", unsafe extern "C" fn()),
-                glGetString: get_gl_fn!("glGetString", unsafe extern "C" fn(u32) -> *const c_char),
+                glFinish: get_gl_fn!(c"glFinish", unsafe extern "C" fn()),
+                glGetString: get_gl_fn!(c"glGetString", unsafe extern "C" fn(u32) -> *const c_char),
 
                 glDispatchCompute: get_optional_gl_fn!(
-                    "glDispatchCompute",
+                    c"glDispatchCompute",
                     unsafe extern "C" fn(u32, u32, u32)
                 ),
                 glBindImageTexture: get_optional_gl_fn!(
-                    "glBindImageTexture",
+                    c"glBindImageTexture",
                     unsafe extern "C" fn(u32, u32, i32, u8, i32, u32, u32)
                 ),
-                glMemoryBarrier: get_optional_gl_fn!("glMemoryBarrier", unsafe extern "C" fn(u32)),
-
-                glFenceSync: get_optional_gl_fn!(
-                    "glFenceSync",
-                    unsafe extern "C" fn(u32, u32) -> GLsync
-                ),
-                glClientWaitSync: get_optional_gl_fn!(
-                    "glClientWaitSync",
-                    unsafe extern "C" fn(GLsync, u32, u64) -> u32
-                ),
-                glWaitSync: get_optional_gl_fn!(
-                    "glWaitSync",
-                    unsafe extern "C" fn(GLsync, u32, u64)
-                ),
-                glDeleteSync: get_optional_gl_fn!("glDeleteSync", unsafe extern "C" fn(GLsync)),
-
-                glMapBufferRange: get_optional_gl_fn!(
-                    "glMapBufferRange",
-                    unsafe extern "C" fn(u32, isize, isize, u32) -> *mut c_void
-                ),
-                glUnmapBuffer: get_optional_gl_fn!(
-                    "glUnmapBuffer",
-                    unsafe extern "C" fn(u32) -> u8
-                ),
-                glGetError: get_optional_gl_fn!("glGetError", unsafe extern "C" fn() -> u32),
+                glMemoryBarrier: get_optional_gl_fn!(c"glMemoryBarrier", unsafe extern "C" fn(u32)),
+                glGetError: get_optional_gl_fn!(c"glGetError", unsafe extern "C" fn() -> u32),
             };
 
             std::mem::forget(rollback);
@@ -1248,23 +1014,10 @@ impl EglContext {
             // Unbind from creation thread so worker threads can bind it
             let _ = egl_make_current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 
-            let (gbm_dev_ptr, gbm_fd_val) = selected_gbm.unwrap_or((std::ptr::null_mut(), -1));
-            let final_gbm_lib = if gbm_dev_ptr.is_null() {
-                if !gbm_lib.is_null() {
-                    libc::dlclose(gbm_lib);
-                }
-                std::ptr::null_mut()
-            } else {
-                gbm_lib
-            };
+            // libgbm is only needed while a GBM device is kept.
+            let gbm_lib = gbm_lib.filter(|_| selected_gbm.is_some());
 
             Ok(Self {
-                egl_lib,
-                gl_lib,
-                gbm_lib: final_gbm_lib,
-                gbm_dev: gbm_dev_ptr,
-                gbm_fd: gbm_fd_val,
-                gbm_destroy_device,
                 display,
                 context,
                 surface,
@@ -1279,6 +1032,10 @@ impl EglContext {
                 has_tex_storage,
                 gl_version: version_str,
                 _lock: Mutex::new(()),
+                gbm: selected_gbm,
+                _gbm_lib: gbm_lib,
+                _gl_lib: gl_lib,
+                _egl_lib: egl_lib,
             })
         }
     }
@@ -1364,6 +1121,9 @@ fn parse_gl_version(version: &str) -> (u32, u32) {
 }
 
 /// Scope guard undoing a partially constructed [`EglContext`]; defused with `mem::forget`.
+///
+/// Declared after the libraries and the GBM device, so on an early return it runs first and the
+/// display is terminated before those are released.
 struct InitRollback {
     display: EGLDisplay,
     context: EGLContext,
@@ -1372,9 +1132,8 @@ struct InitRollback {
     egl_destroy_context: Option<EglDestroyContextFn>,
     egl_destroy_surface: Option<EglDestroySurfaceFn>,
     egl_terminate: Option<EglTerminateFn>,
-    gbm: Option<(*mut c_void, i32)>,
-    gbm_destroy_device: Option<GbmDestroyDeviceFn>,
-    libs: [*mut c_void; 3],
+    /// The display is backed by our private GBM device (the only kind safe to terminate).
+    terminate_display: bool,
 }
 
 impl Drop for InitRollback {
@@ -1394,20 +1153,9 @@ impl Drop for InitRollback {
             if let Some(f) = self.egl_destroy_context {
                 let _ = f(self.display, self.context);
             }
-            if let Some((dev, fd)) = self.gbm {
-                // A GBM display is private to this context, so terminate it before its device goes
-                // away; shared displays stay initialized, as in EglContext's Drop.
+            if self.terminate_display {
                 if let Some(f) = self.egl_terminate {
                     let _ = f(self.display);
-                }
-                if let Some(destroy) = self.gbm_destroy_device {
-                    destroy(dev);
-                }
-                libc::close(fd);
-            }
-            for lib in self.libs {
-                if !lib.is_null() {
-                    libc::dlclose(lib);
                 }
             }
         }
@@ -1433,34 +1181,11 @@ impl Drop for EglContext {
                 let _ = f(self.display, self.context);
             }
             // Shared displays must stay initialized for sibling contexts; see EglContext::new.
-            if !self.gbm_dev.is_null() {
+            // The GBM device and the libraries are released afterwards by their field drops.
+            if self.gbm.is_some() {
                 if let Some(f) = self.egl_terminate {
                     let _ = f(self.display);
                 }
-            }
-
-            if !self.gbm_dev.is_null() {
-                if let Some(destroy) = self.gbm_destroy_device {
-                    destroy(self.gbm_dev);
-                }
-                self.gbm_dev = std::ptr::null_mut();
-            }
-            if self.gbm_fd >= 0 {
-                libc::close(self.gbm_fd);
-                self.gbm_fd = -1;
-            }
-
-            if !self.gbm_lib.is_null() {
-                libc::dlclose(self.gbm_lib);
-                self.gbm_lib = std::ptr::null_mut();
-            }
-            if !self.gl_lib.is_null() {
-                libc::dlclose(self.gl_lib);
-                self.gl_lib = std::ptr::null_mut();
-            }
-            if !self.egl_lib.is_null() {
-                libc::dlclose(self.egl_lib);
-                self.egl_lib = std::ptr::null_mut();
             }
         }
     }
