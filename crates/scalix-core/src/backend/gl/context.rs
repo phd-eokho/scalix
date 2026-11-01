@@ -1024,6 +1024,7 @@ impl EglContext {
                 egl_make_current,
                 egl_destroy_context,
                 egl_destroy_surface,
+                egl_terminate,
                 gbm: selected_gbm,
                 gbm_destroy_device,
                 libs: [gbm_lib, gl_lib, egl_lib],
@@ -1357,6 +1358,7 @@ struct InitRollback {
     egl_make_current: EglMakeCurrentFn,
     egl_destroy_context: Option<EglDestroyContextFn>,
     egl_destroy_surface: Option<EglDestroySurfaceFn>,
+    egl_terminate: Option<EglTerminateFn>,
     gbm: Option<(*mut c_void, i32)>,
     gbm_destroy_device: Option<GbmDestroyDeviceFn>,
     libs: [*mut c_void; 3],
@@ -1380,6 +1382,11 @@ impl Drop for InitRollback {
                 let _ = f(self.display, self.context);
             }
             if let Some((dev, fd)) = self.gbm {
+                // A GBM display is private to this context, so terminate it before its device goes
+                // away; shared displays stay initialized, as in EglContext's Drop.
+                if let Some(f) = self.egl_terminate {
+                    let _ = f(self.display);
+                }
                 if let Some(destroy) = self.gbm_destroy_device {
                     destroy(dev);
                 }
