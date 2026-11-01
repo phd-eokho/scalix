@@ -6,7 +6,9 @@
 
 use crate::backend::vulkan::blit::{to_vk_filter, to_vk_format_info};
 use crate::backend::vulkan::context::VulkanContext;
-use crate::backend::vulkan::util::{CommandBufferGuard, GpuBuffer, GpuImage, QueryPoolGuard};
+use crate::backend::vulkan::util::{
+    CommandBufferGuard, FenceGuard, GpuBuffer, GpuImage, QueryPoolGuard,
+};
 use crate::backend::vulkan::{VulkanPipeline, VulkanStrategy};
 use crate::profiler::{ProfileMetrics, Profiler};
 use crate::types::{ImageDesc, ImageDescMut, ResizeOptions, Result, ScalixError};
@@ -634,15 +636,15 @@ impl VulkanLodDownscaler {
             } else {
                 None
             };
+            // A per-call fence instead of queue_wait_idle: waits only for this submission and
+            // needs no queue lock while the GPU runs.
+            let fence_guard = FenceGuard::new(&self.ctx)?;
+            self.ctx.submit(&[submit_info], fence_guard.fence)?;
             device
-                .queue_submit(self.ctx.queue, &[submit_info], vk::Fence::null())
+                .wait_for_fences(&[fence_guard.fence], true, u64::MAX)
                 .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!("Failed to submit queue: {e}"))
+                    ScalixError::ExecutionFailed(format!("Failed to wait for LoD fence: {e}"))
                 })?;
-
-            device.queue_wait_idle(self.ctx.queue).map_err(|e| {
-                ScalixError::ExecutionFailed(format!("Queue wait idle failed: {e}"))
-            })?;
             let driver_sync_ms = t_sync_start
                 .map(|t| t.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);

@@ -825,11 +825,7 @@ impl VulkanRasterResizer {
             } else {
                 None
             };
-            device
-                .queue_submit(self.ctx.queue, &[submit_info], slot.fence)
-                .map_err(|e| {
-                    ScalixError::ExecutionFailed(format!("Failed to submit queue: {e}"))
-                })?;
+            self.ctx.submit(&[submit_info], slot.fence)?;
             slot.in_flight = true;
             device
                 .wait_for_fences(&[slot.fence], true, u64::MAX)
