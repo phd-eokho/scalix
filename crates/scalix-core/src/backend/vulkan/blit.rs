@@ -43,20 +43,18 @@ pub struct VulkanBlitter {
 }
 
 impl VulkanBlitter {
-    #[inline]
-    #[must_use]
-    pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Self {
+    pub fn new(ctx: Arc<VulkanContext>, profiler: Arc<dyn Profiler>) -> Result<Self> {
         let rgb_compute = VulkanRgbCompute::new(Arc::clone(&ctx)).map(Arc::new).ok();
-        let ring = Mutex::new(
-            VulkanStagingRing::new(Arc::clone(&ctx), DEFAULT_RING_SLOTS)
-                .expect("Failed to initialize Vulkan staging ring for blitter"),
-        );
-        Self {
+        let ring = Mutex::new(VulkanStagingRing::new(
+            Arc::clone(&ctx),
+            DEFAULT_RING_SLOTS,
+        )?);
+        Ok(Self {
             ctx,
             profiler,
             rgb_compute,
             ring,
-        }
+        })
     }
 
     pub fn process(

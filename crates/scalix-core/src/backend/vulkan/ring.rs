@@ -46,9 +46,11 @@ impl StagingSlot {
                 usage,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
-            self.src_staging = Some(buf);
+            return Ok(self.src_staging.insert(buf));
         }
-        Ok(self.src_staging.as_ref().unwrap())
+        self.src_staging.as_ref().ok_or_else(|| {
+            ScalixError::ExecutionFailed("source staging buffer missing".to_string())
+        })
     }
 
     /// Ensures that the slot has a destination staging buffer with at least `min_size` bytes.
@@ -74,9 +76,11 @@ impl StagingSlot {
                 usage,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
-            self.dst_staging = Some(buf);
+            return Ok(self.dst_staging.insert(buf));
         }
-        Ok(self.dst_staging.as_ref().unwrap())
+        self.dst_staging.as_ref().ok_or_else(|| {
+            ScalixError::ExecutionFailed("destination staging buffer missing".to_string())
+        })
     }
 
     /// Waits for any in-flight GPU workload on this slot and resets the fence.

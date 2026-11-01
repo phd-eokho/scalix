@@ -63,8 +63,8 @@ impl VulkanBackend {
     /// Initializes a new Vulkan backend with an explicit profiler.
     pub fn with_profiler(profiler: Arc<dyn Profiler>) -> Result<Self> {
         let ctx = VulkanContext::new()?;
-        let blitter = VulkanBlitter::new(Arc::clone(&ctx), Arc::clone(&profiler));
-        let raster = VulkanRasterResizer::new(Arc::clone(&ctx), Arc::clone(&profiler));
+        let blitter = VulkanBlitter::new(Arc::clone(&ctx), Arc::clone(&profiler))?;
+        let raster = VulkanRasterResizer::new(Arc::clone(&ctx), Arc::clone(&profiler))?;
         let lod = VulkanLodDownscaler::new(Arc::clone(&ctx), Arc::clone(&profiler));
         let compute = VulkanComputeResizer::new(Arc::clone(&ctx), Arc::clone(&profiler))?;
 
