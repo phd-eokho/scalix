@@ -1,6 +1,6 @@
 //! OpenGL Raster Shader Pipeline (Fullscreen Quad & Shaders)
 
-use std::ffi::{c_char, CString};
+use std::ffi::c_char;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -109,9 +109,12 @@ impl GlRasterResizer {
         let gl = &self.ctx.gl;
         unsafe {
             let shader = (gl.glCreateShader)(shader_type);
-            let c_src = CString::new(source).unwrap();
-            let ptr = c_src.as_ptr();
-            (gl.glShaderSource)(shader, 1, &ptr, std::ptr::null());
+            // Explicit length: the source needs no NUL terminator or CString copy.
+            let len = i32::try_from(source.len()).map_err(|_| {
+                ScalixError::ExecutionFailed("Shader source exceeds i32::MAX bytes".to_string())
+            })?;
+            let ptr = source.as_ptr() as *const c_char;
+            (gl.glShaderSource)(shader, 1, &ptr, &len);
             (gl.glCompileShader)(shader);
 
             let mut success = 0;

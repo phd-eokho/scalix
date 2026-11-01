@@ -171,11 +171,13 @@ impl VulkanLodDownscaler {
                 src_img_usage,
             )?;
             let src_image = src_gpu_img.image;
-            let src_view = if use_gpu_rgb_unpack {
-                Some(src_gpu_img.create_view(vk_format, vk::ImageAspectFlags::COLOR)?)
-            } else {
-                None
-            };
+            let gpu_unpack = rgb_unpack
+                .map(|rgb| {
+                    src_gpu_img
+                        .create_view(vk_format, vk::ImageAspectFlags::COLOR)
+                        .map(|view| (rgb, view))
+                })
+                .transpose()?;
 
             // 4. Create Single-Level Destination VkImage
             let dst_img_usage = if use_gpu_rgb_repack {
@@ -194,11 +196,13 @@ impl VulkanLodDownscaler {
                 dst_img_usage,
             )?;
             let dst_image = dst_gpu_img.image;
-            let dst_view = if use_gpu_rgb_repack {
-                Some(dst_gpu_img.create_view(dst_vk_format, vk::ImageAspectFlags::COLOR)?)
-            } else {
-                None
-            };
+            let gpu_repack = rgb_repack
+                .map(|rgb| {
+                    dst_gpu_img
+                        .create_view(dst_vk_format, vk::ImageAspectFlags::COLOR)
+                        .map(|view| (rgb, view))
+                })
+                .transpose()?;
 
             // 5. Allocate and Record Command Buffer
             let cmd_guard = CommandBufferGuard::allocate(&self.ctx)?;
@@ -228,7 +232,7 @@ impl VulkanLodDownscaler {
 
             let mut transient_pools = Vec::new();
 
-            if let (Some(rgb_comp), Some(src_view)) = (rgb_unpack, src_view) {
+            if let Some((rgb_comp, src_view)) = gpu_unpack {
                 let post_layout = if num_levels > 1 {
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL
                 } else {
@@ -547,7 +551,7 @@ impl VulkanLodDownscaler {
             }
 
             // Readback / Repack
-            if let (Some(rgb_comp), Some(dst_view)) = (rgb_repack, dst_view) {
+            if let Some((rgb_comp, dst_view)) = gpu_repack {
                 let pool = rgb_comp.cmd_repack_rgb888(
                     cmd_buf,
                     dst_image,

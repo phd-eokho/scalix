@@ -714,10 +714,7 @@ pub unsafe extern "C" fn scalix_task_wait(
             img
         } else if let Some(inner) = task_ref.inner_owned.take() {
             match inner.wait(timeout) {
-                Ok(img) => {
-                    task_ref.result = Some(img);
-                    task_ref.result.as_ref().unwrap()
-                }
+                Ok(img) => &*task_ref.result.insert(img),
                 Err(ScalixError::Timeout) => {
                     task_ref.inner_owned = Some(inner);
                     return SCALIX_ERR_TIMEOUT;
@@ -1108,17 +1105,18 @@ pub enum ScalixGpuDeviceKind {
 #[no_mangle]
 #[must_use]
 pub extern "C" fn scalix_probe_gpu_device_kind() -> ScalixGpuDeviceKind {
-    let info = scalix_core::GpuTopology::probe();
-    match info.device_kind {
-        scalix_core::GpuDeviceKind::Discrete => ScalixGpuDeviceKind::Discrete,
-        scalix_core::GpuDeviceKind::Integrated => ScalixGpuDeviceKind::Integrated,
-        scalix_core::GpuDeviceKind::Virtual => ScalixGpuDeviceKind::Virtual,
-        scalix_core::GpuDeviceKind::Unknown => ScalixGpuDeviceKind::Unknown,
-    }
+    ffi_catch!(ScalixGpuDeviceKind::Unknown, {
+        match scalix_core::GpuTopology::probe().device_kind {
+            scalix_core::GpuDeviceKind::Discrete => ScalixGpuDeviceKind::Discrete,
+            scalix_core::GpuDeviceKind::Integrated => ScalixGpuDeviceKind::Integrated,
+            scalix_core::GpuDeviceKind::Virtual => ScalixGpuDeviceKind::Virtual,
+            scalix_core::GpuDeviceKind::Unknown => ScalixGpuDeviceKind::Unknown,
+        }
+    })
 }
 
 #[no_mangle]
 #[must_use]
 pub extern "C" fn scalix_probe_gpu_is_discrete() -> bool {
-    scalix_core::GpuTopology::probe().is_dgpu()
+    ffi_catch!(false, { scalix_core::GpuTopology::probe().is_dgpu() })
 }

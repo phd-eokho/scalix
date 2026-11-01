@@ -167,11 +167,13 @@ impl VulkanBlitter {
                 src_img_usage,
             )?;
             let src_image = src_gpu_img.image;
-            let src_view = if use_gpu_rgb_unpack {
-                Some(src_gpu_img.create_view(vk_format, vk::ImageAspectFlags::COLOR)?)
-            } else {
-                None
-            };
+            let gpu_unpack = rgb_unpack
+                .map(|rgb| {
+                    src_gpu_img
+                        .create_view(vk_format, vk::ImageAspectFlags::COLOR)
+                        .map(|view| (rgb, view))
+                })
+                .transpose()?;
 
             let dst_img_usage = if use_gpu_rgb_repack {
                 vk::ImageUsageFlags::TRANSFER_SRC
@@ -189,11 +191,13 @@ impl VulkanBlitter {
                 dst_img_usage,
             )?;
             let dst_image = dst_gpu_img.image;
-            let dst_view = if use_gpu_rgb_repack {
-                Some(dst_gpu_img.create_view(vk_format, vk::ImageAspectFlags::COLOR)?)
-            } else {
-                None
-            };
+            let gpu_repack = rgb_repack
+                .map(|rgb| {
+                    dst_gpu_img
+                        .create_view(vk_format, vk::ImageAspectFlags::COLOR)
+                        .map(|view| (rgb, view))
+                })
+                .transpose()?;
 
             // 3. Record Command Buffer from slot
             let cmd_buf = slot.cmd_buf;
@@ -225,7 +229,7 @@ impl VulkanBlitter {
             let mut transient_pools = Vec::new();
 
             // A. Upload / Unpack source
-            if let (Some(rgb_comp), Some(src_view)) = (rgb_unpack, src_view) {
+            if let Some((rgb_comp, src_view)) = gpu_unpack {
                 let pool = rgb_comp.cmd_unpack_rgb888(
                     cmd_buf,
                     src_staging_buf,
@@ -379,7 +383,7 @@ impl VulkanBlitter {
             }
 
             // Readback / Repack
-            if let (Some(rgb_comp), Some(dst_view)) = (rgb_repack, dst_view) {
+            if let Some((rgb_comp, dst_view)) = gpu_repack {
                 let pool = rgb_comp.cmd_repack_rgb888(
                     cmd_buf,
                     dst_image,
