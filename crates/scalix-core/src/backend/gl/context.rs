@@ -50,6 +50,7 @@ pub const EGL_PLATFORM_ANDROID_KHR: u32 = 0x3141;
 
 pub const EGL_WIDTH: EGLint = 0x3057;
 pub const EGL_HEIGHT: EGLint = 0x3056;
+pub const EGL_EXTENSIONS: EGLint = 0x3055;
 
 pub fn format_egl_error(code: EGLint) -> &'static str {
     match code {
@@ -440,6 +441,17 @@ impl EglContext {
                 }
             };
 
+            type EglQueryDeviceStringExtFn =
+                unsafe extern "C" fn(EGLDeviceEXT, EGLint) -> *const c_char;
+            let egl_query_device_string_ext: Option<EglQueryDeviceStringExtFn> = {
+                let ptr = load_egl_ext_symbol("eglQueryDeviceStringEXT");
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, EglQueryDeviceStringExtFn>(ptr))
+                } else {
+                    None
+                }
+            };
+
             let egl_init_ptr = load_egl_core_symbol("eglInitialize");
             if egl_init_ptr.is_null() {
                 if !gl_lib.is_null() {
@@ -564,120 +576,37 @@ impl EglContext {
                 };
 
             type GbmHandle = (*mut c_void, i32);
-            type CandidateDisplay = (EGLDisplay, &'static str, Option<GbmHandle>);
+            type BoundDisplay = (EGLDisplay, EGLContext, EGLSurface, EGLint, EGLint);
 
-            let mut candidate_displays: Vec<CandidateDisplay> = Vec::new();
-
-            // Strategy 1: EGL Device EXT (Native Discrete GPUs / NVIDIA / AMD / Intel directly)
-            if let Some(query_devices) = egl_query_devices_ext {
-                let mut devices: [EGLDeviceEXT; 16] = [std::ptr::null_mut(); 16];
-                let mut num_devices: EGLint = 0;
-                if query_devices(16, devices.as_mut_ptr(), &mut num_devices) == EGL_TRUE
-                    && num_devices > 0
-                {
-                    for &device in devices.iter().take(num_devices as usize) {
-                        let dev_display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
-                        if dev_display != EGL_NO_DISPLAY {
-                            candidate_displays.push((dev_display, "EGL_PLATFORM_DEVICE_EXT", None));
-                        }
-                    }
-                }
-            }
-
-            // Strategy 2: GBM Platform (Headless DRM / Linux Render Nodes via libgbm)
-            #[cfg(target_os = "linux")]
-            let gbm_lib = {
-                let p = libc::dlopen(
-                    c"libgbm.so.1".as_ptr() as *const c_char,
-                    libc::RTLD_LAZY | libc::RTLD_LOCAL,
-                );
-                if p.is_null() {
-                    libc::dlopen(
-                        c"libgbm.so".as_ptr() as *const c_char,
-                        libc::RTLD_LAZY | libc::RTLD_LOCAL,
-                    )
-                } else {
-                    p
-                }
-            };
-            #[cfg(not(target_os = "linux"))]
-            let gbm_lib: *mut c_void = std::ptr::null_mut();
-
-            #[cfg(target_os = "linux")]
-            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = if !gbm_lib.is_null() {
-                let ptr = libc::dlsym(gbm_lib, c"gbm_device_destroy".as_ptr() as *const c_char);
+            type GlGetStringFn = unsafe extern "C" fn(u32) -> *const c_char;
+            let gl_get_string: Option<GlGetStringFn> = {
+                let ptr = load_gl_symbol("glGetString");
                 if !ptr.is_null() {
-                    Some(std::mem::transmute::<*mut c_void, GbmDestroyDeviceFn>(ptr))
+                    Some(std::mem::transmute::<*mut c_void, GlGetStringFn>(ptr))
                 } else {
                     None
                 }
-            } else {
-                None
             };
-            #[cfg(not(target_os = "linux"))]
-            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = None;
-
-            #[cfg(target_os = "linux")]
-            if !gbm_lib.is_null() {
-                type GbmCreateDeviceFn = unsafe extern "C" fn(i32) -> *mut c_void;
-                let create_ptr =
-                    libc::dlsym(gbm_lib, c"gbm_create_device".as_ptr() as *const c_char);
-                if !create_ptr.is_null() {
-                    let gbm_create_device: GbmCreateDeviceFn =
-                        std::mem::transmute::<*mut c_void, GbmCreateDeviceFn>(create_ptr);
-                    for &path in crate::dma::linux_drm::DRM_CANDIDATE_PATHS {
-                        let c_path = CString::new(path).unwrap();
-                        let fd = libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
-                        if fd >= 0 {
-                            let gbm_dev = gbm_create_device(fd);
-                            if !gbm_dev.is_null() {
-                                let gbm_display =
-                                    get_platform_display(EGL_PLATFORM_GBM_KHR, gbm_dev);
-                                if gbm_display != EGL_NO_DISPLAY {
-                                    candidate_displays.push((
-                                        gbm_display,
-                                        "EGL_PLATFORM_GBM_KHR",
-                                        Some((gbm_dev, fd)),
-                                    ));
-                                } else {
-                                    if let Some(destroy) = gbm_destroy_device {
-                                        destroy(gbm_dev);
-                                    }
-                                    libc::close(fd);
-                                }
-                            } else {
-                                libc::close(fd);
-                            }
-                        }
-                    }
+            // Mesa silently falls back to a CPU rasterizer (e.g. surfaceless without DRM), so the
+            // bound renderer itself is inspected rather than trusting the platform.
+            let current_renderer_is_software = || -> bool {
+                let Some(get_string) = gl_get_string else {
+                    return false;
+                };
+                let p = get_string(0x1F01); // GL_RENDERER
+                if p.is_null() {
+                    return false;
                 }
-            }
-
-            // Strategy 3: Surfaceless MESA (Headless Fallback / CI / VM Software Rasterizers)
-            let surfaceless_display =
-                get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY);
-            if surfaceless_display != EGL_NO_DISPLAY {
-                candidate_displays.push((
-                    surfaceless_display,
-                    "EGL_PLATFORM_SURFACELESS_MESA",
-                    None,
-                ));
-            }
-
-            // Strategy 4: Standard default display fallback (X11 / Wayland / Android / Windows)
-            if let Some(egl_get_display) = egl_get_display {
-                let def_display = egl_get_display(EGL_DEFAULT_DISPLAY);
-                if def_display != EGL_NO_DISPLAY {
-                    candidate_displays.push((def_display, "eglGetDisplay default", None));
-                }
-            }
-
-            let mut display = EGL_NO_DISPLAY;
-            let mut context = EGL_NO_CONTEXT;
-            let mut surface = EGL_NO_SURFACE;
-            let mut bound_major: EGLint = 0;
-            let mut bound_minor: EGLint = 0;
-            let mut selected_gbm: Option<(*mut c_void, i32)> = None;
+                let renderer = std::ffi::CStr::from_ptr(p).to_bytes();
+                [
+                    &b"llvmpipe"[..],
+                    b"softpipe",
+                    b"swrast",
+                    b"Software Rasterizer",
+                ]
+                .iter()
+                .any(|needle| renderer.windows(needle.len()).any(|w| w == *needle))
+            };
 
             // NOTE: EGLDisplay handles are process-wide singletons per (platform, native display).
             // Device/surfaceless/default displays are shared with every other EglContext (and the
@@ -691,18 +620,31 @@ impl EglContext {
                 }
             };
 
-            for (cand_display, cand_desc, cand_gbm) in candidate_displays.iter().copied() {
+            // Initializes `cand_display`, creates a context and binds it (surfaceless, then 1x1
+            // PBuffer). Software renderers are rejected unless `allow_software`; `is_private` marks a
+            // display backed by our own gbm_device (the only kind safe to eglTerminate). On failure every
+            // per-candidate resource is released and None returned.
+            let try_display = |cand_display: EGLDisplay,
+                               cand_desc: &str,
+                               allow_software: bool,
+                               is_private: bool|
+             -> Option<BoundDisplay> {
                 let mut major: EGLint = 0;
                 let mut minor: EGLint = 0;
                 if egl_initialize(cand_display, &mut major, &mut minor) == EGL_FALSE {
-                    continue;
+                    return None;
                 }
 
                 let _ = egl_bind_api(EGL_OPENGL_API);
 
+                // EGL_RENDERABLE_TYPE defaults to EGL_OPENGL_ES_BIT; without requesting
+                // EGL_OPENGL_BIT the chosen config may reject desktop GL context creation
+                // (EGL_BAD_CONFIG/EGL_BAD_MATCH) and silently force the GLES fallback.
                 let config_attribs = [
                     EGL_SURFACE_TYPE,
                     EGL_PBUFFER_BIT,
+                    EGL_RENDERABLE_TYPE,
+                    EGL_OPENGL_BIT,
                     EGL_RED_SIZE,
                     8,
                     EGL_GREEN_SIZE,
@@ -747,8 +689,8 @@ impl EglContext {
                 }
 
                 if num_configs < 1 {
-                    terminate_private(cand_display, cand_gbm.is_some());
-                    continue;
+                    terminate_private(cand_display, is_private);
+                    return None;
                 }
 
                 let context_attribs_gl43 = [
@@ -786,6 +728,27 @@ impl EglContext {
                 }
                 if cand_context == EGL_NO_CONTEXT {
                     let _ = egl_bind_api(EGL_OPENGL_ES_API);
+                    // The desktop-GL config may not be ES3-renderable; re-pick one that is.
+                    let gles_config_attribs = [
+                        EGL_SURFACE_TYPE,
+                        EGL_PBUFFER_BIT,
+                        EGL_RENDERABLE_TYPE,
+                        EGL_OPENGL_ES3_BIT_KHR,
+                        EGL_NONE,
+                    ];
+                    let mut gles_config: EGLConfig = std::ptr::null_mut();
+                    let mut num_gles_configs: EGLint = 0;
+                    if egl_choose_config(
+                        cand_display,
+                        gles_config_attribs.as_ptr(),
+                        &mut gles_config,
+                        1,
+                        &mut num_gles_configs,
+                    ) == EGL_TRUE
+                        && num_gles_configs > 0
+                    {
+                        config = gles_config;
+                    }
                     let gles_attribs_31 = [
                         EGL_CONTEXT_CLIENT_VERSION,
                         3,
@@ -819,46 +782,48 @@ impl EglContext {
                 }
 
                 if cand_context == EGL_NO_CONTEXT {
-                    terminate_private(cand_display, cand_gbm.is_some());
-                    continue;
+                    terminate_private(cand_display, is_private);
+                    return None;
                 }
 
                 // Try binding: 1. Surfaceless (EGL_NO_SURFACE), 2. 1x1 Offscreen PBuffer
-                if egl_make_current(cand_display, EGL_NO_SURFACE, EGL_NO_SURFACE, cand_context)
-                    == EGL_TRUE
-                {
-                    display = cand_display;
-                    context = cand_context;
-                    surface = EGL_NO_SURFACE;
-                    bound_major = major;
-                    bound_minor = minor;
-                    selected_gbm = cand_gbm;
-                    log::debug!(
-                        "Successfully bound headless EGL display via {} (surfaceless)",
-                        cand_desc
-                    );
-                    break;
+                let mut pbuffer = EGL_NO_SURFACE;
+                let mut bound =
+                    egl_make_current(cand_display, EGL_NO_SURFACE, EGL_NO_SURFACE, cand_context)
+                        == EGL_TRUE;
+                if !bound {
+                    let pbuffer_attribs = [EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE];
+                    pbuffer = egl_create_pbuffer_surface
+                        .map(|create| create(cand_display, config, pbuffer_attribs.as_ptr()))
+                        .unwrap_or(EGL_NO_SURFACE);
+                    bound = pbuffer != EGL_NO_SURFACE
+                        && egl_make_current(cand_display, pbuffer, pbuffer, cand_context)
+                            == EGL_TRUE;
                 }
 
-                let pbuffer_attribs = [EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE];
-                let pbuffer = egl_create_pbuffer_surface
-                    .map(|create| create(cand_display, config, pbuffer_attribs.as_ptr()))
-                    .unwrap_or(EGL_NO_SURFACE);
-
-                if pbuffer != EGL_NO_SURFACE
-                    && egl_make_current(cand_display, pbuffer, pbuffer, cand_context) == EGL_TRUE
-                {
-                    display = cand_display;
-                    context = cand_context;
-                    surface = pbuffer;
-                    bound_major = major;
-                    bound_minor = minor;
-                    selected_gbm = cand_gbm;
+                if bound {
+                    if allow_software || !current_renderer_is_software() {
+                        log::debug!(
+                            "Successfully bound headless EGL display via {} ({})",
+                            cand_desc,
+                            if pbuffer == EGL_NO_SURFACE {
+                                "surfaceless"
+                            } else {
+                                "1x1 PBuffer"
+                            }
+                        );
+                        return Some((cand_display, cand_context, pbuffer, major, minor));
+                    }
                     log::debug!(
-                        "Successfully bound headless EGL display via {} (1x1 PBuffer)",
+                        "Skipping software renderer on {} (hardware pass)",
                         cand_desc
                     );
-                    break;
+                    let _ = egl_make_current(
+                        cand_display,
+                        EGL_NO_SURFACE,
+                        EGL_NO_SURFACE,
+                        EGL_NO_CONTEXT,
+                    );
                 }
 
                 // Cleanup failed candidate
@@ -870,20 +835,163 @@ impl EglContext {
                 if let Some(f) = egl_destroy_context {
                     let _ = f(cand_display, cand_context);
                 }
-                terminate_private(cand_display, cand_gbm.is_some());
-            }
+                terminate_private(cand_display, is_private);
+                None
+            };
 
-            // Immediately destroy all unselected candidate GBM devices and close their file descriptors
-            for (_, _, cand_gbm) in candidate_displays {
-                if let Some((g_dev, g_fd)) = cand_gbm {
-                    if Some((g_dev, g_fd)) != selected_gbm {
-                        if let Some(destroy) = gbm_destroy_device {
-                            destroy(g_dev);
+            // Mesa always enumerates a CPU rasterizer (llvmpipe) device advertising
+            // EGL_MESA_device_software, usually first. It is only a last resort.
+            let is_software_device = |device: EGLDeviceEXT| -> bool {
+                let Some(query) = egl_query_device_string_ext else {
+                    return false;
+                };
+                let exts = query(device, EGL_EXTENSIONS);
+                !exts.is_null()
+                    && std::ffi::CStr::from_ptr(exts)
+                        .to_bytes()
+                        .split(|&b| b == b' ')
+                        .any(|e| e == b"EGL_MESA_device_software")
+            };
+
+            let mut selected: Option<BoundDisplay> = None;
+            let mut selected_gbm: Option<GbmHandle> = None;
+            let mut software_devices: Vec<EGLDeviceEXT> = Vec::new();
+
+            // Strategy 1: hardware EGL devices (NVIDIA / AMD / Intel), software devices deferred
+            if let Some(query_devices) = egl_query_devices_ext {
+                let mut devices: [EGLDeviceEXT; 16] = [std::ptr::null_mut(); 16];
+                let mut num_devices: EGLint = 0;
+                if query_devices(16, devices.as_mut_ptr(), &mut num_devices) == EGL_TRUE {
+                    let count = (num_devices.max(0) as usize).min(devices.len());
+                    for &device in &devices[..count] {
+                        if is_software_device(device) {
+                            software_devices.push(device);
+                            continue;
                         }
-                        libc::close(g_fd);
+                        let d = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
+                        if d == EGL_NO_DISPLAY {
+                            continue;
+                        }
+                        selected = try_display(d, "EGL_PLATFORM_DEVICE_EXT", false, false);
+                        if selected.is_some() {
+                            break;
+                        }
                     }
                 }
             }
+
+            // Strategies 2/3: Surfaceless MESA (hardware render node when DRM exists), then the
+            // default display (X11 / Wayland / Android; e.g. d3d12 on WSLg).
+            let try_shared_displays = |allow_software: bool| -> Option<BoundDisplay> {
+                let d = get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY);
+                if d != EGL_NO_DISPLAY {
+                    if let Some(b) =
+                        try_display(d, "EGL_PLATFORM_SURFACELESS_MESA", allow_software, false)
+                    {
+                        return Some(b);
+                    }
+                }
+                let d = egl_get_display.map_or(EGL_NO_DISPLAY, |f| f(EGL_DEFAULT_DISPLAY));
+                if d == EGL_NO_DISPLAY {
+                    return None;
+                }
+                try_display(d, "eglGetDisplay default", allow_software, false)
+            };
+            if selected.is_none() {
+                selected = try_shared_displays(false);
+            }
+
+            // Strategy 4: GBM on DRM render nodes, opened lazily. Primary nodes (/dev/dri/cardN)
+            // are skipped: opening one on a headless host can implicitly grant DRM master.
+            #[cfg(target_os = "linux")]
+            let gbm_lib = if selected.is_none() {
+                let p = libc::dlopen(
+                    c"libgbm.so.1".as_ptr() as *const c_char,
+                    libc::RTLD_LAZY | libc::RTLD_LOCAL,
+                );
+                if p.is_null() {
+                    libc::dlopen(
+                        c"libgbm.so".as_ptr() as *const c_char,
+                        libc::RTLD_LAZY | libc::RTLD_LOCAL,
+                    )
+                } else {
+                    p
+                }
+            } else {
+                std::ptr::null_mut()
+            };
+            #[cfg(not(target_os = "linux"))]
+            let gbm_lib: *mut c_void = std::ptr::null_mut();
+
+            #[cfg(target_os = "linux")]
+            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = if !gbm_lib.is_null() {
+                let ptr = libc::dlsym(gbm_lib, c"gbm_device_destroy".as_ptr() as *const c_char);
+                if !ptr.is_null() {
+                    Some(std::mem::transmute::<*mut c_void, GbmDestroyDeviceFn>(ptr))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            #[cfg(not(target_os = "linux"))]
+            let gbm_destroy_device: Option<GbmDestroyDeviceFn> = None;
+
+            #[cfg(target_os = "linux")]
+            if selected.is_none() && !gbm_lib.is_null() {
+                type GbmCreateDeviceFn = unsafe extern "C" fn(i32) -> *mut c_void;
+                let create_ptr =
+                    libc::dlsym(gbm_lib, c"gbm_create_device".as_ptr() as *const c_char);
+                if !create_ptr.is_null() {
+                    let gbm_create_device: GbmCreateDeviceFn =
+                        std::mem::transmute::<*mut c_void, GbmCreateDeviceFn>(create_ptr);
+                    for &path in crate::dma::linux_drm::DRM_CANDIDATE_PATHS
+                        .iter()
+                        .filter(|p| p.contains("renderD"))
+                    {
+                        let c_path = CString::new(path).unwrap();
+                        let fd = libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+                        if fd < 0 {
+                            continue;
+                        }
+                        let gbm_dev = gbm_create_device(fd);
+                        if !gbm_dev.is_null() {
+                            let d = get_platform_display(EGL_PLATFORM_GBM_KHR, gbm_dev);
+                            if d != EGL_NO_DISPLAY {
+                                selected = try_display(d, "EGL_PLATFORM_GBM_KHR", false, true);
+                            }
+                            if selected.is_some() {
+                                selected_gbm = Some((gbm_dev, fd));
+                                break;
+                            }
+                            if let Some(destroy) = gbm_destroy_device {
+                                destroy(gbm_dev);
+                            }
+                        }
+                        libc::close(fd);
+                    }
+                }
+            }
+
+            // Strategy 5: software renderers as last resort (CI, VMs, LIBGL_ALWAYS_SOFTWARE)
+            if selected.is_none() {
+                selected = try_shared_displays(true);
+            }
+            if selected.is_none() {
+                for &device in &software_devices {
+                    let d = get_platform_display(EGL_PLATFORM_DEVICE_EXT, device);
+                    if d == EGL_NO_DISPLAY {
+                        continue;
+                    }
+                    selected = try_display(d, "EGL_PLATFORM_DEVICE_EXT (software)", true, false);
+                    if selected.is_some() {
+                        break;
+                    }
+                }
+            }
+
+            let (display, context, surface, bound_major, bound_minor) =
+                selected.unwrap_or((EGL_NO_DISPLAY, EGL_NO_CONTEXT, EGL_NO_SURFACE, 0, 0));
 
             if display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT {
                 if let Some((g_dev, g_fd)) = selected_gbm {
@@ -905,6 +1013,19 @@ impl EglContext {
             }
 
             log::debug!("Initialized headless EGL version {bound_major}.{bound_minor}");
+
+            // Releases everything acquired so far if GL function loading below bails out early.
+            let rollback = InitRollback {
+                display,
+                context,
+                surface,
+                egl_make_current,
+                egl_destroy_context,
+                egl_destroy_surface,
+                gbm: selected_gbm,
+                gbm_destroy_device,
+                libs: [gbm_lib, gl_lib, egl_lib],
+            };
 
             macro_rules! get_gl_fn {
                 ($name:expr, $t:ty) => {{
@@ -1083,8 +1204,7 @@ impl EglContext {
                 glGetError: get_optional_gl_fn!("glGetError", unsafe extern "C" fn() -> u32),
             };
 
-            let is_compute_supported =
-                gl.glDispatchCompute.is_some() && gl.glBindImageTexture.is_some();
+            std::mem::forget(rollback);
 
             let version_ptr = (gl.glGetString)(0x1F02); // GL_VERSION = 0x1F02
             let version_str = if !version_ptr.is_null() {
@@ -1094,7 +1214,13 @@ impl EglContext {
             } else {
                 String::new()
             };
-            let is_gles = version_str.contains("OpenGL ES") || version_str.contains("ES");
+            let is_gles = version_str.starts_with("OpenGL ES");
+            // Symbol presence proves nothing: libglvnd's eglGetProcAddress returns dispatch stubs
+            // for every gl* name, so compute is gated on the context version (GL 4.3 / ES 3.1).
+            let min_compute_version = if is_gles { (3, 1) } else { (4, 3) };
+            let is_compute_supported = gl.glDispatchCompute.is_some()
+                && gl.glBindImageTexture.is_some()
+                && parse_gl_version(&version_str) >= min_compute_version;
 
             log::debug!(
                 "EGL/GL Context Initialized: Version '{}', is_gles = {}, compute = {}, offscreen_pbuffer = {}",
@@ -1180,6 +1306,64 @@ impl EglContext {
     }
 }
 
+/// Parses `(major, minor)` from a `GL_VERSION` string such as `"4.5 (Core Profile) Mesa 23.2"`
+/// or `"OpenGL ES 3.1 Mesa 23.2"`. Returns `(0, 0)` when unparseable.
+fn parse_gl_version(version: &str) -> (u32, u32) {
+    let numeric = version.trim_start_matches("OpenGL ES").trim_start();
+    let mut parts = numeric
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|p| p.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), Some(minor)) => (major, minor),
+        _ => (0, 0),
+    }
+}
+
+/// Scope guard undoing a partially constructed [`EglContext`]; defused with `mem::forget`.
+struct InitRollback {
+    display: EGLDisplay,
+    context: EGLContext,
+    surface: EGLSurface,
+    egl_make_current: EglMakeCurrentFn,
+    egl_destroy_context: Option<EglDestroyContextFn>,
+    egl_destroy_surface: Option<EglDestroySurfaceFn>,
+    gbm: Option<(*mut c_void, i32)>,
+    gbm_destroy_device: Option<GbmDestroyDeviceFn>,
+    libs: [*mut c_void; 3],
+}
+
+impl Drop for InitRollback {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = (self.egl_make_current)(
+                self.display,
+                EGL_NO_SURFACE,
+                EGL_NO_SURFACE,
+                EGL_NO_CONTEXT,
+            );
+            if self.surface != EGL_NO_SURFACE {
+                if let Some(f) = self.egl_destroy_surface {
+                    let _ = f(self.display, self.surface);
+                }
+            }
+            if let Some(f) = self.egl_destroy_context {
+                let _ = f(self.display, self.context);
+            }
+            if let Some((dev, fd)) = self.gbm {
+                if let Some(destroy) = self.gbm_destroy_device {
+                    destroy(dev);
+                }
+                libc::close(fd);
+            }
+            for lib in self.libs {
+                if !lib.is_null() {
+                    libc::dlclose(lib);
+                }
+            }
+        }
+    }
+}
+
 impl Drop for EglContext {
     fn drop(&mut self) {
         unsafe {
@@ -1229,5 +1413,27 @@ impl Drop for EglContext {
                 self.egl_lib = std::ptr::null_mut();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_gl_version;
+
+    #[test]
+    fn parses_desktop_and_es_versions() {
+        assert_eq!(parse_gl_version("4.5 (Core Profile) Mesa 23.2.1"), (4, 5));
+        assert_eq!(parse_gl_version("4.6.0 NVIDIA 535.183.01"), (4, 6));
+        assert_eq!(parse_gl_version("3.3 (Core Profile) Mesa 22.0.1"), (3, 3));
+        assert_eq!(parse_gl_version("OpenGL ES 3.1 Mesa 23.2.1"), (3, 1));
+        assert_eq!(parse_gl_version("OpenGL ES 3.0 V@0502.0"), (3, 0));
+        assert_eq!(parse_gl_version(""), (0, 0));
+    }
+
+    #[test]
+    fn compute_threshold_ordering() {
+        assert!(parse_gl_version("3.3 (Core Profile) Mesa 22.0.1") < (4, 3));
+        assert!(parse_gl_version("4.3.0 NVIDIA 470.256.02") >= (4, 3));
+        assert!(parse_gl_version("OpenGL ES 3.0 Mesa") < (3, 1));
     }
 }
