@@ -59,9 +59,7 @@ impl GlBlitter {
             let upload_start = Instant::now();
             let src_tex = slot.upload_src_data(
                 &self.ctx,
-                src.data,
-                src.width,
-                src.height,
+                src,
                 src_internal,
                 src_format,
                 src_type,
@@ -119,17 +117,11 @@ impl GlBlitter {
             // 4. Download Pixels
             let download_start = Instant::now();
             (gl.glBindFramebuffer)(GL_READ_FRAMEBUFFER, slot.dst_fbo);
-            (gl.glReadPixels)(
-                0,
-                0,
-                dst.width as i32,
-                dst.height as i32,
-                dst_format,
-                dst_type,
-                dst.data.as_mut_ptr() as *mut std::ffi::c_void,
-            );
+            super::ring::read_pixels_into(gl, dst, dst_format, dst_type)?;
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, 0);
             let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
+
+            self.ctx.check_gl_error("blit")?;
 
             let total_wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
             self.profiler.record(ProfileMetrics {

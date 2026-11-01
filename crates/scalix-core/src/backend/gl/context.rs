@@ -132,6 +132,8 @@ pub const GL_LINK_STATUS: u32 = 0x8B82;
 pub const GL_INFO_LOG_LENGTH: u32 = 0x8B84;
 
 pub const GL_UNPACK_ALIGNMENT: u32 = 0x0CF5;
+pub const GL_UNPACK_ROW_LENGTH: u32 = 0x0CF2;
+pub const GL_PACK_ROW_LENGTH: u32 = 0x0D02;
 pub const GL_PACK_ALIGNMENT: u32 = 0x0D05;
 pub const GL_TEXTURE0: u32 = 0x84C0;
 pub const GL_WRITE_ONLY: u32 = 0x88B9;
@@ -1281,6 +1283,34 @@ impl EglContext {
         } else {
             "#version 430 core\n"
         }
+    }
+
+    /// Drains the GL error queue, failing with the first recorded error.
+    ///
+    /// Must be called with this context current (i.e. while holding an [`EglContextGuard`]).
+    pub fn check_gl_error(&self, stage: &str) -> Result<()> {
+        // GL keeps one flag per error kind; a bounded drain avoids spinning on a lost context.
+        const MAX_QUEUED_GL_ERRORS: usize = 8;
+        let Some(get_error) = self.gl.glGetError else {
+            return Ok(());
+        };
+        let mut first = 0;
+        for _ in 0..MAX_QUEUED_GL_ERRORS {
+            let code = unsafe { get_error() };
+            if code == 0 {
+                break;
+            }
+            if first == 0 {
+                first = code;
+            }
+        }
+        if first == 0 {
+            return Ok(());
+        }
+        Err(ScalixError::ExecutionFailed(format!(
+            "OpenGL {stage} failed: {}",
+            format_gl_error(first)
+        )))
     }
 
     pub fn bind_current(&self) -> Result<EglContextGuard<'_>> {

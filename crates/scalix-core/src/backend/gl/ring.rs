@@ -5,7 +5,7 @@
 //! per-frame allocations and enable seamless CPU/GPU asynchronous pipelining.
 
 use crate::backend::gl::context::*;
-use crate::types::Result;
+use crate::types::{ImageDesc, ImageDescMut, Result, ScalixError};
 use std::ffi::c_void;
 use std::sync::Arc;
 
@@ -224,44 +224,66 @@ impl GlStagingSlot {
         Ok(self.dst_texture)
     }
 
-    /// Uploads source pixels via PBO DMA staging without CPU blocking.
-    #[allow(clippy::too_many_arguments)]
+    /// Uploads source pixels via PBO staging, honoring `src.stride`.
     pub fn upload_src_data(
         &mut self,
         ctx: &Arc<EglContext>,
-        data: &[u8],
-        w: u32,
-        h: u32,
+        src: &ImageDesc,
         internal: u32,
         format: u32,
         typ: u32,
         gl_filter: u32,
     ) -> Result<u32> {
         let gl = &ctx.gl;
-        self.ensure_src_pbo(ctx, data.len())?;
+        let (w, h) = (src.width, src.height);
+        let row_length = row_length_px(src.format, src.width, src.stride)?;
+        self.ensure_src_pbo(ctx, src.data.len())?;
         self.ensure_src_texture(ctx, w, h, internal, format, typ, gl_filter)?;
 
         unsafe {
             (gl.glBindBuffer)(GL_PIXEL_UNPACK_BUFFER, self.src_pbo);
             (gl.glBufferData)(
                 GL_PIXEL_UNPACK_BUFFER,
-                data.len() as isize,
-                data.as_ptr() as *const c_void,
+                src.data.len() as isize,
+                src.data.as_ptr() as *const c_void,
                 GL_STREAM_DRAW,
             );
 
             (gl.glBindTexture)(GL_TEXTURE_2D, self.src_texture);
-            (gl.glTexSubImage2D)(
-                GL_TEXTURE_2D,
-                0,
-                0,
-                0,
-                w as i32,
-                h as i32,
-                format,
-                typ,
-                std::ptr::null(),
-            );
+            (gl.glPixelStorei)(GL_UNPACK_ALIGNMENT, 1);
+            match row_length {
+                Some(len) => {
+                    (gl.glPixelStorei)(GL_UNPACK_ROW_LENGTH, len);
+                    (gl.glTexSubImage2D)(
+                        GL_TEXTURE_2D,
+                        0,
+                        0,
+                        0,
+                        w as i32,
+                        h as i32,
+                        format,
+                        typ,
+                        std::ptr::null(),
+                    );
+                    (gl.glPixelStorei)(GL_UNPACK_ROW_LENGTH, 0);
+                }
+                // Stride is not a whole number of pixels: GL cannot express it, upload per row.
+                None => {
+                    for y in 0..h {
+                        (gl.glTexSubImage2D)(
+                            GL_TEXTURE_2D,
+                            0,
+                            0,
+                            y as i32,
+                            w as i32,
+                            1,
+                            format,
+                            typ,
+                            (y as usize * src.stride) as *const c_void,
+                        );
+                    }
+                }
+            }
             (gl.glBindBuffer)(GL_PIXEL_UNPACK_BUFFER, 0);
         }
 
@@ -310,6 +332,73 @@ impl GlStagingSlot {
         }
         self.in_flight = true;
     }
+}
+
+/// Returns the GL row length (in pixels) for `stride`, or `None` when the stride is not a
+/// whole number of pixels and rows must be transferred individually.
+fn row_length_px(
+    format: crate::types::PixelFormat,
+    width: u32,
+    stride: usize,
+) -> Result<Option<i32>> {
+    let bpp = format
+        .bytes_per_pixel()
+        .ok_or(ScalixError::UnsupportedFormat(format))?;
+    let min_stride = width as usize * bpp;
+    if stride < min_stride {
+        return Err(ScalixError::InvalidStride { stride, min_stride });
+    }
+    if !stride.is_multiple_of(bpp) {
+        return Ok(None);
+    }
+    let len = i32::try_from(stride / bpp)
+        .map_err(|_| ScalixError::InvalidStride { stride, min_stride })?;
+    Ok(Some(len))
+}
+
+/// Reads the bound `GL_READ_FRAMEBUFFER` into `dst`, honoring `dst.stride`.
+///
+/// # Safety
+/// The context must be current and a complete read framebuffer of at least
+/// `dst.width x dst.height` must be bound.
+pub(crate) unsafe fn read_pixels_into(
+    gl: &GlFunctions,
+    dst: &mut ImageDescMut,
+    format: u32,
+    typ: u32,
+) -> Result<()> {
+    let (w, h) = (dst.width as i32, dst.height as i32);
+    let row_length = row_length_px(dst.format, dst.width, dst.stride)?;
+    (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
+    match row_length {
+        Some(len) => {
+            (gl.glPixelStorei)(GL_PACK_ROW_LENGTH, len);
+            (gl.glReadPixels)(
+                0,
+                0,
+                w,
+                h,
+                format,
+                typ,
+                dst.data.as_mut_ptr() as *mut c_void,
+            );
+            (gl.glPixelStorei)(GL_PACK_ROW_LENGTH, 0);
+        }
+        None => {
+            for (y, row) in dst.data.chunks_mut(dst.stride).take(h as usize).enumerate() {
+                (gl.glReadPixels)(
+                    0,
+                    y as i32,
+                    w,
+                    1,
+                    format,
+                    typ,
+                    row.as_mut_ptr() as *mut c_void,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 unsafe impl Send for GlStagingSlot {}
